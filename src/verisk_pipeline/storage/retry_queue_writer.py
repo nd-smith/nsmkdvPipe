@@ -294,17 +294,23 @@ class RetryQueueWriter(LoggedClass):
             now - timedelta(seconds=min_age_seconds) if min_age_seconds > 0 else None
         )
 
-        # Read with filter pushdown
+        # Read with filter pushdown (exclude next_retry_at - need NULL handling)
         filters = [
             ("status", "=", "failed"),
             ("retry_count", "<", max_retries),
-            ("next_retry_at", "<=", now),
         ]
 
         if min_created_at:
             filters.append(("created_at", ">=", min_created_at))
 
         df = self._reader.read_as_polars(filters=filters)
+
+        # Apply next_retry_at filter with NULL handling
+        # NULL next_retry_at = immediately eligible (legacy records)
+        if not df.is_empty() and "next_retry_at" in df.columns:
+            df = df.filter(
+                pl.col("next_retry_at").is_null() | (pl.col("next_retry_at") <= now)
+            )
 
         # Ensure retry_count is integer (handle schema inconsistencies)
         if "retry_count" in df.columns:
