@@ -338,6 +338,50 @@ class RetryQueueWriter(LoggedClass):
 
         return df
 
+    @logged_operation(operation_name="get_queued_ids")
+    @with_retry(config=DELTA_RETRY_CONFIG, on_auth_error=_on_auth_error)
+    def get_queued_ids(self) -> set:
+        """
+        Get primary key values of all records currently in retry queue.
+
+        Used by download stage to exclude media already queued for retry,
+        preventing duplicate processing and retry_count resets.
+
+        Returns:
+            Set of primary key strings (composite keys joined by '|')
+        """
+        try:
+            if not self._reader.exists():
+                self._logger.debug("Retry queue table does not exist yet")
+                return set()
+
+            queued = (
+                pl.scan_delta(
+                    self.table_path, storage_options=self.get_storage_options()
+                )
+                .select(self.primary_keys)
+                .unique()
+                .collect(streaming=True)
+            )
+
+        except Exception as e:
+            self._logger.warning(
+                f"Could not read queued IDs: {e}",
+                extra={"table": self.table_path, "error": str(e)},
+            )
+            return set()
+
+        ids = set(
+            self._make_composite_key(row) for row in queued.iter_rows(named=True)
+        )
+
+        self._logger.debug(
+            f"Found {len(ids)} IDs in retry queue",
+            extra={"table": self.table_path, "count": len(ids)},
+        )
+
+        return ids
+
     @logged_operation(operation_name="cleanup_expired")
     @with_retry(config=DELTA_RETRY_CONFIG, on_auth_error=_on_auth_error)
     def cleanup_expired(self, retention_days: int) -> int:
