@@ -72,7 +72,7 @@ class RetryStage:
         """Initialize retry stage."""
         self.config = config
 
-        self._max_retries = config.retry.max_attempts
+        self._max_retries = config.retry.max_retries
         self._min_age = config.retry.min_retry_age_seconds
         self._backoff_base = config.retry.backoff_base_seconds
         self._backoff_mult = config.retry.backoff_multiplier
@@ -1136,7 +1136,7 @@ class RetryStage:
             try:
                 self.retry_writer.write_retry(
                     rows=still_expired,
-                    max_retries=self.config.retry.max_attempts,
+                    max_retries=self.config.retry.max_retries,
                     backoff_base_seconds=self.config.retry.backoff_base_seconds,
                     backoff_multiplier=self.config.retry.backoff_multiplier,
                 )
