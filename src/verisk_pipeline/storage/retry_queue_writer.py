@@ -197,7 +197,7 @@ class RetryQueueWriter(LoggedClass):
             predicate=merge_predicate,
             source_alias="source",
             target_alias="target",
-        ).when_matched_update(set=update_set).when_not_matched_insert_all().execute()
+        ).when_matched_update(update_set).when_not_matched_insert_all().execute()
 
         self._logger.info(
             f"Wrote/updated {len(df)} retry records",
