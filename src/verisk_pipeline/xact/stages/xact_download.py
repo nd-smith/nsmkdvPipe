@@ -1040,9 +1040,14 @@ async def download_single(
             allow_redirects=False,
         ) as response:
             if response.status != 200:
+                # Xact URLs cannot be refreshed, so classification differs from ClaimX:
+                # - 404/410: PERMANENT (resource doesn't exist or is gone)
+                # - 400: PERMANENT (malformed request)
+                # - 401/403: TRANSIENT (may be VPN/proxy issues that resolve)
+                # - 429/5xx: TRANSIENT (rate limit or server errors)
                 error_category = ErrorCategory.TRANSIENT
                 is_retryable = True
-                if response.status in (400, 401, 403, 404, 410):
+                if response.status in (400, 404, 410):
                     error_category = ErrorCategory.PERMANENT
                     is_retryable = False
 
