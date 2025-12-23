@@ -301,7 +301,7 @@ class RetryQueueWriter(LoggedClass):
         ]
 
         if min_created_at:
-            filters.append(("created_at", ">=", min_created_at))
+            filters.append(("created_at", "<=", min_created_at))
 
         df = self._reader.read_as_polars(filters=filters)
 
