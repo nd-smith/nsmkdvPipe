@@ -1226,6 +1226,31 @@ class RetryStage:
                     ),
                 )
 
+            elif (
+                result.http_status in (401, 403, 404, 410)
+                and task.refresh_count > 0
+            ):
+                # URL-related error AFTER refresh → truly permanent
+                # We already tried with a fresh URL, so this is not a stale URL issue.
+                delete_keys.append(
+                    {
+                        "media_id": task.media_id,
+                        "project_id": task.project_id,
+                    }
+                )
+                log_with_context(
+                    logger,
+                    logging.WARNING,
+                    "Permanent failure after URL refresh - removing from queue",
+                    media_id=task.media_id,
+                    project_id=task.project_id,
+                    http_status=result.http_status,
+                    refresh_count=task.refresh_count,
+                    error_category=(
+                        result.error_category.value if result.error_category else None
+                    ),
+                )
+
             else:
                 if self.is_retry_exhausted(new_retry_count):
                     # EXHAUSTED → DELETE from retry queue only

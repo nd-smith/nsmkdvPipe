@@ -836,7 +836,12 @@ async def download_single(
             if response.status != 200:
                 error_category = ErrorCategory.TRANSIENT
                 is_retryable = True
-                if response.status in (400, 401, 403, 404, 410):
+                # For ClaimX, most HTTP errors are transient because URLs can be
+                # refreshed via API. Only 400 (Bad Request) is truly permanent
+                # since it indicates a malformed request.
+                # 401/403/404/410 may be due to expired presigned URLs and should
+                # be retried after URL refresh in the retry stage.
+                if response.status == 400:
                     error_category = ErrorCategory.PERMANENT
                     is_retryable = False
 
