@@ -1,0 +1,862 @@
+"""
+OneLake file storage operations using Azure Data Lake Storage Gen2 API.
+
+OneLake requires the DFS (Data Lake Storage) API, not the Blob API.
+"""
+
+import logging
+import socket
+import uuid
+from dataclasses import dataclass
+from datetime import datetime, timezone, timedelta
+from typing import Any, Dict, Optional, Tuple
+from urllib.parse import urlparse
+import requests
+from requests.adapters import HTTPAdapter
+from azure.core.pipeline.transport import RequestsTransport
+import os
+from azure.core.credentials import AccessToken
+from azure.storage.filedatalake import DataLakeServiceClient  # type: ignore
+
+from verisk_pipeline.common.auth import get_auth, clear_token_cache
+from verisk_pipeline.common.config.xact import get_config
+from verisk_pipeline.common.retry import RetryConfig, with_retry
+
+# Lazy import for generate_blob_path to avoid circular dependency
+# (imported inside method where it's used)
+from verisk_pipeline.common.logging.decorators import LoggedClass, logged_operation
+
+# Retry config for OneLake operations
+ONELAKE_RETRY_CONFIG = RetryConfig(
+    max_attempts=3,
+    base_delay=1.0,
+    max_delay=10.0,
+)
+
+# Connection timeout (5 minutes for slow networks and large uploads)
+CONNECTION_TIMEOUT = 300
+
+# Auth error markers for detection
+AUTH_ERROR_MARKERS = ("401", "unauthorized", "authentication", "token expired")
+
+
+def _is_auth_error(error: Exception) -> bool:
+    """Check if exception is auth-related."""
+    error_str = str(error).lower()
+    return any(marker in error_str for marker in AUTH_ERROR_MARKERS)
+
+
+@dataclass
+class WriteOperation:
+    """
+    Idempotency token for OneLake write operations (Task G.3b).
+
+    Tracks upload operations to prevent duplicate uploads during retries.
+    Similar to delta.py WriteOperation but for OneLake file uploads.
+    """
+
+    token: str
+    relative_path: str
+    timestamp: datetime
+    bytes_written: int
+
+
+class TCPKeepAliveAdapter(HTTPAdapter):
+    """HTTPAdapter with TCP keepalive to prevent Azure Load Balancer 4-minute idle timeout.
+
+    Azure Load Balancer drops idle TCP connections after 4 minutes.
+    This adapter configures TCP keepalive socket options to send periodic probes,
+    preventing connection drops during long-running uploads.
+
+    Configuration:
+    - Start keepalive after 120s idle (before Azure 4-min timeout)
+    - Send probe every 30s
+    - Close connection after 8 failed probes (4 minutes total)
+    """
+
+    def init_poolmanager(self, *args, **kwargs):
+        """Initialize pool manager with TCP keepalive socket options."""
+        if "socket_options" not in kwargs:
+            kwargs["socket_options"] = []
+
+        # Enable TCP keepalive
+        kwargs["socket_options"].append((socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1))
+        # Start keepalive after 120s idle (before Azure 4-min timeout)
+        kwargs["socket_options"].append((socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 120))
+        # Send keepalive probe every 30s
+        kwargs["socket_options"].append((socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 30))
+        # Close connection after 8 failed probes (4 minutes total)
+        kwargs["socket_options"].append((socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 8))
+
+        return super().init_poolmanager(*args, **kwargs)
+
+
+class TokenCredential:
+    """
+    Simple credential wrapper for raw access token.
+
+    Implements the protocol expected by Azure SDK clients.
+    """
+
+    def __init__(self, token: str, expires_in_hours: int = 1):
+        self._token = token
+        self._expires_on = int(
+            (datetime.now(timezone.utc) + timedelta(hours=expires_in_hours)).timestamp()
+        )
+
+    def get_token(self, *scopes, **kwargs) -> AccessToken:
+        """Return token in Azure SDK expected format."""
+        return AccessToken(self._token, self._expires_on)
+
+
+def parse_abfss_path(path: str) -> Tuple[str, str, str]:
+    """
+    Parse an abfss:// path into components.
+
+    Args:
+        path: abfss://container@account.dfs.fabric.microsoft.com/path/to/files
+
+    Returns:
+        Tuple of (account_host, container, directory_path)
+
+    Raises:
+        ValueError: If path format is invalid
+    """
+    parsed = urlparse(path)
+
+    if parsed.scheme != "abfss":
+        raise ValueError(f"Expected abfss:// scheme, got: {parsed.scheme}")
+
+    if "@" not in parsed.netloc:
+        raise ValueError(f"Invalid OneLake path format: {path}")
+
+    container, account_host = parsed.netloc.split("@", 1)
+    directory_path = parsed.path.lstrip("/")
+
+    return account_host, container, directory_path
+
+
+class OneLakeClient(LoggedClass):
+    """
+    Client for OneLake file operations with automatic operation logging.
+
+    Uses Azure Data Lake Storage Gen2 API (DFS endpoint).
+    Supports both Azure CLI and Service Principal authentication.
+
+    Usage:
+        client = OneLakeClient("abfss://workspace@onelake.dfs.fabric.microsoft.com/lakehouse/Files")
+
+        with client:
+            client.upload_bytes("folder/file.pdf", content)
+            exists = client.exists("folder/file.pdf")
+    """
+
+    log_component = "onelake"
+
+    def __init__(
+        self,
+        base_path: str,
+        max_pool_size: Optional[int] = None,
+        connection_timeout: int = CONNECTION_TIMEOUT,
+        request_timeout: int = 300,
+    ):
+        """
+        Args:
+            base_path: abfss:// path to files directory
+            max_pool_size: HTTP connection pool size (defaults to config.lakehouse.upload_max_concurrency)
+            connection_timeout: Connection timeout in seconds (default: 300s/5min)
+            request_timeout: Request timeout in seconds for upload/download operations (default: 300s/5min)
+        """
+        self.base_path = base_path.rstrip("/")
+
+        # Get upload configuration from config (Task E.5)
+        config = get_config()
+        self._max_pool_size = (
+            max_pool_size
+            if max_pool_size is not None
+            else config.lakehouse.upload_max_concurrency
+        )
+        self._upload_block_size_mb = config.lakehouse.upload_block_size_mb
+        self._upload_max_single_put_mb = config.lakehouse.upload_max_single_put_mb
+
+        self._connection_timeout = connection_timeout
+        self._request_timeout = request_timeout
+
+        # Parse path components
+        self.account_host, self.container, self.base_directory = parse_abfss_path(
+            base_path
+        )
+
+        # Lazy-initialized clients
+        self._service_client: Optional[DataLakeServiceClient] = None
+        self._file_system_client = None
+        self._session: Optional[requests.Session] = None
+
+        # Idempotency tracking (Task G.3b)
+        self._write_tokens: Dict[str, WriteOperation] = {}
+
+        # Connection pool statistics (P2.5)
+        from datetime import datetime, timezone
+        import threading
+
+        self._pool_stats = {
+            "connections_created": 0,
+            "requests_processed": 0,
+            "errors_encountered": 0,
+            "last_reset": datetime.now(timezone.utc),
+        }
+        self._pool_stats_lock = threading.Lock()
+
+        super().__init__()
+
+    def _create_clients(self, max_pool_size: int = 25) -> None:
+        """Create or recreate clients with dynamic connection pool sizing (P2.4)."""
+
+        # Dynamic connection pool sizing (P2.4)
+        cpu_cores = os.cpu_count() or 4
+        config = get_config()
+        max_concurrency = config.lakehouse.upload_max_concurrency
+
+        # Azure Storage limits: 500 concurrent connections per storage account
+        # Formula: min(cpu_cores * 10, max_concurrency, 250)
+        calculated_size = min(cpu_cores * 10, max_concurrency, 250)
+        actual_pool_size = max_pool_size if max_pool_size != 25 else calculated_size
+
+        self._log(
+            logging.INFO,
+            "Connection pool sizing",
+            cpu_cores=cpu_cores,
+            max_concurrency=max_concurrency,
+            calculated_size=calculated_size,
+            actual_size=actual_pool_size,
+        )
+
+        auth = get_auth()
+
+        # Get credential based on auth mode (priority: token_file > cli > spn)
+        if auth.token_file:
+            # Token file mode - use token from file
+            try:
+                token = auth.get_storage_token()
+                if not token:
+                    raise RuntimeError("Failed to get storage token from file")
+                credential = TokenCredential(token)
+                auth_mode = "file"
+            except Exception as e:
+                self._log(
+                    logging.WARNING,
+                    "Token file auth failed, trying other methods",
+                    error=str(e)[:200],
+                )
+                # Fall through to try other auth methods
+                credential = None
+                auth_mode = None
+        else:
+            credential = None
+            auth_mode = None
+
+        # Try CLI auth if token file didn't work
+        if credential is None and auth.use_cli:
+            token = auth.get_storage_token()
+            if not token:
+                raise RuntimeError("Failed to get CLI storage token")
+            credential = TokenCredential(token)
+            auth_mode = "cli"
+
+        # Try SPN auth if CLI didn't work
+        if credential is None and auth.has_spn_credentials:
+            from azure.identity import ClientSecretCredential
+
+            # Assert credentials are not None (has_spn_credentials guarantees this)
+            assert auth.tenant_id is not None
+            assert auth.client_id is not None
+            assert auth.client_secret is not None
+
+            credential = ClientSecretCredential(
+                tenant_id=auth.tenant_id,
+                client_id=auth.client_id,
+                client_secret=auth.client_secret,
+            )
+            auth_mode = "spn"
+
+        if credential is None:
+            raise RuntimeError(
+                "No Azure credentials configured. "
+                "Set AZURE_TOKEN_FILE for token file auth, "
+                "Set AZURE_AUTH_INTERACTIVE=true for CLI auth, or "
+                "set AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_TENANT_ID for SPN auth."
+            )
+
+        account_url = f"https://{self.account_host}"
+
+        # Create TCP keepalive adapter to prevent Azure 4-minute idle timeout
+        adapter = TCPKeepAliveAdapter(
+            pool_connections=actual_pool_size,  # Number of pools
+            pool_maxsize=actual_pool_size,  # Connections per pool
+        )
+
+        # Create a session and mount the keepalive adapter
+        session = requests.Session()
+        session.mount("https://", adapter)
+        session.mount("http://", adapter)
+
+        # Configure transport with the session (session_owner=False since we manage the session)
+        transport = RequestsTransport(
+            session=session,
+            session_owner=False,  # Don't close session when transport is closed
+        )
+
+        self._service_client = DataLakeServiceClient(
+            account_url=account_url,
+            credential=credential,
+            transport=transport,
+            connection_timeout=self._connection_timeout,  # Connection establishment timeout
+        )
+        self._file_system_client = self._service_client.get_file_system_client(  # type: ignore
+            self.container
+        )
+
+        # Store session reference for cleanup
+        self._session = session
+
+        # Track connection creation (P2.5)
+        with self._pool_stats_lock:
+            self._pool_stats["connections_created"] += 1
+
+        self._log(
+            logging.DEBUG,
+            "Created OneLake client",
+            account_host=self.account_host,
+            container=self.container,
+            pool_size=actual_pool_size,
+            auth_mode=auth_mode,
+        )
+
+    def __enter__(self):
+        self._create_clients(max_pool_size=self._max_pool_size)
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+        return False
+
+    def close(self) -> None:
+        """Close client and release resources."""
+        if self._service_client is not None:
+            try:
+                self._service_client.close()
+                self._log(logging.DEBUG, "Closed OneLake client")
+            except Exception as e:
+                self._log_exception(
+                    e,
+                    "Error closing OneLake client",
+                    level=logging.WARNING,
+                )
+        # Close the session we created (since session_owner=False)
+        if self._session is not None:
+            try:
+                self._session.close()
+            except Exception:
+                pass  # Best effort cleanup
+            self._session = None
+        self._service_client = None
+        self._file_system_client = None
+
+    def _ensure_client(self) -> None:
+        """Ensure client is initialized."""
+        if self._file_system_client is None:
+            self._create_clients(max_pool_size=self._max_pool_size)
+
+    def _refresh_client(self) -> None:
+        """Refresh client with new credentials."""
+        clear_token_cache()
+        if self._service_client is not None:
+            try:
+                self._service_client.close()
+                self._log(logging.DEBUG, "Closed OneLake client for refresh")
+            except Exception as e:
+                self._log_exception(
+                    e,
+                    "Error closing OneLake client during refresh",
+                    level=logging.WARNING,
+                )
+        # Close the session we created (since session_owner=False)
+        if self._session is not None:
+            try:
+                self._session.close()
+            except Exception:
+                pass  # Best effort cleanup
+            self._session = None
+        self._service_client = None
+        self._file_system_client = None
+        self._create_clients(max_pool_size=self._max_pool_size)
+        self._log(logging.INFO, "OneLake client refreshed with new credentials")
+
+    def _handle_auth_error(self, e: Exception) -> None:
+        """Handle potential auth error by refreshing client."""
+        if _is_auth_error(e):
+            self._log(
+                logging.WARNING,
+                "Auth error detected, refreshing OneLake client",
+                error_message=str(e)[:200],
+            )
+            self._refresh_client()
+
+    def _full_path(self, relative_path: str) -> str:
+        """Build full directory path from relative path."""
+        return f"{self.base_directory}/{relative_path}"
+
+    def _split_path(self, full_path: str) -> Tuple[str, str]:
+        """Split full path into directory and filename."""
+        if "/" in full_path:
+            directory = "/".join(full_path.split("/")[:-1])
+            filename = full_path.split("/")[-1]
+        else:
+            directory = ""
+            filename = full_path
+        return directory, filename
+
+    def _is_duplicate(self, operation_token: str) -> bool:
+        """
+        Check if write operation with this token was already completed (Task G.3b).
+
+        Args:
+            operation_token: Idempotency token for the write operation
+
+        Returns:
+            True if operation was already completed
+        """
+        return operation_token in self._write_tokens
+
+    def _record_token(self, write_op: WriteOperation) -> None:
+        """
+        Record write operation token for idempotency tracking (Task G.3b).
+
+        Args:
+            write_op: Write operation to record
+        """
+        self._write_tokens[write_op.token] = write_op
+        self._log(
+            logging.DEBUG,
+            "Recorded write operation token",
+            token=write_op.token[:8],
+            path=write_op.relative_path,
+        )
+
+    @logged_operation(level=logging.DEBUG)
+    @with_retry(config=ONELAKE_RETRY_CONFIG, on_auth_error=lambda: clear_token_cache())
+    def upload_bytes(
+        self,
+        relative_path: str,
+        data: bytes,
+        overwrite: bool = True,
+    ) -> str:
+        """
+        Upload bytes to OneLake.
+
+        Args:
+            relative_path: Path relative to base_path
+            data: File content as bytes
+            overwrite: Whether to overwrite existing file
+
+        Returns:
+            Full abfss:// path to uploaded file
+        """
+        self._ensure_client()
+
+        full_path = self._full_path(relative_path)
+        directory, filename = self._split_path(full_path)
+
+        try:
+            dir_client = self._file_system_client.get_directory_client(directory)  # type: ignore
+            file_client = dir_client.get_file_client(filename)
+            file_client.upload_data(data, overwrite=overwrite)
+
+            result_path = f"{self.base_path}/{relative_path}"
+            self._log(
+                logging.DEBUG,
+                "Upload complete",
+                blob_path=relative_path,
+                bytes_written=len(data),
+            )
+            return result_path
+
+        except Exception as e:
+            self._handle_auth_error(e)
+            raise
+
+    @logged_operation(level=logging.INFO)
+    @with_retry(config=ONELAKE_RETRY_CONFIG, on_auth_error=lambda: clear_token_cache())
+    def upload_bytes_with_idempotency(
+        self,
+        relative_path: str,
+        data: bytes,
+        operation_token: Optional[str] = None,
+        overwrite: bool = True,
+    ) -> WriteOperation:
+        """
+        Upload bytes with idempotency token to prevent duplicate uploads (Task G.3b).
+
+        If operation_token is provided and already recorded, skips upload.
+        Otherwise uploads and records token for future deduplication.
+
+        Args:
+            relative_path: Path relative to base_path
+            data: File content as bytes
+            operation_token: Optional idempotency token (generates UUID if None)
+            overwrite: Whether to overwrite existing file
+
+        Returns:
+            WriteOperation with token and upload details
+        """
+        if operation_token is None:
+            operation_token = str(uuid.uuid4())
+
+        # Check for duplicate operation
+        if self._is_duplicate(operation_token):
+            self._log(
+                logging.INFO,
+                "Skipping duplicate upload operation",
+                token=operation_token[:8],
+                path=relative_path,
+            )
+            # Return existing operation record
+            existing_op = self._write_tokens[operation_token]
+            return WriteOperation(
+                token=operation_token,
+                relative_path=relative_path,
+                timestamp=existing_op.timestamp,
+                bytes_written=0,  # Not written this time
+            )
+
+        # Perform upload
+        self.upload_bytes(relative_path, data, overwrite=overwrite)
+
+        # Record operation
+        write_op = WriteOperation(
+            token=operation_token,
+            relative_path=relative_path,
+            timestamp=datetime.now(timezone.utc),
+            bytes_written=len(data),
+        )
+        self._record_token(write_op)
+
+        return write_op
+
+    @logged_operation(level=logging.DEBUG)
+    @with_retry(config=ONELAKE_RETRY_CONFIG, on_auth_error=lambda: clear_token_cache())
+    def download_bytes(self, relative_path: str) -> bytes:
+        """
+        Download file content from OneLake.
+
+        Args:
+            relative_path: Path relative to base_path
+
+        Returns:
+            File content as bytes
+        """
+        self._ensure_client()
+
+        full_path = self._full_path(relative_path)
+        directory, filename = self._split_path(full_path)
+
+        try:
+            dir_client = self._file_system_client.get_directory_client(directory)  # type: ignore
+            file_client = dir_client.get_file_client(filename)
+
+            download = file_client.download_file()
+            content = download.readall()
+
+            self._log(
+                logging.DEBUG,
+                "Download complete",
+                blob_path=relative_path,
+                bytes_downloaded=len(content),
+            )
+            return content
+
+        except Exception as e:
+            self._handle_auth_error(e)
+            raise
+
+    @logged_operation(level=logging.DEBUG)
+    @with_retry(config=ONELAKE_RETRY_CONFIG, on_auth_error=lambda: clear_token_cache())
+    def upload_file(
+        self,
+        relative_path: str,
+        local_path: str,
+        overwrite: bool = True,
+    ) -> str:
+        """
+        Upload file from local path to OneLake (streaming, memory-efficient).
+
+        Args:
+            relative_path: Path relative to base_path
+            local_path: Local file path to upload
+            overwrite: Whether to overwrite existing file
+
+        Returns:
+            Full abfss:// path to uploaded file
+        """
+        self._ensure_client()
+
+        full_path = self._full_path(relative_path)
+        directory, filename = self._split_path(full_path)
+
+        try:
+            dir_client = self._file_system_client.get_directory_client(directory)  # type: ignore
+            file_client = dir_client.get_file_client(filename)
+
+            with open(local_path, "rb") as f:
+                file_client.upload_data(f, overwrite=overwrite)
+
+            import os
+
+            file_size = os.path.getsize(local_path)
+            result_path = f"{self.base_path}/{relative_path}"
+            self._log(
+                logging.DEBUG,
+                "Upload complete",
+                blob_path=relative_path,
+                bytes_written=file_size,
+            )
+            return result_path
+
+        except Exception as e:
+            self._handle_auth_error(e)
+            raise
+
+    @with_retry(config=ONELAKE_RETRY_CONFIG, on_auth_error=lambda: clear_token_cache())
+    def exists(self, relative_path: str) -> bool:
+        """
+        Check if file exists.
+
+        Args:
+            relative_path: Path relative to base_path
+
+        Returns:
+            True if file exists
+        """
+        self._ensure_client()
+
+        full_path = self._full_path(relative_path)
+        directory, filename = self._split_path(full_path)
+
+        try:
+            dir_client = self._file_system_client.get_directory_client(directory)  # type: ignore
+            file_client = dir_client.get_file_client(filename)
+            file_client.get_file_properties()
+            return True
+        except Exception as e:
+            # 404 is expected for non-existent files, not an error
+            error_str = str(e).lower()
+            if "404" in error_str or "not found" in error_str:
+                self._log(logging.DEBUG, "File does not exist", blob_path=relative_path)
+                return False
+            # Auth errors should trigger refresh and retry
+            self._handle_auth_error(e)
+            raise
+
+    @with_retry(config=ONELAKE_RETRY_CONFIG, on_auth_error=lambda: clear_token_cache())
+    def delete(self, relative_path: str) -> bool:
+        """
+        Delete a file.
+
+        Args:
+            relative_path: Path relative to base_path
+
+        Returns:
+            True if deleted, False if didn't exist
+        """
+        self._ensure_client()
+
+        full_path = self._full_path(relative_path)
+        directory, filename = self._split_path(full_path)
+
+        try:
+            dir_client = self._file_system_client.get_directory_client(directory)  # type: ignore
+            file_client = dir_client.get_file_client(filename)
+            file_client.delete_file()
+            self._log(logging.DEBUG, "Deleted file", blob_path=relative_path)
+            return True
+        except Exception as e:
+            error_str = str(e).lower()
+            if "404" in error_str or "not found" in error_str:
+                return False
+            self._handle_auth_error(e)
+            raise
+
+    @with_retry(config=ONELAKE_RETRY_CONFIG, on_auth_error=lambda: clear_token_cache())
+    def get_file_properties(self, relative_path: str) -> Optional[dict]:
+        """
+        Get file properties/metadata.
+
+        Args:
+            relative_path: Path relative to base_path
+
+        Returns:
+            Dict of properties or None if file doesn't exist
+        """
+        self._ensure_client()
+
+        full_path = self._full_path(relative_path)
+        directory, filename = self._split_path(full_path)
+
+        try:
+            dir_client = self._file_system_client.get_directory_client(directory)  # type: ignore
+            file_client = dir_client.get_file_client(filename)
+            props = file_client.get_file_properties()
+
+            result = {
+                "name": props.name,
+                "size": props.size,
+                "created_on": props.creation_time,
+                "modified_on": props.last_modified,
+                "content_type": props.content_settings.content_type,
+            }
+            self._log(
+                logging.DEBUG,
+                "Got file properties",
+                blob_path=relative_path,
+                size=props.size,
+            )
+            return result
+        except Exception as e:
+            error_str = str(e).lower()
+            if "404" in error_str or "not found" in error_str:
+                return None
+            self._handle_auth_error(e)
+            raise
+
+    def track_request(self, success: bool = True) -> None:
+        """Track request statistics (P2.5)."""
+        with self._pool_stats_lock:
+            self._pool_stats["requests_processed"] += 1
+            if not success:
+                self._pool_stats["errors_encountered"] += 1
+
+    def get_pool_stats(self) -> Dict[str, Any]:
+        """Get current connection pool statistics (P2.5)."""
+        from datetime import datetime, timezone
+
+        with self._pool_stats_lock:
+            stats = self._pool_stats.copy()
+            stats["uptime_seconds"] = (
+                datetime.now(timezone.utc) - stats["last_reset"]
+            ).total_seconds()
+            return stats
+
+    def reset_pool_stats(self) -> None:
+        """Reset connection pool statistics (P2.5)."""
+        from datetime import datetime, timezone
+
+        with self._pool_stats_lock:
+            self._pool_stats = {
+                "connections_created": 0,
+                "requests_processed": 0,
+                "errors_encountered": 0,
+                "last_reset": datetime.now(timezone.utc),
+            }
+
+    def log_pool_health(self) -> None:
+        """Log current connection pool health metrics (P2.5)."""
+        stats = self.get_pool_stats()
+        error_rate = (
+            stats["errors_encountered"] / stats["requests_processed"] * 100
+            if stats["requests_processed"] > 0
+            else 0
+        )
+
+        self._log(
+            logging.INFO,
+            "OneLake connection pool health",
+            connections_created=stats["connections_created"],
+            requests_processed=stats["requests_processed"],
+            errors_encountered=stats["errors_encountered"],
+            error_rate_pct=round(error_rate, 2),
+            uptime_seconds=round(stats["uptime_seconds"], 1),
+        )
+
+
+class OneLakeUploader(LoggedClass):
+    """
+    High-level uploader for attachment files.
+
+    Combines path generation with upload operations.
+
+    Usage:
+        uploader = OneLakeUploader("abfss://workspace@onelake/lakehouse/Files")
+
+        with uploader:
+            blob_path, file_type = uploader.upload_attachment(
+                content=pdf_bytes,
+                status_subtype="documentsReceived",
+                trace_id="trace-123",
+                assignment_id="ASN-001",
+                download_url="http://example.com/report.pdf"
+            )
+    """
+
+    def __init__(self, base_path: str):
+        """
+        Args:
+            base_path: abfss:// path to files directory
+        """
+        self._client = OneLakeClient(base_path)
+        super().__init__()
+
+    def __enter__(self):
+        self._client.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        return self._client.__exit__(exc_type, exc_val, exc_tb)
+
+    def upload_attachment(
+        self,
+        content: bytes,
+        status_subtype: str,
+        trace_id: str,
+        assignment_id: str,
+        download_url: str,
+        estimate_version: Optional[str] = None,
+        skip_existing: bool = True,
+    ) -> Tuple[str, str]:
+        """
+        Upload attachment with auto-generated path.
+
+        Args:
+            content: File content as bytes
+            status_subtype: Event status subtype
+            trace_id: Unique trace ID
+            assignment_id: Assignment identifier
+            download_url: Source URL
+            estimate_version: Optional estimate version
+            skip_existing: Skip upload if file already exists
+
+        Returns:
+            Tuple of (blob_path, file_type)
+        """
+        # Lazy import to avoid circular dependency
+        from verisk_pipeline.claimx.services import generate_blob_path
+
+        blob_path, file_type = generate_blob_path(
+            status_subtype=status_subtype,
+            trace_id=trace_id,
+            assignment_id=assignment_id,
+            download_url=download_url,
+            estimate_version=estimate_version,
+        )
+
+        if skip_existing and self._client.exists(blob_path):
+            self._log(
+                logging.DEBUG, "File already exists, skipping", blob_path=blob_path
+            )
+            return blob_path, file_type
+
+        self._client.upload_bytes(blob_path, content)
+        return blob_path, file_type
+
+    def exists(self, relative_path: str) -> bool:
+        """Check if file exists."""
+        return bool(self._client.exists(relative_path))
