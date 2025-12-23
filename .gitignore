@@ -42,7 +42,7 @@ logs/
 *.log
 src/logs/
 .watermark*
-
+token_refresh.bat
 
 # Configuration files with secrets
 config.yaml
