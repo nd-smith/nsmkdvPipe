@@ -384,6 +384,10 @@ def classify_http_status(status_code: int) -> ErrorCategory:
     if 200 <= status_code < 300:
         return ErrorCategory.UNKNOWN  # Not an error
 
+    # Auth redirects (302 = redirect to login page)
+    if status_code == 302:
+        return ErrorCategory.AUTH
+
     if status_code == 401:
         return ErrorCategory.AUTH
 
@@ -443,8 +447,9 @@ def classify_exception(exc: Exception) -> ErrorCategory:
     if "timeout" in exc_type or "timeout" in exc_str:
         return ErrorCategory.TRANSIENT
 
-    # Auth errors
+    # Auth errors (302 = redirect to login, 401 = unauthorized)
     auth_markers = (
+        "302",
         "401",
         "unauthorized",
         "authentication",

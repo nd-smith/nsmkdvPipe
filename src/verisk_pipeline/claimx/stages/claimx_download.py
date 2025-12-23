@@ -316,7 +316,7 @@ class DownloadStage:
             if media_df.is_empty():
                 return media_df
 
-            # Exclude already downloaded (inventory = success, no permanent failures tracked)
+            # Exclude already downloaded (inventory = success)
             try:
                 completed_ids = self.inventory_writer.get_completed_ids()
 
@@ -329,6 +329,23 @@ class DownloadStage:
                     logger,
                     e,
                     "Could not check download status",
+                    level=logging.WARNING,
+                    include_traceback=False,
+                )
+
+            # Exclude items already in retry queue (let retry stage handle them)
+            try:
+                queued_ids = self.retry_writer.get_queued_ids()
+
+                if queued_ids:
+                    media_df = media_df.filter(
+                        ~pl.col("media_id").cast(pl.Utf8).is_in(list(queued_ids))
+                    )
+            except Exception as e:
+                log_exception(
+                    logger,
+                    e,
+                    "Could not check retry queue",
                     level=logging.WARNING,
                     include_traceback=False,
                 )

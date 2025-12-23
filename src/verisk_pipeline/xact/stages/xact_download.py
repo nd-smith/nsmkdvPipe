@@ -1040,6 +1040,8 @@ async def download_single(
             allow_redirects=False,
         ) as response:
             if response.status != 200:
+                # Xact URLs cannot be refreshed, so most client errors are permanent.
+                # Only server errors (5xx) and rate limits (429) are transient.
                 error_category = ErrorCategory.TRANSIENT
                 is_retryable = True
                 if response.status in (400, 401, 403, 404, 410):

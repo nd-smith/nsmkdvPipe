@@ -294,17 +294,23 @@ class RetryQueueWriter(LoggedClass):
             now - timedelta(seconds=min_age_seconds) if min_age_seconds > 0 else None
         )
 
-        # Read with filter pushdown
+        # Read with filter pushdown (exclude next_retry_at - need NULL handling)
         filters = [
             ("status", "=", "failed"),
             ("retry_count", "<", max_retries),
-            ("next_retry_at", "<=", now),
         ]
 
         if min_created_at:
-            filters.append(("created_at", ">=", min_created_at))
+            filters.append(("created_at", "<=", min_created_at))
 
         df = self._reader.read_as_polars(filters=filters)
+
+        # Apply next_retry_at filter with NULL handling
+        # NULL next_retry_at = immediately eligible (legacy records)
+        if not df.is_empty() and "next_retry_at" in df.columns:
+            df = df.filter(
+                pl.col("next_retry_at").is_null() | (pl.col("next_retry_at") <= now)
+            )
 
         # Ensure retry_count is integer (handle schema inconsistencies)
         if "retry_count" in df.columns:
@@ -337,6 +343,50 @@ class RetryQueueWriter(LoggedClass):
         )
 
         return df
+
+    @logged_operation(operation_name="get_queued_ids")
+    @with_retry(config=DELTA_RETRY_CONFIG, on_auth_error=_on_auth_error)
+    def get_queued_ids(self) -> set:
+        """
+        Get primary key values of all records currently in retry queue.
+
+        Used by download stage to exclude media already queued for retry,
+        preventing duplicate processing and retry_count resets.
+
+        Returns:
+            Set of primary key strings (composite keys joined by '|')
+        """
+        try:
+            if not self._reader.exists():
+                self._logger.debug("Retry queue table does not exist yet")
+                return set()
+
+            queued = (
+                pl.scan_delta(
+                    self.table_path, storage_options=self.get_storage_options()
+                )
+                .select(self.primary_keys)
+                .unique()
+                .collect(streaming=True)
+            )
+
+        except Exception as e:
+            self._logger.warning(
+                f"Could not read queued IDs: {e}",
+                extra={"table": self.table_path, "error": str(e)},
+            )
+            return set()
+
+        ids = set(
+            self._make_composite_key(row) for row in queued.iter_rows(named=True)
+        )
+
+        self._logger.debug(
+            f"Found {len(ids)} IDs in retry queue",
+            extra={"table": self.table_path, "count": len(ids)},
+        )
+
+        return ids
 
     @logged_operation(operation_name="cleanup_expired")
     @with_retry(config=DELTA_RETRY_CONFIG, on_auth_error=_on_auth_error)
