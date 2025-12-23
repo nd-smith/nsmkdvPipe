@@ -41,6 +41,8 @@ ENV/
 logs/
 *.log
 src/logs/
+.watermark*
+
 
 # Configuration files with secrets
 config.yaml
