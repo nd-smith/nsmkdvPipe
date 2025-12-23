@@ -218,7 +218,8 @@ class WatermarkSession:
             exc_tb: Exception traceback if raised
         """
         if exc_type is None and self.new_watermark:
-            if self.new_watermark != self.start_watermark:
+            # Only advance watermark forward, never regress to older values
+            if self.new_watermark > self.start_watermark:
                 advance_seconds = (
                     (self.new_watermark - self.start_watermark).total_seconds()
                     if self.start_watermark
@@ -238,6 +239,24 @@ class WatermarkSession:
                     ),
                     new_watermark=self.new_watermark.isoformat(),
                     advance_seconds=advance_seconds,
+                )
+            elif self.new_watermark < self.start_watermark:
+                # Prevent regression - log warning
+                log_with_context(
+                    self.logger,
+                    logging.WARNING,
+                    "Watermark regression prevented",
+                    current_watermark=(
+                        self.start_watermark.isoformat()
+                        if self.start_watermark
+                        else None
+                    ),
+                    attempted_watermark=self.new_watermark.isoformat(),
+                    regression_seconds=(
+                        (self.start_watermark - self.new_watermark).total_seconds()
+                        if self.start_watermark
+                        else None
+                    ),
                 )
             else:
                 log_with_context(

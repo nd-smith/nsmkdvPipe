@@ -380,88 +380,88 @@ class IngestStage(BaseStage):
                         columns=df.columns,
                     )
 
-                with log_phase(logger, "flatten_events"):
-                    df_flattened = flatten_events(df)
+                    with log_phase(logger, "flatten_events"):
+                        df_flattened = flatten_events(df)
 
-                records_fetched = len(df_flattened)
+                    records_fetched = len(df_flattened)
 
-                log_with_context(
-                    logger,
-                    logging.DEBUG,
-                    "Events flattened",
-                    raw_event_count=len(df),
-                    flattened_count=records_fetched,
-                    output_columns=(
-                        df_flattened.columns if not df_flattened.is_empty() else []
-                    ),
-                )
-
-                # Add pipeline columns
-                with log_phase(logger, "add_pipeline_columns"):
-                    df_flattened = self._add_pipeline_columns(df_flattened)
-
-                log_memory_checkpoint(
-                    logger, "after_transform", config=obs_config, df=df_flattened
-                )
-
-                # Write to Delta
-                log_with_context(
-                    logger,
-                    logging.DEBUG,
-                    "Writing to Delta table",
-                    rows_to_write=len(df_flattened),
-                    table_path=self.config.lakehouse.events_table_path,
-                )
-
-                with log_phase(logger, "delta_write"):
-                    records_written = self.delta_writer.append(
-                        df_flattened, dedupe=False
+                    log_with_context(
+                        logger,
+                        logging.DEBUG,
+                        "Events flattened",
+                        raw_event_count=len(df),
+                        flattened_count=records_fetched,
+                        output_columns=(
+                            df_flattened.columns if not df_flattened.is_empty() else []
+                        ),
                     )
 
-                log_with_context(
-                    logger,
-                    logging.INFO,
-                    "Delta write complete",
-                    rows_written=records_written,
-                    rows_deduplicated=records_fetched - (records_written or 0),
-                )
+                    # Add pipeline columns
+                    with log_phase(logger, "add_pipeline_columns"):
+                        df_flattened = self._add_pipeline_columns(df_flattened)
 
-                # Update watermark using session (automatic logging and persistence)
-                wm_session.update_from_dataframe(df_flattened)
+                    log_memory_checkpoint(
+                        logger, "after_transform", config=obs_config, df=df_flattened
+                    )
 
-                duration = (datetime.now(timezone.utc) - start_time).total_seconds()
-                records_failed = records_fetched - (records_written or 0)
+                    # Write to Delta
+                    log_with_context(
+                        logger,
+                        logging.DEBUG,
+                        "Writing to Delta table",
+                        rows_to_write=len(df_flattened),
+                        table_path=self.config.lakehouse.events_table_path,
+                    )
 
-                log_memory_checkpoint(logger, "stage_end", config=obs_config)
+                    with log_phase(logger, "delta_write"):
+                        records_written = self.delta_writer.append(
+                            df_flattened, dedupe=False
+                        )
 
-                log_with_context(
-                    logger,
-                    logging.INFO,
-                    "Stage complete",
-                    stage="ingest",
-                    status="success",
-                    records_processed=records_fetched,
-                    records_succeeded=records_written or 0,
-                    records_failed=records_failed,
-                    records_failed_permanent=0,
-                    duration_ms=duration * 1000,
-                    watermark_final=(
-                        wm_session.new_watermark.isoformat()
-                        if wm_session.new_watermark
-                        else current_watermark.isoformat()
-                    ),
-                )
+                    log_with_context(
+                        logger,
+                        logging.INFO,
+                        "Delta write complete",
+                        rows_written=records_written,
+                        rows_deduplicated=records_fetched - (records_written or 0),
+                    )
 
-                return StageResult(
-                    stage_name="ingest",
-                    status=StageStatus.SUCCESS,
-                    records_processed=records_fetched,
-                    records_succeeded=records_written or 0,
-                    records_failed=records_failed,
-                    duration_seconds=duration,
-                    watermark=wm_session.new_watermark or current_watermark,
-                    metadata={"circuit": self.kusto_reader.get_circuit_status()},
-                )
+                    # Update watermark using session (automatic logging and persistence)
+                    wm_session.update_from_dataframe(df_flattened)
+
+                    duration = (datetime.now(timezone.utc) - start_time).total_seconds()
+                    records_failed = records_fetched - (records_written or 0)
+
+                    log_memory_checkpoint(logger, "stage_end", config=obs_config)
+
+                    log_with_context(
+                        logger,
+                        logging.INFO,
+                        "Stage complete",
+                        stage="ingest",
+                        status="success",
+                        records_processed=records_fetched,
+                        records_succeeded=records_written or 0,
+                        records_failed=records_failed,
+                        records_failed_permanent=0,
+                        duration_ms=duration * 1000,
+                        watermark_final=(
+                            wm_session.new_watermark.isoformat()
+                            if wm_session.new_watermark
+                            else current_watermark.isoformat()
+                        ),
+                    )
+
+                    return StageResult(
+                        stage_name="ingest",
+                        status=StageStatus.SUCCESS,
+                        records_processed=records_fetched,
+                        records_succeeded=records_written or 0,
+                        records_failed=records_failed,
+                        duration_seconds=duration,
+                        watermark=wm_session.new_watermark or current_watermark,
+                        metadata={"circuit": self.kusto_reader.get_circuit_status()},
+                    )
 
             except Exception as e:
                 duration = (datetime.now(timezone.utc) - start_time).total_seconds()
