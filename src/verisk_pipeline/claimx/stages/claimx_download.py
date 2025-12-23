@@ -826,85 +826,163 @@ async def download_single(
     download_start = datetime.now(timezone.utc)
 
     try:
-        # Download from source (disable redirects for security)
-        async with session.get(
-            task.download_url,
-            timeout=aiohttp.ClientTimeout(total=timeout),
-            allow_redirects=False,
-            proxy=proxy,
-        ) as response:
-            if response.status != 200:
-                error_category = ErrorCategory.TRANSIENT
-                is_retryable = True
-                if response.status in (400, 401, 403, 404, 410):
-                    error_category = ErrorCategory.PERMANENT
-                    is_retryable = False
+        # Download from source with secure redirect handling
+        # Follow redirects but validate each redirect target for SSRF
+        current_url = task.download_url
+        max_redirects = 5
+        redirect_count = 0
+
+        while redirect_count < max_redirects:
+            async with session.get(
+                current_url,
+                timeout=aiohttp.ClientTimeout(total=timeout),
+                allow_redirects=False,
+                proxy=proxy,
+            ) as response:
+                # Handle redirects securely
+                if response.status in (301, 302, 303, 307, 308):
+                    redirect_count += 1
+                    location = response.headers.get("Location")
+                    if not location:
+                        log_with_context(
+                            logger,
+                            logging.WARNING,
+                            "Redirect without Location header",
+                            http_status=response.status,
+                            **extract_log_context(task),
+                        )
+                        return MediaDownloadResult(
+                            task=task,
+                            success=False,
+                            http_status=response.status,
+                            error=f"Redirect {response.status} without Location header",
+                            error_category=ErrorCategory.PERMANENT,
+                            is_retryable=False,
+                        )
+
+                    # Validate redirect destination (SSRF protection)
+                    is_valid, validation_error = validate_download_url(
+                        location, allowed_domains=allowed_domains
+                    )
+                    if not is_valid:
+                        log_with_context(
+                            logger,
+                            logging.WARNING,
+                            "Blocked redirect to unsafe URL",
+                            redirect_url=location,
+                            error_category="ssrf_blocked",
+                            error_message=validation_error,
+                            **extract_log_context(task),
+                        )
+                        return MediaDownloadResult(
+                            task=task,
+                            success=False,
+                            http_status=response.status,
+                            error=f"Redirect blocked: {validation_error}",
+                            error_category=ErrorCategory.PERMANENT,
+                            is_retryable=False,
+                        )
+
+                    log_with_context(
+                        logger,
+                        logging.DEBUG,
+                        "Following redirect",
+                        http_status=response.status,
+                        redirect_count=redirect_count,
+                        **extract_log_context(task),
+                    )
+                    current_url = location
+                    continue
+
+                if response.status != 200:
+                    error_category = ErrorCategory.TRANSIENT
+                    is_retryable = True
+                    if response.status in (400, 401, 403, 404, 410):
+                        error_category = ErrorCategory.PERMANENT
+                        is_retryable = False
+
+                    log_with_context(
+                        logger,
+                        logging.WARNING,
+                        "Download failed",
+                        http_status=response.status,
+                        error_category=error_category.value,
+                        **extract_log_context(task),
+                    )
+                    download_breaker.record_failure(Exception(f"HTTP {response.status}"))
+                    return MediaDownloadResult(
+                        task=task,
+                        success=False,
+                        http_status=response.status,
+                        error=f"HTTP error: {response.status}",
+                        error_category=error_category,
+                        is_retryable=is_retryable,
+                    )
+
+                # Success - process the response
+                content_length = response.content_length or 0
 
                 log_with_context(
                     logger,
-                    logging.WARNING,
-                    "Download failed",
-                    http_status=response.status,
-                    error_category=error_category.value,
+                    logging.DEBUG,
+                    "Download response received",
+                    http_status=200,
+                    content_length=content_length,
+                    streaming=(content_length > STREAM_THRESHOLD),
                     **extract_log_context(task),
                 )
-                download_breaker.record_failure(Exception(f"HTTP {response.status}"))
-                return MediaDownloadResult(
-                    task=task,
-                    success=False,
-                    http_status=response.status,
-                    error=f"HTTP error: {response.status}",
-                    error_category=error_category,
-                    is_retryable=is_retryable,
+
+                if content_length > STREAM_THRESHOLD:
+                    # Stream large files to temp file
+                    tmp_path = tempfile.mktemp(suffix=f".{task.file_type}")
+                    async with aiofiles.open(tmp_path, "wb") as f:
+                        async for chunk in response.content.iter_chunked(CHUNK_SIZE):
+                            await f.write(chunk)
+                    onelake_client.upload_file(task.blob_path, tmp_path)
+                else:
+                    # Small files: read into memory
+                    content = await response.read()
+                    onelake_client.upload_bytes(task.blob_path, content)
+
+                download_breaker.record_success()
+                upload_breaker.record_success()
+
+                download_duration_ms = (
+                    datetime.now(timezone.utc) - download_start
+                ).total_seconds() * 1000
+
+                log_with_context(
+                    logger,
+                    logging.DEBUG,
+                    "Download and upload complete",
+                    bytes_downloaded=content_length,
+                    blob_path=task.blob_path,
+                    duration_ms=round(download_duration_ms, 2),
+                    **extract_log_context(task),
                 )
 
-            content_length = response.content_length or 0
+                return MediaDownloadResult(
+                    task=task,
+                    success=True,
+                    http_status=200,
+                    bytes_downloaded=content_length,
+                )
 
-            log_with_context(
-                logger,
-                logging.DEBUG,
-                "Download response received",
-                http_status=200,
-                content_length=content_length,
-                streaming=(content_length > STREAM_THRESHOLD),
-                **extract_log_context(task),
-            )
-
-            if content_length > STREAM_THRESHOLD:
-                # Stream large files to temp file
-                tmp_path = tempfile.mktemp(suffix=f".{task.file_type}")
-                async with aiofiles.open(tmp_path, "wb") as f:
-                    async for chunk in response.content.iter_chunked(CHUNK_SIZE):
-                        await f.write(chunk)
-                onelake_client.upload_file(task.blob_path, tmp_path)
-            else:
-                # Small files: read into memory
-                content = await response.read()
-                onelake_client.upload_bytes(task.blob_path, content)
-
-            download_breaker.record_success()
-            upload_breaker.record_success()
-
-            download_duration_ms = (
-                datetime.now(timezone.utc) - download_start
-            ).total_seconds() * 1000
-
-            log_with_context(
-                logger,
-                logging.DEBUG,
-                "Download and upload complete",
-                bytes_downloaded=content_length,
-                blob_path=task.blob_path,
-                duration_ms=round(download_duration_ms, 2),
-                **extract_log_context(task),
-            )
-
-            return MediaDownloadResult(
-                task=task,
-                success=True,
-                http_status=200,
-                bytes_downloaded=content_length,
-            )
+        # Too many redirects
+        log_with_context(
+            logger,
+            logging.WARNING,
+            "Too many redirects",
+            redirect_count=redirect_count,
+            **extract_log_context(task),
+        )
+        return MediaDownloadResult(
+            task=task,
+            success=False,
+            error=f"Too many redirects ({redirect_count})",
+            error_category=ErrorCategory.PERMANENT,
+            is_retryable=False,
+        )
 
     except asyncio.TimeoutError:
         log_with_context(
