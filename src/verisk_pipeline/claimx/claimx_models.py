@@ -32,6 +32,8 @@ CLAIMX_RETRY_COLUMNS = [
     "created_at",
     "expires_at",
     "refresh_count",
+    "http_status",
+    "bytes_downloaded",
 ]
 
 

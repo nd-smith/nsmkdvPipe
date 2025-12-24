@@ -821,6 +821,7 @@ class DownloadStage:
                     status=TaskStatus.COMPLETED,
                     http_status=result.http_status,
                     error_message=None,
+                    bytes_downloaded=result.bytes_downloaded,
                 )
                 inventory_rows.append(row)
 
@@ -847,6 +848,7 @@ class DownloadStage:
                     error_message=(
                         sanitize_error_message(result.error) if result.error else None
                     ),
+                    bytes_downloaded=result.bytes_downloaded,
                 )
                 row["error_category"] = (
                     result.error_category.value if result.error_category else None
