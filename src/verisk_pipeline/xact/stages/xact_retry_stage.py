@@ -358,7 +358,7 @@ class RetryStage:
 
             # Generate blob_path from available fields (not stored in retry queue)
             blob_path, file_type = generate_blob_path(
-                event_type=row["status_subtype"],
+                status_subtype=row["status_subtype"],
                 trace_id=row["trace_id"],
                 assignment_id=row["assignment_id"],
                 download_url=attachment_url,
