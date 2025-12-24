@@ -12,6 +12,7 @@ from typing import Dict, List, Tuple
 
 import polars as pl
 
+from verisk_pipeline.common.async_utils import run_async_with_shutdown
 from verisk_pipeline.common.auth import get_storage_options
 from verisk_pipeline.common.config.xact import PipelineConfig
 from verisk_pipeline.common.exceptions import ErrorCategory
@@ -444,7 +445,7 @@ class RetryStage:
 
         if tasks:
             with self.onelake_client:
-                results = asyncio.run(
+                results = run_async_with_shutdown(
                     download_batch(
                         tasks=tasks,
                         onelake_client=self.onelake_client,
