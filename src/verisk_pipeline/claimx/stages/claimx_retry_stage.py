@@ -68,6 +68,22 @@ class RetryStage:
     Uses exponential backoff based on retry_count.
     """
 
+    # Columns required for claimx retry processing - project early for memory efficiency
+    # These are the columns that exist in claimx_retry table and are needed by _build_retry_tasks()
+    RETRY_PROCESSING_COLUMNS = [
+        "media_id",
+        "project_id",
+        "download_url",
+        "status",
+        "retry_count",
+        "expires_at",
+        "refresh_count",
+        "file_name",
+        "file_type",
+        "next_retry_at",
+        "created_at",
+    ]
+
     def __init__(self, config: ClaimXConfig):
         """Initialize retry stage."""
         self.config = config
@@ -821,6 +837,7 @@ class RetryStage:
             max_retries=self._max_retries,
             min_age_seconds=self._min_age,
             limit=self._batch_size,
+            columns=self.RETRY_PROCESSING_COLUMNS,
         )
 
         obs_config = self.config.observability
@@ -1345,6 +1362,7 @@ class RetryStage:
             download_pending = self.retry_writer.get_pending_retries(
                 max_retries=self._max_retries,
                 min_age_seconds=self._min_age,
+                columns=self.RETRY_PROCESSING_COLUMNS,
             )
             download_count = (
                 len(download_pending) if not download_pending.is_empty() else 0
