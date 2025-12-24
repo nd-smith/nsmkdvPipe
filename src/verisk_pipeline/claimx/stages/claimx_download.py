@@ -956,11 +956,17 @@ async def download_single(
                     async with aiofiles.open(tmp_path, "wb") as f:
                         async for chunk in response.content.iter_chunked(CHUNK_SIZE):
                             await f.write(chunk)
-                    onelake_client.upload_file(task.blob_path, tmp_path)
+                    # Run sync upload in thread pool to avoid blocking event loop
+                    await asyncio.to_thread(
+                        onelake_client.upload_file, task.blob_path, tmp_path
+                    )
                 else:
                     # Small files: read into memory
                     content = await response.read()
-                    onelake_client.upload_bytes(task.blob_path, content)
+                    # Run sync upload in thread pool to avoid blocking event loop
+                    await asyncio.to_thread(
+                        onelake_client.upload_bytes, task.blob_path, content
+                    )
 
                 download_breaker.record_success()
                 upload_breaker.record_success()
