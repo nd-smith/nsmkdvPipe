@@ -25,6 +25,8 @@ XACT_RETRY_COLUMNS = [
     "assignment_id",
     "expires_at",
     "expired_at_ingest",
+    "http_status",
+    "bytes_downloaded",
 ]
 
 
@@ -70,6 +72,7 @@ class Task:
         status: TaskStatus,
         http_status: Optional[int] = None,
         error_message: Optional[str] = None,
+        bytes_downloaded: int = 0,
     ) -> dict:
         """
         Convert task to tracking table row.
@@ -78,6 +81,7 @@ class Task:
             status: Current task status
             http_status: HTTP response status code
             error_message: Error message if failed
+            bytes_downloaded: Number of bytes downloaded (from Content-Length)
 
         Returns:
             Dict suitable for tracking table insert
@@ -91,6 +95,7 @@ class Task:
             "assignment_id": self.assignment_id,
             "status": status.value if isinstance(status, TaskStatus) else status,
             "http_status": http_status,
+            "bytes_downloaded": bytes_downloaded,
             "retry_count": self.retry_count,
             "error_message": error_message,
             "created_at": datetime.now(timezone.utc).isoformat(),

@@ -533,6 +533,7 @@ class RetryStage:
                     status=TaskStatus.COMPLETED,
                     http_status=result.http_status,
                     error_message=None,
+                    bytes_downloaded=result.bytes_downloaded,
                 )
                 inventory_rows.append(row)
                 delete_keys.append(
@@ -591,6 +592,7 @@ class RetryStage:
                         status=TaskStatus.FAILED,
                         http_status=result.http_status,
                         error_message=result.error,
+                        bytes_downloaded=result.bytes_downloaded,
                     )
                     row["retry_count"] = new_retry_count
                     row["error_category"] = (
