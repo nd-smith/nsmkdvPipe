@@ -36,6 +36,12 @@ from verisk_pipeline.xact.stages.xact_ingest import IngestStage
 from verisk_pipeline.xact.stages.xact_download import DownloadStage
 from verisk_pipeline.xact.stages.xact_retry_stage import RetryStage
 from verisk_pipeline.storage.log_uploader import LogUploader
+from verisk_pipeline.storage.upload_service import (
+    UploadService,
+    init_upload_service,
+    shutdown_upload_service,
+)
+from verisk_pipeline.common.async_utils import run_async_with_shutdown
 
 
 logger = get_logger(__name__)
@@ -61,6 +67,9 @@ class Pipeline:
         self._download_stage: Optional[DownloadStage] = None
         self._retry_stage: Optional[RetryStage] = None
 
+        # Shared services
+        self._upload_service: Optional[UploadService] = None
+
         # Observability
         self._log_uploader: Optional[LogUploader] = None
 
@@ -78,18 +87,32 @@ class Pipeline:
         """Initialize enabled pipeline stages."""
         enabled = self.config.schedule.enabled_stages
 
+        # Initialize shared upload service if download or retry stages are enabled
+        if "download" in enabled or "retry" in enabled:
+            self._upload_service = init_upload_service(
+                base_paths={"xact": self.config.lakehouse.files_path},
+                max_workers=self.config.download.max_concurrent,
+                max_queue_size=self.config.download.max_concurrent * 10,
+            )
+            # Start the upload service (async)
+            run_async_with_shutdown(self._upload_service.start())
+            log_with_context(
+                logger, logging.INFO, "Upload service initialized",
+                max_workers=self.config.download.max_concurrent,
+            )
+
         if "ingest" in enabled:
             self._ingest_stage = IngestStage(self.config)
             log_with_context(logger, logging.INFO, "Stage initialized", stage="ingest")
 
         if "download" in enabled:
-            self._download_stage = DownloadStage(self.config)
+            self._download_stage = DownloadStage(self.config, self._upload_service)
             log_with_context(
                 logger, logging.INFO, "Stage initialized", stage="download"
             )
 
         if "retry" in enabled:
-            self._retry_stage = RetryStage(self.config)
+            self._retry_stage = RetryStage(self.config, self._upload_service)
             log_with_context(logger, logging.INFO, "Stage initialized", stage="retry")
 
         if self.config.observability.log_upload_enabled:
@@ -567,6 +590,19 @@ class Pipeline:
 
     def _cleanup_stages(self) -> None:
         """Cleanup resources for all stages."""
+        # Shutdown upload service first (drains pending uploads)
+        if self._upload_service is not None:
+            try:
+                run_async_with_shutdown(shutdown_upload_service(drain=True))
+                log_with_context(
+                    logger, logging.INFO, "Upload service shutdown complete"
+                )
+            except Exception as e:
+                log_exception(
+                    logger, e, "Error shutting down upload service",
+                    level=logging.WARNING, include_traceback=False,
+                )
+
         for stage, name in [
             (self._ingest_stage, "ingest"),
             (self._download_stage, "download"),

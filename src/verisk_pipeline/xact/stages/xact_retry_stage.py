@@ -8,7 +8,7 @@ and processes retries in batches with circuit breaker protection.
 import asyncio
 import logging
 from datetime import datetime, timezone
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import polars as pl
 
@@ -29,6 +29,7 @@ from verisk_pipeline.xact.xact_models import (
 )
 from verisk_pipeline.common.url_expiration import check_presigned_url
 from verisk_pipeline.storage.onelake import OneLakeClient
+from verisk_pipeline.storage.upload_service import UploadService
 from verisk_pipeline.xact.stages.xact_download import (
     download_batch,
 )
@@ -69,9 +70,20 @@ class RetryStage:
     DEFAULT_MAX_CONCURRENT = 10
     DEFAULT_RETENTION_DAYS = 7
 
-    def __init__(self, config: PipelineConfig):
-        """Initialize retry stage with configuration."""
+    def __init__(
+        self,
+        config: PipelineConfig,
+        upload_service: Optional[UploadService] = None,
+    ):
+        """
+        Initialize retry stage with configuration.
+
+        Args:
+            config: Pipeline configuration
+            upload_service: Optional centralized upload service
+        """
         self.config = config
+        self._upload_service = upload_service
 
         self._max_retries = int(config.retry.max_retries)
         self._min_age = int(config.retry.min_retry_age_seconds)
@@ -462,6 +474,7 @@ class RetryStage:
                         timeout=self.config.download.timeout_seconds,
                         download_breaker=self._download_breaker,
                         upload_breaker=self._upload_breaker,
+                        upload_service=self._upload_service,
                     )
                 )
 
