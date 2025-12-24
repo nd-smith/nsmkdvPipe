@@ -928,6 +928,7 @@ class RetryStage:
                         ),
                         proxy=self.config.download.proxy,
                         upload_service=self._upload_service,
+                        encrypt_temp_files=self.config.security.encrypt_temp_files,
                     )
                 )
         log_memory_checkpoint(logger, "after_processing", config=obs_config)

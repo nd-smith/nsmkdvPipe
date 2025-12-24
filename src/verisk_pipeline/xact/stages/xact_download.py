@@ -7,11 +7,12 @@ Reads events with attachments, downloads files, and tracks status.
 import asyncio
 import logging
 import os
-import tempfile
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 import aiofiles
+
+from verisk_pipeline.common.secure_temp import SecureTempFile
 import aiohttp
 import polars as pl
 

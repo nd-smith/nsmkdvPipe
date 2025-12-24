@@ -8,11 +8,12 @@ Supports automatic URL refresh for expired presigned URLs via ClaimX API.
 import asyncio
 import logging
 import os
-import tempfile
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set
 
 import aiofiles
+
+from verisk_pipeline.common.secure_temp import SecureTempFile
 import aiohttp
 import polars as pl
 
@@ -253,6 +254,7 @@ class DownloadStage:
                             allowed_domains=self._allowed_domains,
                             proxy=getattr(self.config.download, "proxy", None),
                             upload_service=self._upload_service,
+                            encrypt_temp_files=self.config.security.encrypt_temp_files,
                         )
                     )
 
@@ -783,6 +785,7 @@ async def download_single(
     allowed_domains: Optional[Set[str]] = None,
     proxy: Optional[str] = None,
     upload_service: Optional[UploadService] = None,
+    encrypt_temp_files: bool = False,
 ) -> MediaDownloadResult:
     """
     Download single media file and upload to OneLake.
@@ -800,6 +803,7 @@ async def download_single(
         allowed_domains: Optional set of allowed download domains
         proxy: Optional proxy URL
         upload_service: Optional centralized upload service (preferred over onelake_client)
+        encrypt_temp_files: Encrypt temp files at rest (for sensitive data)
 
     Returns:
         MediaDownloadResult with success/failure status
@@ -961,25 +965,47 @@ async def download_single(
                 )
 
                 if content_length > STREAM_THRESHOLD:
-                    # Stream large files to temp file
-                    tmp_path = tempfile.mktemp(suffix=f".{task.file_type}")
-                    async with aiofiles.open(tmp_path, "wb") as f:
+                    # Stream large files to secure temp file
+                    with SecureTempFile(
+                        suffix=f".{task.file_type}",
+                        encrypt=encrypt_temp_files,
+                        secure_delete=True,
+                    ) as stf:
+                        # Stream download to temp file
                         async for chunk in response.content.iter_chunked(CHUNK_SIZE):
-                            await f.write(chunk)
+                            await asyncio.to_thread(stf.write, chunk)
+                        await asyncio.to_thread(stf.flush)
 
-                    # Upload via service or direct client
-                    if upload_service and upload_service.is_running:
-                        await upload_service.submit_and_wait(UploadTask(
-                            source=tmp_path,
-                            destination=task.blob_path,
-                            domain="claimx",
-                            trace_id=getattr(task, 'trace_id', None),
-                            metadata={"media_id": task.media_id, "project_id": task.project_id},
-                        ))
-                    else:
-                        await asyncio.to_thread(
-                            onelake_client.upload_file, task.blob_path, tmp_path
-                        )
+                        # Upload: if encrypted, read decrypted bytes; else use file path
+                        if encrypt_temp_files:
+                            # Read back decrypted content for upload
+                            content = await asyncio.to_thread(stf.read_decrypted)
+                            if upload_service and upload_service.is_running:
+                                await upload_service.submit_and_wait(UploadTask(
+                                    source=content,
+                                    destination=task.blob_path,
+                                    domain="claimx",
+                                    trace_id=getattr(task, 'trace_id', None),
+                                    metadata={"media_id": task.media_id, "project_id": task.project_id},
+                                ))
+                            else:
+                                await asyncio.to_thread(
+                                    onelake_client.upload_bytes, task.blob_path, content
+                                )
+                        else:
+                            # No encryption: upload file directly
+                            if upload_service and upload_service.is_running:
+                                await upload_service.submit_and_wait(UploadTask(
+                                    source=stf.path,
+                                    destination=task.blob_path,
+                                    domain="claimx",
+                                    trace_id=getattr(task, 'trace_id', None),
+                                    metadata={"media_id": task.media_id, "project_id": task.project_id},
+                                ))
+                            else:
+                                await asyncio.to_thread(
+                                    onelake_client.upload_file, task.blob_path, stf.path
+                                )
                 else:
                     # Small files: read into memory
                     content = await response.read()
@@ -1101,6 +1127,7 @@ async def download_batch(
     allowed_domains: Optional[Set[str]] = None,
     proxy: Optional[str] = None,
     upload_service: Optional[UploadService] = None,
+    encrypt_temp_files: bool = False,
 ) -> List[MediaDownloadResult]:
     """
     Download batch of media files with concurrency control.
@@ -1118,6 +1145,7 @@ async def download_batch(
         allowed_domains: Optional set of allowed download domains
         proxy: Optional proxy URL
         upload_service: Optional centralized upload service (preferred over onelake_client)
+        encrypt_temp_files: Encrypt temp files at rest (for sensitive data)
 
     Returns:
         List of MediaDownloadResult objects
@@ -1186,6 +1214,7 @@ async def download_batch(
                     allowed_domains,
                     proxy,
                     upload_service,
+                    encrypt_temp_files,
                 )
 
         download_tasks = [download_with_semaphore(t) for t in tasks]
