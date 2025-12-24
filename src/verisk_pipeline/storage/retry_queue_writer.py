@@ -266,12 +266,13 @@ class RetryQueueWriter(LoggedClass):
 
     # Columns required for retry processing - project early for memory efficiency
     # These are the minimum columns needed by RetryStage._process_retry_batch()
+    # Note: blob_path is NOT stored in retry queue - it's regenerated from
+    # status_subtype, assignment_id, trace_id, and attachment_url
     RETRY_PROCESSING_COLUMNS = [
         "trace_id",
         "attachment_url",
         "status",
         "retry_count",
-        "blob_path",
         "status_subtype",
         "file_type",
         "assignment_id",
