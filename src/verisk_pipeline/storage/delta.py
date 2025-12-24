@@ -184,7 +184,9 @@ class DeltaTableReader(LoggedClass):
                 limit=limit,
             )
 
-        df = lf.collect(streaming=True)
+        # streaming=True can cause "invalid SlotMap key used" panic with sort()
+        use_streaming = order_by is None
+        df = lf.collect(streaming=use_streaming)
         self._log(logging.DEBUG, "Read filtered complete", rows_read=len(df))
         return df
 
@@ -1238,7 +1240,10 @@ class EventsTableReader(DeltaTableReader):
             lf = lf.head(limit)
 
         # Collect - streaming mode helps when no blocking operations (like sort)
-        result = lf.collect(streaming=True)
+        # CRITICAL: streaming=True can cause "invalid SlotMap key used" panic when
+        # combined with sort(), so only enable streaming when no sort is present
+        use_streaming = order_by is None
+        result = lf.collect(streaming=use_streaming)
 
         self._log(
             logging.DEBUG,
