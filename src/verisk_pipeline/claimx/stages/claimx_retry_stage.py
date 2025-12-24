@@ -964,7 +964,10 @@ class RetryStage:
 
     async def _refresh_media_urls(self, project_ids: List[str]) -> Dict[str, Dict]:
         """
-        Fetch fresh presigned URLs for projects.
+        Fetch fresh presigned URLs for projects concurrently.
+
+        Uses asyncio.gather to fetch multiple projects in parallel,
+        throttled by the client's semaphore (max_concurrent).
 
         Returns:
             Dict mapping media_id -> {project_id, download_url, expires_at}
@@ -977,6 +980,7 @@ class RetryStage:
             logging.DEBUG,
             "Refreshing media URLs",
             project_count=len(project_ids),
+            max_concurrent=self._max_concurrent,
         )
 
         client = ClaimXApiClient(
@@ -986,49 +990,63 @@ class RetryStage:
             max_concurrent=self._max_concurrent,
         )
 
-        # Collect fresh URLs in memory (don't write to Delta)
+        async def fetch_project_media(
+            project_id: str,
+        ) -> tuple[str, Optional[list], Optional[Exception]]:
+            """Fetch media for a single project, returning (project_id, media_list, error)."""
+            try:
+                media_list = await client.get_project_media(int(project_id))
+                return (project_id, media_list, None)
+            except Exception as e:
+                return (project_id, None, e)
+
+        # Fetch all projects concurrently (client semaphore throttles to max_concurrent)
+        async with client:
+            tasks = [fetch_project_media(pid) for pid in project_ids]
+            results = await asyncio.gather(*tasks)
+
+        # Process results
         fresh_urls: Dict[str, Dict] = {}
         api_calls = 0
         api_errors = 0
 
-        async with client:
-            for project_id in project_ids:
-                try:
-                    media_list = await client.get_project_media(int(project_id))
-                    api_calls += 1
-                    if media_list:
-                        for item in media_list:
-                            media_id = str(
-                                item.get("mediaID") or item.get("media_id") or ""
-                            )
-                            download_url = item.get("fullDownloadLink") or item.get(
-                                "full_download_link"
-                            )
+        for project_id, media_list, error in results:
+            if error is not None:
+                api_errors += 1
+                log_exception(
+                    logger,
+                    error,
+                    "Could not refresh URLs for project",
+                    level=logging.WARNING,
+                    include_traceback=False,
+                    project_id=project_id,
+                )
+                continue
 
-                            if media_id and download_url:
-                                fresh_urls[media_id] = {
-                                    "project_id": str(project_id),
-                                    "download_url": download_url,
-                                    "expires_at": extract_expires_at_iso(download_url),
-                                }
-
-                        log_with_context(
-                            logger,
-                            logging.DEBUG,
-                            "Collected media URLs",
-                            project_id=project_id,
-                            media_count=len(media_list),
-                        )
-                except Exception as e:
-                    api_errors += 1
-                    log_exception(
-                        logger,
-                        e,
-                        "Could not refresh URLs for project",
-                        level=logging.WARNING,
-                        include_traceback=False,
-                        project_id=project_id,
+            api_calls += 1
+            if media_list:
+                for item in media_list:
+                    media_id = str(
+                        item.get("mediaID") or item.get("media_id") or ""
                     )
+                    download_url = item.get("fullDownloadLink") or item.get(
+                        "full_download_link"
+                    )
+
+                    if media_id and download_url:
+                        fresh_urls[media_id] = {
+                            "project_id": str(project_id),
+                            "download_url": download_url,
+                            "expires_at": extract_expires_at_iso(download_url),
+                        }
+
+                log_with_context(
+                    logger,
+                    logging.DEBUG,
+                    "Collected media URLs",
+                    project_id=project_id,
+                    media_count=len(media_list),
+                )
 
         log_with_context(
             logger,
