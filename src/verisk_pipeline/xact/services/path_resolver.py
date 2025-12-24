@@ -38,7 +38,7 @@ def generate_blob_path(
         # Default pattern for unknown subtypes
         filename = f"{assignment_id}_{url_filename}"
 
-    blob_path = f"{status_subtype}/{trace_id}/{filename}"
+    blob_path = f"{status_subtype}/{assignment_id}/{trace_id}/{filename}"
     return blob_path, file_type
 
 
