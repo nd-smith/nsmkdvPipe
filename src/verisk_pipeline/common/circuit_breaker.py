@@ -237,6 +237,15 @@ class CircuitBreaker:
             if self._last_failure_time is not None:
                 elapsed = time.time() - self._last_failure_time
                 if elapsed >= self.config.timeout_seconds:
+                    log_with_context(
+                        logger,
+                        logging.DEBUG,
+                        "Circuit breaker timeout elapsed, transitioning to half-open",
+                        circuit_name=self.name,
+                        elapsed_seconds=round(elapsed, 2),
+                        timeout_seconds=self.config.timeout_seconds,
+                        failure_count=self._failure_count,
+                    )
                     self._transition_to(CircuitState.HALF_OPEN)
 
     def _transition_to(self, new_state: CircuitState) -> None:
@@ -343,15 +352,44 @@ class CircuitBreaker:
 
         # Check if this error should count
         if not self._should_count_failure(exc):
+            log_with_context(
+                logger,
+                logging.DEBUG,
+                "Circuit breaker failure not counted",
+                circuit_name=self.name,
+                circuit_state=self._state.value,
+                error_type=type(exc).__name__,
+                error_message=str(exc)[:200],
+            )
             return
 
         self._last_failure_time = time.time()
 
         if self._state == CircuitState.HALF_OPEN:
             # Any counted failure in half-open goes back to open
+            log_with_context(
+                logger,
+                logging.DEBUG,
+                "Circuit breaker failure recorded (half-open)",
+                circuit_name=self.name,
+                error_type=type(exc).__name__,
+                error_message=str(exc)[:200],
+                action="transitioning to open",
+            )
             self._transition_to(CircuitState.OPEN)
         elif self._state == CircuitState.CLOSED:
             self._failure_count += 1
+            log_with_context(
+                logger,
+                logging.DEBUG,
+                "Circuit breaker failure recorded",
+                circuit_name=self.name,
+                circuit_state=self._state.value,
+                error_type=type(exc).__name__,
+                error_message=str(exc)[:200],
+                failure_count=self._failure_count,
+                failure_threshold=self.config.failure_threshold,
+            )
             if self._failure_count >= self.config.failure_threshold:
                 self._transition_to(CircuitState.OPEN)
 
