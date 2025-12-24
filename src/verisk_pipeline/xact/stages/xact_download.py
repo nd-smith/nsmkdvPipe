@@ -650,7 +650,10 @@ class DownloadStage:
                         error_category=error_category.value,
                         **extract_log_context(task),
                     )
-                    self.download_breaker.record_failure(Exception(error_msg))
+                    # Only record transient failures to circuit breaker
+                    # Permanent errors are client issues, not service issues
+                    if error_category == ErrorCategory.TRANSIENT:
+                        self.download_breaker.record_failure(Exception(error_msg))
                     return DownloadResult(
                         task=task,
                         success=False,
@@ -1053,7 +1056,10 @@ async def download_single(
                     error_category=error_category.value,
                     **extract_log_context(task),
                 )
-                download_breaker.record_failure(Exception(f"HTTP {response.status}"))
+                # Only record transient failures to circuit breaker
+                # Permanent errors (400, 401, 403, 404, 410) are client issues, not service issues
+                if error_category == ErrorCategory.TRANSIENT:
+                    download_breaker.record_failure(Exception(f"HTTP {response.status}"))
                 return DownloadResult(
                     task=task,
                     success=False,
