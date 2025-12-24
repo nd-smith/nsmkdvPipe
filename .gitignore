@@ -73,6 +73,8 @@ htmlcov/
 # Jupyter
 .ipynb_checkpoints
 *.ipynb
+# Allow notebooks in notebooks/ directory
+!notebooks/*.ipynb
 
 # Temporary files
 *.tmp
