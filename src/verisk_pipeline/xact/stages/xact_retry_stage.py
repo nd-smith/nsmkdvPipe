@@ -32,6 +32,7 @@ from verisk_pipeline.storage.onelake import OneLakeClient
 from verisk_pipeline.xact.stages.xact_download import (
     download_batch,
 )
+from verisk_pipeline.xact.services.path_resolver import generate_blob_path
 from verisk_pipeline.common.circuit_breaker import (
     get_circuit_breaker,
     EXTERNAL_DOWNLOAD_CIRCUIT_CONFIG,
@@ -335,7 +336,7 @@ class RetryStage:
 
         # Build retry counts map
         retry_counts: Dict[Tuple[str, str], int] = {
-            (row["trace_id"], row["download_url"]): row["retry_count"] or 0
+            (row["trace_id"], row["attachment_url"]): row["retry_count"] or 0
             for row in pending.iter_rows(named=True)
         }
 
@@ -352,20 +353,28 @@ class RetryStage:
         )
 
         for row in pending.iter_rows(named=True):
-            download_url = row["download_url"]
+            attachment_url = row["attachment_url"]
             current_retry_count = row["retry_count"] or 0
+
+            # Generate blob_path from available fields (not stored in retry queue)
+            blob_path, file_type = generate_blob_path(
+                event_type=row["status_subtype"],
+                trace_id=row["trace_id"],
+                assignment_id=row["assignment_id"],
+                download_url=attachment_url,
+            )
 
             task = Task(
                 trace_id=row["trace_id"],
-                download_url=download_url,
-                blob_path=row["blob_path"],
+                attachment_url=attachment_url,
+                blob_path=blob_path,
                 status_subtype=row["status_subtype"],
-                file_type=row["file_type"],
+                file_type=file_type,
                 assignment_id=row["assignment_id"],
                 retry_count=current_retry_count,
             )
 
-            url_info = check_presigned_url(download_url)
+            url_info = check_presigned_url(attachment_url)
             if url_info.is_expired:
                 log_with_context(
                     logger,
@@ -389,7 +398,7 @@ class RetryStage:
                 )
                 continue
 
-            is_valid, validation_error = validate_download_url(download_url)
+            is_valid, validation_error = validate_download_url(attachment_url)
 
             if not is_valid:
                 log_with_context(
@@ -513,7 +522,7 @@ class RetryStage:
 
         for result in results:
             task = result.task
-            key = (task.trace_id, task.download_url)
+            key = (task.trace_id, task.attachment_url)
             current_retry_count = retry_counts.get(key, task.retry_count) or 0
             new_retry_count = current_retry_count + 1
 
@@ -527,7 +536,7 @@ class RetryStage:
                 )
                 inventory_rows.append(row)
                 delete_keys.append(
-                    {"trace_id": task.trace_id, "attachment_url": task.download_url}
+                    {"trace_id": task.trace_id, "attachment_url": task.attachment_url}
                 )
 
                 log_with_context(
@@ -542,7 +551,7 @@ class RetryStage:
             elif not result.is_retryable:
                 status_transitions["now_permanent"] += 1
                 delete_keys.append(
-                    {"trace_id": task.trace_id, "attachment_url": task.download_url}
+                    {"trace_id": task.trace_id, "attachment_url": task.attachment_url}
                 )
 
                 log_with_context(
@@ -562,7 +571,7 @@ class RetryStage:
                     exhausted_count += 1
                     status_transitions["exhausted"] += 1
                     delete_keys.append(
-                        {"trace_id": task.trace_id, "attachment_url": task.download_url}
+                        {"trace_id": task.trace_id, "attachment_url": task.attachment_url}
                     )
 
                     log_with_context(
