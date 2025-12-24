@@ -29,6 +29,9 @@ DRY_RUN = True
 # Batch size for processing
 BATCH_SIZE = 1000
 
+# Progress logging interval
+LOG_EVERY_N = 100
+
 # =============================================================================
 # CELL 2: Setup and Imports
 # =============================================================================
@@ -176,24 +179,33 @@ if attachments_to_migrate and attachments_to_migrate.count() > 0:
 # CELL 6: Move Files in OneLake
 # =============================================================================
 
-def move_files_batch(records_df, files_base_path, dry_run=True):
+def move_files_batch(records_df, files_base_path, dry_run=True, log_every_n=100):
     """
     Move files from old paths to new paths.
 
-    Returns tuple of (success_count, error_count, errors)
+    Returns tuple of (success_count, skipped_count, error_count, errors)
     """
     if records_df is None or records_df.count() == 0:
-        return 0, 0, []
+        print("No records to process")
+        return 0, 0, 0, []
 
     # Collect to driver for file operations
+    total_records = records_df.count()
+    print(f"Collecting {total_records} records to driver...")
     records = records_df.select("blob_path", "new_blob_path").collect()
+    print(f"Collected. Starting file operations...")
 
     success_count = 0
     error_count = 0
     errors = []
     skipped_count = 0
 
-    for row in records:
+    for i, row in enumerate(records):
+        # Progress logging
+        if (i + 1) % log_every_n == 0 or (i + 1) == len(records):
+            print(f"  Progress: {i + 1}/{len(records)} ({100*(i+1)//len(records)}%) - "
+                  f"success: {success_count}, skipped: {skipped_count}, errors: {error_count}")
+
         old_path = f"{files_base_path}/{row.blob_path}"
         new_path = f"{files_base_path}/{row.new_blob_path}"
 
@@ -202,7 +214,6 @@ def move_files_batch(records_df, files_base_path, dry_run=True):
                 # Check if source exists
                 try:
                     mssparkutils.fs.head(old_path, 1)
-                    print(f"[DRY RUN] Would move: {old_path} -> {new_path}")
                     success_count += 1
                 except:
                     # File doesn't exist at old path - might already be moved
@@ -230,20 +241,15 @@ def move_files_batch(records_df, files_base_path, dry_run=True):
             if error_count <= 5:  # Only print first 5 errors
                 print(f"Error moving {old_path}: {e}")
 
-    print(f"\nFile operations: {success_count} successful, {skipped_count} skipped, {error_count} errors")
-    return success_count, error_count, errors
+    print(f"\nFile operations complete: {success_count} moved, {skipped_count} skipped, {error_count} errors")
+    return success_count, skipped_count, error_count, errors
 
 
-# Move files for attachments
+# Move files for attachments only
+# Note: Retry queue records don't have files stored yet, so we only move attachment files
 print("=== Moving Attachment Files ===")
-att_success, att_errors, att_error_list = move_files_batch(
-    attachments_to_migrate, files_base_path, dry_run=DRY_RUN
-)
-
-# Move files for retry queue (if any)
-print("\n=== Moving Retry Queue Files ===")
-retry_success, retry_errors, retry_error_list = move_files_batch(
-    retry_to_migrate, files_base_path, dry_run=DRY_RUN
+att_success, att_skipped, att_errors, att_error_list = move_files_batch(
+    attachments_to_migrate, files_base_path, dry_run=DRY_RUN, log_every_n=LOG_EVERY_N
 )
 
 
@@ -333,13 +339,12 @@ print()
 print("xact_attachments:")
 print(f"  Records to migrate: {attachments_to_migrate.count() if attachments_to_migrate else 0}")
 print(f"  Files moved: {att_success}")
+print(f"  Files skipped (not found): {att_skipped}")
 print(f"  File errors: {att_errors}")
 print(f"  Table records updated: {att_updated}")
 print()
-print("xact_retry:")
+print("xact_retry (table update only - no files to move):")
 print(f"  Records to migrate: {retry_to_migrate.count() if retry_to_migrate else 0}")
-print(f"  Files moved: {retry_success}")
-print(f"  File errors: {retry_errors}")
 print(f"  Table records updated: {retry_updated}")
 print()
 if DRY_RUN:
