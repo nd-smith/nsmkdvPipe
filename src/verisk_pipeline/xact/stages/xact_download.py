@@ -15,6 +15,7 @@ import aiofiles
 import aiohttp
 import polars as pl
 
+from verisk_pipeline.common.async_utils import run_async_with_shutdown
 from verisk_pipeline.common.auth import get_storage_options
 from verisk_pipeline.common.circuit_breaker import (
     get_circuit_breaker,
@@ -178,7 +179,7 @@ class DownloadStage:
                     )
 
                     with self.onelake_client:
-                        results = asyncio.run(self._download_batch(tasks))
+                        results = run_async_with_shutdown(self._download_batch(tasks))
 
                     log_memory_checkpoint(
                         logger,

@@ -12,6 +12,7 @@ from typing import Dict, List, Optional, cast
 
 import polars as pl
 
+from verisk_pipeline.common.async_utils import run_async_with_shutdown
 from verisk_pipeline.claimx.stages.enrich import EntityTableWriter
 from verisk_pipeline.claimx.api_client import ClaimXApiClient
 from verisk_pipeline.common.config.claimx import ClaimXConfig
@@ -358,7 +359,7 @@ class RetryStage:
         """
         # Retry enrichments
         with log_phase(logger, "retry_enrichments"):
-            enrich_stats = asyncio.run(
+            enrich_stats = run_async_with_shutdown(
                 self._retry_enrichments_batch(pending["enrichments"])
             )
         gc.collect()
@@ -883,7 +884,7 @@ class RetryStage:
         # Refresh presigned URLs before retry (they may have expired)
         project_ids = pending["project_id"].unique().to_list()
         with log_phase(logger, "refresh_urls"):
-            fresh_urls = asyncio.run(self._refresh_media_urls(project_ids))
+            fresh_urls = run_async_with_shutdown(self._refresh_media_urls(project_ids))
 
         # Build tasks with fresh URLs from media table
         tasks = self._build_retry_tasks(pending, fresh_urls)
@@ -902,7 +903,7 @@ class RetryStage:
         # Execute downloads
         with log_phase(logger, "download_batch"):
             with self._onelake_client:
-                results = asyncio.run(
+                results = run_async_with_shutdown(
                     download_batch(
                         tasks=tasks,
                         onelake_client=self._onelake_client,

@@ -16,6 +16,7 @@ import aiofiles
 import aiohttp
 import polars as pl
 
+from verisk_pipeline.common.async_utils import run_async_with_shutdown
 from verisk_pipeline.common.auth import get_storage_options
 from verisk_pipeline.common.config.claimx import ClaimXConfig
 from verisk_pipeline.common.exceptions import ErrorCategory
@@ -234,7 +235,7 @@ class DownloadStage:
 
                 # Step 3: Download batch concurrently
                 with self.onelake_client:
-                    results = asyncio.run(
+                    results = run_async_with_shutdown(
                         download_batch(
                             tasks=tasks,
                             onelake_client=self.onelake_client,
@@ -455,7 +456,7 @@ class DownloadStage:
         )
 
         # Refresh URLs via ClaimX API
-        fresh_urls = asyncio.run(self._fetch_fresh_urls(list(by_project.keys())))
+        fresh_urls = run_async_with_shutdown(self._fetch_fresh_urls(list(by_project.keys())))
 
         # Build tasks with fresh URLs
         tasks = []

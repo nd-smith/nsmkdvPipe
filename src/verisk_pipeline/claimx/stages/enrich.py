@@ -16,6 +16,7 @@ from typing import Dict, List, Optional
 
 import polars as pl
 
+from verisk_pipeline.common.async_utils import run_async_with_shutdown
 from verisk_pipeline.claimx.api_client import ClaimXApiClient
 from verisk_pipeline.common.config.claimx import ClaimXConfig
 from verisk_pipeline.claimx.claimx_models import (
@@ -128,7 +129,7 @@ class EnrichStage:
             log_memory_checkpoint(logger, "stage_start", config=obs_config)
 
             try:
-                result = asyncio.run(self._process_events())
+                result = run_async_with_shutdown(self._process_events())
 
                 duration = (datetime.now(timezone.utc) - start).total_seconds()
                 duration_ms = duration * 1000
