@@ -264,6 +264,21 @@ class RetryQueueWriter(LoggedClass):
 
         return deleted
 
+    # Columns required for retry processing - project early for memory efficiency
+    # These are the minimum columns needed by RetryStage._process_retry_batch()
+    RETRY_PROCESSING_COLUMNS = [
+        "trace_id",
+        "attachment_url",
+        "status",
+        "retry_count",
+        "blob_path",
+        "status_subtype",
+        "file_type",
+        "assignment_id",
+        "next_retry_at",
+        "created_at",
+    ]
+
     @logged_operation(operation_name="get_pending_retries")
     @with_retry(config=DELTA_RETRY_CONFIG, on_auth_error=_on_auth_error)
     def get_pending_retries(
@@ -271,6 +286,7 @@ class RetryQueueWriter(LoggedClass):
         max_retries: int,
         min_age_seconds: int = 0,
         limit: Optional[int] = None,
+        columns: Optional[List[str]] = None,
     ) -> pl.DataFrame:
         """
         Get retry-eligible records from queue.
@@ -281,10 +297,14 @@ class RetryQueueWriter(LoggedClass):
         - next_retry_at <= now (respects backoff)
         - Optional: created_at >= now - min_age_seconds
 
+        Memory optimization: Use `columns` parameter to project only needed columns
+        early in the query. Default columns are RETRY_PROCESSING_COLUMNS.
+
         Args:
             max_retries: Maximum retry attempts
             min_age_seconds: Minimum age before retry (additional safety)
             limit: Maximum records to return
+            columns: Optional list of columns to read (defaults to RETRY_PROCESSING_COLUMNS)
 
         Returns:
             DataFrame of retry-eligible records
@@ -294,7 +314,10 @@ class RetryQueueWriter(LoggedClass):
             now - timedelta(seconds=min_age_seconds) if min_age_seconds > 0 else None
         )
 
-        # Read with filter pushdown (exclude next_retry_at - need NULL handling)
+        # Use default columns if not specified for memory efficiency
+        select_columns = columns or self.RETRY_PROCESSING_COLUMNS
+
+        # Read with filter pushdown and column projection
         filters = [
             ("status", "=", "failed"),
             ("retry_count", "<", max_retries),
@@ -303,7 +326,16 @@ class RetryQueueWriter(LoggedClass):
         if min_created_at:
             filters.append(("created_at", "<=", min_created_at))
 
-        df = self._reader.read_as_polars(filters=filters)
+        self._logger.debug(
+            "Querying pending retries with column projection",
+            extra={
+                "columns": select_columns,
+                "max_retries": max_retries,
+                "min_age_seconds": min_age_seconds,
+            },
+        )
+
+        df = self._reader.read_as_polars(filters=filters, columns=select_columns)
 
         # Apply next_retry_at filter with NULL handling
         # NULL next_retry_at = immediately eligible (legacy records)
@@ -318,7 +350,15 @@ class RetryQueueWriter(LoggedClass):
                 pl.col("retry_count").cast(pl.Int64, strict=False).fill_null(0)
             )
 
-        # Sort by next_retry_at (oldest first) and limit
+        # OPTIMIZATION NOTE: Sort-before-limit requires materializing all matching rows.
+        # For FIFO fairness (oldest first), we must sort by next_retry_at.
+        # If queue has 10k+ records, consider reducing limit or using tighter time windows.
+        if limit:
+            self._logger.debug(
+                "Sort with limit: will materialize all matching rows for FIFO ordering",
+                extra={"limit": limit, "rows_before_sort": len(df)},
+            )
+
         df = df.sort("next_retry_at")
 
         if limit:
@@ -346,12 +386,19 @@ class RetryQueueWriter(LoggedClass):
 
     @logged_operation(operation_name="get_queued_ids")
     @with_retry(config=DELTA_RETRY_CONFIG, on_auth_error=_on_auth_error)
-    def get_queued_ids(self) -> set:
+    def get_queued_ids(self, active_only: bool = True) -> set:
         """
-        Get primary key values of all records currently in retry queue.
+        Get primary key values of records currently in retry queue.
 
         Used by download stage to exclude media already queued for retry,
         preventing duplicate processing and retry_count resets.
+
+        Memory optimization: When active_only=True (default), filters to only
+        status='failed' records, excluding completed/exhausted entries that
+        are awaiting cleanup.
+
+        Args:
+            active_only: If True, only return IDs with status='failed' (default: True)
 
         Returns:
             Set of primary key strings (composite keys joined by '|')
@@ -361,14 +408,16 @@ class RetryQueueWriter(LoggedClass):
                 self._logger.debug("Retry queue table does not exist yet")
                 return set()
 
-            queued = (
-                pl.scan_delta(
-                    self.table_path, storage_options=self.get_storage_options()
-                )
-                .select(self.primary_keys)
-                .unique()
-                .collect(streaming=True)
+            lf = pl.scan_delta(
+                self.table_path, storage_options=self.get_storage_options()
             )
+
+            # OPTIMIZATION: Filter to active retries only to reduce memory
+            # This excludes completed/exhausted records awaiting cleanup
+            if active_only:
+                lf = lf.filter(pl.col("status") == "failed")
+
+            queued = lf.select(self.primary_keys).unique().collect(streaming=True)
 
         except Exception as e:
             self._logger.warning(
@@ -383,7 +432,11 @@ class RetryQueueWriter(LoggedClass):
 
         self._logger.debug(
             f"Found {len(ids)} IDs in retry queue",
-            extra={"table": self.table_path, "count": len(ids)},
+            extra={
+                "table": self.table_path,
+                "count": len(ids),
+                "active_only": active_only,
+            },
         )
 
         return ids
@@ -471,6 +524,9 @@ class RetryQueueWriter(LoggedClass):
         """
         Get retry queue health metrics.
 
+        Memory optimization: Uses lazy aggregation with column projection
+        instead of reading entire table into memory.
+
         Returns:
             Dict with queue statistics:
             - total_rows: Total records in queue
@@ -480,16 +536,70 @@ class RetryQueueWriter(LoggedClass):
             - retry_1: Count with retry_count=1
             - retry_2+: Count with retry_count>=2
         """
-        df = self._reader.read_as_polars()
+        try:
+            # OPTIMIZATION: Use lazy scan with column projection and aggregation
+            # Only read status and retry_count columns for statistics
+            lf = pl.scan_delta(
+                self.table_path, storage_options=self.get_storage_options()
+            ).select(["status", "retry_count"])
 
-        stats = {
-            "total_rows": len(df),
-            "status_failed": len(df.filter(pl.col("status") == "failed")),
-            "status_permanent": len(df.filter(pl.col("status") == "failed_permanent")),
-            "retry_0": len(df.filter(pl.col("retry_count") == 0)),
-            "retry_1": len(df.filter(pl.col("retry_count") == 1)),
-            "retry_2_plus": len(df.filter(pl.col("retry_count") >= 2)),
-        }
+            # Compute all aggregations in a single pass
+            agg_df = (
+                lf.with_columns(
+                    [
+                        (pl.col("status") == "failed").alias("is_failed"),
+                        (pl.col("status") == "failed_permanent").alias("is_permanent"),
+                        (pl.col("retry_count") == 0).alias("is_retry_0"),
+                        (pl.col("retry_count") == 1).alias("is_retry_1"),
+                        (pl.col("retry_count") >= 2).alias("is_retry_2_plus"),
+                    ]
+                )
+                .select(
+                    [
+                        pl.len().alias("total_rows"),
+                        pl.col("is_failed").sum().alias("status_failed"),
+                        pl.col("is_permanent").sum().alias("status_permanent"),
+                        pl.col("is_retry_0").sum().alias("retry_0"),
+                        pl.col("is_retry_1").sum().alias("retry_1"),
+                        pl.col("is_retry_2_plus").sum().alias("retry_2_plus"),
+                    ]
+                )
+                .collect()
+            )
+
+            if agg_df.is_empty():
+                stats = {
+                    "total_rows": 0,
+                    "status_failed": 0,
+                    "status_permanent": 0,
+                    "retry_0": 0,
+                    "retry_1": 0,
+                    "retry_2_plus": 0,
+                }
+            else:
+                row = agg_df.row(0, named=True)
+                stats = {
+                    "total_rows": row["total_rows"],
+                    "status_failed": row["status_failed"],
+                    "status_permanent": row["status_permanent"],
+                    "retry_0": row["retry_0"],
+                    "retry_1": row["retry_1"],
+                    "retry_2_plus": row["retry_2_plus"],
+                }
+
+        except Exception as e:
+            self._logger.warning(
+                f"Could not compute queue statistics: {e}",
+                extra={"table": self.table_path, "error": str(e)},
+            )
+            return {
+                "total_rows": -1,
+                "status_failed": -1,
+                "status_permanent": -1,
+                "retry_0": -1,
+                "retry_1": -1,
+                "retry_2_plus": -1,
+            }
 
         # Warning if queue is getting large
         if stats["total_rows"] > 10000:
