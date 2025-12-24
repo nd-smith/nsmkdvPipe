@@ -1139,6 +1139,8 @@ class EventsTableReader(DeltaTableReader):
         timestamp_col: str = "ingested_at",
         limit: Optional[int] = None,
         order_by: Optional[str] = None,
+        columns: Optional[List[str]] = None,
+        require_attachments: bool = False,
     ) -> pl.DataFrame:
         """
         Read events filtered by status_subtypes and optionally after a watermark.
@@ -1146,12 +1148,17 @@ class EventsTableReader(DeltaTableReader):
         Uses Delta Lake's native partition pruning via filter pushdown.
         The event_date partition column is used to limit data scanned.
 
+        Memory optimization: Use `columns` parameter to project only needed columns
+        early in the query plan, significantly reducing memory for wide tables.
+
         Args:
             status_subtypes: List of status_subtype values to filter on
             watermark: Only read events after this timestamp (required)
             timestamp_col: Timestamp column name (default: ingested_at)
             limit: Optional row limit
             order_by: Optional column to sort by
+            columns: Optional list of columns to select (projects early for memory efficiency)
+            require_attachments: If True, filter to only rows with non-null, non-empty attachments
 
         Returns:
             Filtered DataFrame
@@ -1164,11 +1171,14 @@ class EventsTableReader(DeltaTableReader):
             "Reading events by status subtypes",
             status_subtypes=status_subtypes,
             watermark=watermark.isoformat(),
+            columns=columns,
+            require_attachments=require_attachments,
         )
 
         opts = self.storage_options or get_storage_options()
 
         # Calculate date range for partition pruning
+        # Ensure we use date type for partition column comparison
         watermark_date = watermark.date()
         today = datetime.now(timezone.utc).date()
 
@@ -1176,23 +1186,58 @@ class EventsTableReader(DeltaTableReader):
         # Delta Lake will automatically prune partitions based on event_date filter
         lf = pl.scan_delta(self.table_path, storage_options=opts)
 
-        # Apply filters - Polars pushes these down to Delta for partition pruning
-        lf = lf.filter(
-            # Partition filter: prunes at file level
-            (pl.col("event_date") >= pl.lit(watermark_date))
-            & (pl.col("event_date") <= pl.lit(today))
-            # Row-level filters
-            & (pl.col(timestamp_col) > pl.lit(watermark))
-            & (pl.col("status_subtype").is_in(status_subtypes))
+        # OPTIMIZATION: Project columns early to reduce memory footprint
+        # This must happen before any operations that might materialize data
+        if columns:
+            # Ensure partition and filter columns are included for pushdown
+            required_cols = {"event_date", timestamp_col, "status_subtype"}
+            if require_attachments:
+                required_cols.add("attachments")
+            all_cols = list(set(columns) | required_cols)
+            lf = lf.select(all_cols)
+
+        # Build filter expression - separate partition filters for better pushdown
+        # Partition filter (file-level pruning)
+        partition_filter = (pl.col("event_date") >= watermark_date) & (
+            pl.col("event_date") <= today
         )
 
-        if order_by:
-            lf = lf.sort(order_by)
+        # Row-level filters
+        row_filter = (pl.col(timestamp_col) > watermark) & (
+            pl.col("status_subtype").is_in(status_subtypes)
+        )
 
-        if limit:
+        # Optional attachments filter - push into query instead of post-filtering
+        if require_attachments:
+            row_filter = (
+                row_filter
+                & pl.col("attachments").is_not_null()
+                & (pl.col("attachments") != "")
+            )
+
+        # Apply filters - partition filter first for better optimization hints
+        lf = lf.filter(partition_filter).filter(row_filter)
+
+        # OPTIMIZATION: When sorting with a limit, we must materialize all matching
+        # rows to sort them. For large datasets, consider:
+        # 1. Using a tighter time window (reduce watermark lookback)
+        # 2. Skipping sort if approximate ordering is acceptable
+        # 3. Using a two-phase approach for very large datasets
+        if order_by and limit:
+            self._log(
+                logging.DEBUG,
+                "Sort with limit: will materialize all matching rows for sort",
+                order_by=order_by,
+                limit=limit,
+            )
+            lf = lf.sort(order_by).head(limit)
+        elif order_by:
+            lf = lf.sort(order_by)
+        elif limit:
+            # No sort - can apply limit early without full materialization
             lf = lf.head(limit)
 
-        # Collect with streaming for memory efficiency
+        # Collect - streaming mode helps when no blocking operations (like sort)
         result = lf.collect(streaming=True)
 
         self._log(

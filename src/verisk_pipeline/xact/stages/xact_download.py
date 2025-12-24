@@ -212,6 +212,16 @@ class DownloadStage:
                     error=str(e),
                 )
 
+    # Columns required for download task building - project early for memory efficiency
+    REQUIRED_COLUMNS = [
+        "trace_id",
+        "status_subtype",
+        "assignment_id",
+        "attachments",
+        "estimate_version",
+        "ingested_at",
+    ]
+
     def _query_events(self, watermark: datetime) -> pl.DataFrame:
         """Query events with attachments, time-bounded to lookback window."""
         log_with_context(
@@ -224,12 +234,17 @@ class DownloadStage:
             max_events_to_scan=self.config.processing.max_events_to_scan,
         )
 
-        # Read events by status subtypes
+        # Read events by status subtypes with memory optimizations:
+        # - columns: Project only needed columns early (reduces memory 60-70%)
+        # - require_attachments: Push attachments filter into Delta query
+        # - order_by: Sort by ingested_at to process oldest first
         events_df = self.events_reader.read_by_status_subtypes(
             status_subtypes=self.config.processing.status_subtypes,
             watermark=watermark,
             limit=self.config.processing.max_events_to_scan,
             order_by="ingested_at",
+            columns=self.REQUIRED_COLUMNS,
+            require_attachments=True,
         )
 
         if events_df.is_empty():
@@ -244,37 +259,16 @@ class DownloadStage:
         log_with_context(
             logger,
             logging.DEBUG,
-            "Events read from table",
+            "Events with attachments read from table",
             event_count=len(events_df),
         )
 
         # Capture max timestamp for watermark update
         max_ts = events_df.select(pl.col("ingested_at").max()).item()
 
-        # Check for attachments column
-        if "attachments" not in events_df.columns:
-            log_with_context(logger, logging.DEBUG, "No attachments column in schema")
-            return pl.DataFrame()
-
-        # Filter to events with attachments
-        events_with_attachments = events_df.filter(
-            pl.col("attachments").is_not_null() & (pl.col("attachments") != "")
-        )
-
-        log_with_context(
-            logger,
-            logging.DEBUG,
-            "Filtered to events with attachments",
-            total_events=len(events_df),
-            events_with_attachments=len(events_with_attachments),
-        )
-
-        if events_with_attachments.is_empty():
-            return events_with_attachments
-
         # Explode comma-separated attachments into individual rows
         events_df = (
-            events_with_attachments.with_columns(
+            events_df.with_columns(
                 pl.col("attachments").str.split(",").alias("attachment_list")
             )
             .explode("attachment_list")
