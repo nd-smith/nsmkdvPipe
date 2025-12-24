@@ -109,6 +109,129 @@ class TokenCredential:
         return AccessToken(self._token, self._expires_on)
 
 
+# Registry of FileBackedTokenCredential instances for coordinated refresh
+_file_credential_registry: list = []
+
+
+def _register_file_credential(credential: "FileBackedTokenCredential") -> None:
+    """Register a FileBackedTokenCredential for coordinated refresh."""
+    _file_credential_registry.append(credential)
+
+
+def _clear_all_file_credentials() -> None:
+    """Force refresh all registered FileBackedTokenCredentials."""
+    for cred in _file_credential_registry:
+        try:
+            cred._cached_token = None
+            cred._token_acquired_at = None
+        except Exception:
+            pass  # Best effort
+
+
+def _refresh_all_credentials() -> None:
+    """
+    Clear all credential caches on auth error.
+
+    This is the callback used by @with_retry(on_auth_error=...) decorators.
+    It clears both:
+    1. AzureAuth's in-memory token cache (for CLI auth)
+    2. All FileBackedTokenCredential instances (for file-based auth)
+    """
+    clear_token_cache()
+    _clear_all_file_credentials()
+
+
+class FileBackedTokenCredential:
+    """
+    Credential that re-reads from token file when token is near expiry.
+
+    This solves the problem where a long-running stage creates a TokenCredential
+    once at startup, but the token expires after 60 minutes. With this class,
+    the credential will automatically re-read the token from the file (which
+    token_refresher.py keeps updated) before the current token expires.
+
+    Token refresh timeline:
+    - Token refresher writes new token every 45 minutes
+    - Azure tokens expire at 60 minutes
+    - This class re-reads token every 5 minutes to stay fresh
+
+    We use a short refresh interval (5 min) because:
+    1. The token file read is very fast (just reading a small JSON file)
+    2. This ensures we always have a fresh token even if timing is off
+    3. It handles cases where token_refresher restarts or tokens are manually updated
+    """
+
+    # Re-read token every 5 minutes to stay fresh
+    # This is conservative but safe - file reads are fast
+    TOKEN_REFRESH_MINUTES = 5
+
+    def __init__(self, resource: str = "https://storage.azure.com/"):
+        """
+        Args:
+            resource: Azure resource URL for token lookup in JSON file
+        """
+        self._resource = resource
+        self._cached_token: Optional[str] = None
+        self._token_acquired_at: Optional[datetime] = None
+        self._logger = logging.getLogger(__name__)
+        # Register for coordinated refresh
+        _register_file_credential(self)
+
+    def _should_refresh(self) -> bool:
+        """Check if token should be re-read from file."""
+        if self._cached_token is None or self._token_acquired_at is None:
+            return True
+
+        age = datetime.now(timezone.utc) - self._token_acquired_at
+        return age > timedelta(minutes=self.TOKEN_REFRESH_MINUTES)
+
+    def _fetch_token(self) -> str:
+        """Fetch fresh token from auth system (re-reads from file)."""
+        auth = get_auth()
+
+        # Clear cache to force re-read from file
+        clear_token_cache()
+
+        token = auth.get_storage_token(force_refresh=True)
+        if not token:
+            raise RuntimeError("Failed to get storage token")
+
+        self._cached_token = token
+        self._token_acquired_at = datetime.now(timezone.utc)
+
+        self._logger.debug(
+            "FileBackedTokenCredential refreshed token for %s", self._resource
+        )
+        return token
+
+    def get_token(self, *scopes, **kwargs) -> AccessToken:
+        """
+        Return token in Azure SDK expected format.
+
+        Automatically refreshes from file if token is near expiry.
+        """
+        if self._should_refresh():
+            self._fetch_token()
+
+        # Calculate expires_on (assume 60 min from acquisition)
+        if self._token_acquired_at:
+            expires_on = int(
+                (self._token_acquired_at + timedelta(hours=1)).timestamp()
+            )
+        else:
+            expires_on = int(
+                (datetime.now(timezone.utc) + timedelta(hours=1)).timestamp()
+            )
+
+        return AccessToken(self._cached_token, expires_on)
+
+    def force_refresh(self) -> None:
+        """Force an immediate token refresh (called on auth errors)."""
+        self._cached_token = None
+        self._token_acquired_at = None
+        self._fetch_token()
+
+
 def parse_abfss_path(path: str) -> Tuple[str, str, str]:
     """
     Parse an abfss:// path into components.
@@ -235,13 +358,20 @@ class OneLakeClient(LoggedClass):
 
         # Get credential based on auth mode (priority: token_file > cli > spn)
         if auth.token_file:
-            # Token file mode - use token from file
+            # Token file mode - use FileBackedTokenCredential for auto-refresh
+            # This credential will re-read from the token file when tokens near expiry
             try:
-                token = auth.get_storage_token()
-                if not token:
-                    raise RuntimeError("Failed to get storage token from file")
-                credential = TokenCredential(token)
+                credential = FileBackedTokenCredential(
+                    resource=auth.STORAGE_RESOURCE
+                )
+                # Store reference so we can call force_refresh on auth errors
+                self._file_credential = credential
                 auth_mode = "file"
+                self._log(
+                    logging.INFO,
+                    "Using FileBackedTokenCredential for auto-refresh",
+                    token_file=auth.token_file,
+                )
             except Exception as e:
                 self._log(
                     logging.WARNING,
@@ -251,12 +381,16 @@ class OneLakeClient(LoggedClass):
                 # Fall through to try other auth methods
                 credential = None
                 auth_mode = None
+                self._file_credential = None
         else:
             credential = None
             auth_mode = None
+            self._file_credential = None
 
         # Try CLI auth if token file didn't work
         if credential is None and auth.use_cli:
+            # For CLI, also use FileBackedTokenCredential if there's a fallback token file
+            # Otherwise use regular TokenCredential (CLI can refresh itself)
             token = auth.get_storage_token()
             if not token:
                 raise RuntimeError("Failed to get CLI storage token")
@@ -367,9 +501,36 @@ class OneLakeClient(LoggedClass):
         if self._file_system_client is None:
             self._create_clients(max_pool_size=self._max_pool_size)
 
+    def _refresh_credential(self) -> None:
+        """
+        Force refresh the credential (called on auth errors).
+
+        For FileBackedTokenCredential: forces immediate re-read from token file.
+        For other auth modes: clears token cache.
+        """
+        # If using FileBackedTokenCredential, force it to re-read from file
+        if hasattr(self, '_file_credential') and self._file_credential is not None:
+            try:
+                self._file_credential.force_refresh()
+                self._log(
+                    logging.INFO,
+                    "FileBackedTokenCredential force refreshed",
+                )
+            except Exception as e:
+                self._log(
+                    logging.WARNING,
+                    "Failed to force refresh FileBackedTokenCredential",
+                    error=str(e)[:200],
+                )
+        else:
+            # For CLI/SPN auth, just clear the cache
+            clear_token_cache()
+
     def _refresh_client(self) -> None:
         """Refresh client with new credentials."""
-        clear_token_cache()
+        # First refresh the credential
+        self._refresh_credential()
+
         if self._service_client is not None:
             try:
                 self._service_client.close()
@@ -444,7 +605,7 @@ class OneLakeClient(LoggedClass):
         )
 
     @logged_operation(level=logging.DEBUG)
-    @with_retry(config=ONELAKE_RETRY_CONFIG, on_auth_error=lambda: clear_token_cache())
+    @with_retry(config=ONELAKE_RETRY_CONFIG, on_auth_error=_refresh_all_credentials)
     def upload_bytes(
         self,
         relative_path: str,
@@ -486,7 +647,7 @@ class OneLakeClient(LoggedClass):
             raise
 
     @logged_operation(level=logging.INFO)
-    @with_retry(config=ONELAKE_RETRY_CONFIG, on_auth_error=lambda: clear_token_cache())
+    @with_retry(config=ONELAKE_RETRY_CONFIG, on_auth_error=_refresh_all_credentials)
     def upload_bytes_with_idempotency(
         self,
         relative_path: str,
@@ -544,7 +705,7 @@ class OneLakeClient(LoggedClass):
         return write_op
 
     @logged_operation(level=logging.DEBUG)
-    @with_retry(config=ONELAKE_RETRY_CONFIG, on_auth_error=lambda: clear_token_cache())
+    @with_retry(config=ONELAKE_RETRY_CONFIG, on_auth_error=_refresh_all_credentials)
     def download_bytes(self, relative_path: str) -> bytes:
         """
         Download file content from OneLake.
@@ -580,7 +741,7 @@ class OneLakeClient(LoggedClass):
             raise
 
     @logged_operation(level=logging.DEBUG)
-    @with_retry(config=ONELAKE_RETRY_CONFIG, on_auth_error=lambda: clear_token_cache())
+    @with_retry(config=ONELAKE_RETRY_CONFIG, on_auth_error=_refresh_all_credentials)
     def upload_file(
         self,
         relative_path: str,
@@ -626,7 +787,7 @@ class OneLakeClient(LoggedClass):
             self._handle_auth_error(e)
             raise
 
-    @with_retry(config=ONELAKE_RETRY_CONFIG, on_auth_error=lambda: clear_token_cache())
+    @with_retry(config=ONELAKE_RETRY_CONFIG, on_auth_error=_refresh_all_credentials)
     def exists(self, relative_path: str) -> bool:
         """
         Check if file exists.
@@ -657,7 +818,7 @@ class OneLakeClient(LoggedClass):
             self._handle_auth_error(e)
             raise
 
-    @with_retry(config=ONELAKE_RETRY_CONFIG, on_auth_error=lambda: clear_token_cache())
+    @with_retry(config=ONELAKE_RETRY_CONFIG, on_auth_error=_refresh_all_credentials)
     def delete(self, relative_path: str) -> bool:
         """
         Delete a file.
@@ -686,7 +847,7 @@ class OneLakeClient(LoggedClass):
             self._handle_auth_error(e)
             raise
 
-    @with_retry(config=ONELAKE_RETRY_CONFIG, on_auth_error=lambda: clear_token_cache())
+    @with_retry(config=ONELAKE_RETRY_CONFIG, on_auth_error=_refresh_all_credentials)
     def get_file_properties(self, relative_path: str) -> Optional[dict]:
         """
         Get file properties/metadata.
