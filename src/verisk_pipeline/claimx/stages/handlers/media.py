@@ -45,6 +45,7 @@ class MediaTransformer:
         "data": [
             {
                 "mediaID": 123,           # Note: capital ID
+                "taskAssignmentID": 456,  # Optional task assignment
                 "mediaType": "jpg",
                 "mediaName": "photo.jpg",
                 "mediaDescription": "...",
@@ -82,6 +83,7 @@ class MediaTransformer:
         return {
             "media_id": safe_int(media.get("mediaID")),
             "project_id": project_id,
+            "task_assignment_id": safe_int(media.get("taskAssignmentID")),
             "file_type": safe_str(media.get("mediaType")),
             "file_name": safe_str(media.get("mediaName")),
             "media_description": safe_str(media.get("mediaDescription")),
