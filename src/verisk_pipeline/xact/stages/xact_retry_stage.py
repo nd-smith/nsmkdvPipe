@@ -475,6 +475,7 @@ class RetryStage:
                         download_breaker=self._download_breaker,
                         upload_breaker=self._upload_breaker,
                         upload_service=self._upload_service,
+                        encrypt_temp_files=self.config.security.encrypt_temp_files,
                     )
                 )
 
