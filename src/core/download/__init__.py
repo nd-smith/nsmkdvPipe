@@ -1,25 +1,64 @@
 """
-Async download module.
+Async download module with clean interface.
 
-Provides HTTP download logic decoupled from storage backends.
+Provides:
+    - AttachmentDownloader: High-level interface (DownloadTask -> DownloadOutcome)
+    - HTTP download with aiohttp (in-memory and streaming)
+    - URL validation with SSRF prevention
+    - File type validation (extension and MIME type)
+    - Error classification for retry decisions
 
-Components to extract and review from verisk_pipeline.xact.stages.xact_download:
-    - Async HTTP download with aiohttp
-    - Streaming for large files (>50MB)
-    - Chunked transfer handling
-    - Content-Length validation
-    - Retry-After header parsing
+Components:
+    - downloader: Unified AttachmentDownloader class
+    - models: DownloadTask and DownloadOutcome data models
+    - http_client: Low-level HTTP download (in-memory)
+    - streaming: Streaming download for large files (>50MB)
 
-New functionality to add:
-    - Clean interface (DownloadTask -> DownloadOutcome)
-    - Progress callbacks for observability
-    - Configurable timeouts per-request
+Example usage:
+    from core.download import AttachmentDownloader, DownloadTask
 
-Review checklist:
-    [ ] Memory usage is bounded for large files
-    [ ] Timeouts are properly configured
-    [ ] Connection pooling is efficient
-    [ ] Error classification is correct
-    [ ] Partial downloads are handled (resume or fail cleanly)
-    [ ] SSL verification is enabled
+    downloader = AttachmentDownloader()
+    task = DownloadTask(
+        url="https://example.com/file.pdf",
+        destination=Path("file.pdf")
+    )
+    outcome = await downloader.download(task)
+
+    if outcome.success:
+        print(f"Downloaded {outcome.bytes_downloaded} bytes")
+    else:
+        print(f"Failed: {outcome.error_message}")
 """
+
+from core.download.downloader import AttachmentDownloader
+from core.download.http_client import DownloadError, DownloadResponse, create_session, download_url
+from core.download.models import DownloadOutcome, DownloadTask
+from core.download.streaming import (
+    CHUNK_SIZE,
+    STREAM_THRESHOLD,
+    StreamDownloadError,
+    StreamDownloadResponse,
+    download_to_file,
+    should_stream,
+    stream_download_url,
+)
+
+__all__ = [
+    # High-level interface
+    "AttachmentDownloader",
+    "DownloadTask",
+    "DownloadOutcome",
+    # HTTP client
+    "download_url",
+    "create_session",
+    "DownloadResponse",
+    "DownloadError",
+    # Streaming
+    "stream_download_url",
+    "download_to_file",
+    "should_stream",
+    "StreamDownloadResponse",
+    "StreamDownloadError",
+    "CHUNK_SIZE",
+    "STREAM_THRESHOLD",
+]
