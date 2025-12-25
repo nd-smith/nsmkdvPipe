@@ -219,6 +219,12 @@ class OneLakeError(PipelineError):
     pass
 
 
+class KafkaError(PipelineError):
+    """Error from Kafka operations (producer/consumer)."""
+
+    pass
+
+
 class DownloadError(PipelineError):
     """Error downloading attachment from source."""
 
