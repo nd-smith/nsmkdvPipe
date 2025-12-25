@@ -6,6 +6,7 @@
 > 3. Complete the work package (code + tests)
 > 4. Move to "Completed" with commit hash
 > 5. Commit backlog update alongside code changes
+> 6. RULE: Do not include claude code, claude, anthropic references in the codebase or commit messages. 
 
 ---
 
@@ -48,7 +49,7 @@
 - [x] **WP-002**: Set up folder structure (commit: 92e4e9e)
 - [x] **WP-003**: Add Claude Code constraints to plan (commit: d4d5509)
 - [x] **WP-004**: Incorporate user feedback into plan (commit: b48068e)
-- [x] **WP-101**: Create core package structure and base types (commit: TBD)
+- [x] **WP-101**: Create core package structure and base types (commit: 5f38763)
 
 ---
 
