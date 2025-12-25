@@ -86,9 +86,7 @@ Each Claude Code session should:
 | ID | Requirement | Priority | Source |
 |----|-------------|----------|--------|
 | FR-1.1 | System SHALL consume events from source Kafka topic | P0 | New |
-| FR-1.2 | System SHALL support consuming from Kusto as a fallback/bridge | P1 | Existing | 
-<note - FR-1.2>Not sure if this is really needed - we don't need to bridge functionality.  As a matter of backup functionality, if there are issues w/ kafka this is the least of our concerns. Do we really need this?</note - FR-1.2>
-
+| ~~FR-1.2~~ | ~~System SHALL support consuming from Kusto as a fallback/bridge~~ | ~~P1~~ | **REMOVED** - Kafka is source of truth; fallback adds complexity without value |
 | FR-1.3 | System SHALL deduplicate events by `trace_id` within a configurable window | P0 | Existing |
 | FR-1.4 | System SHALL write ingested events to Delta Lake for analytics | P1 | Existing |
 | FR-1.5 | System SHALL track consumer offsets for exactly-once processing | P0 | New |
@@ -99,20 +97,16 @@ Each Claude Code session should:
 |----|-------------|----------|--------|
 | FR-2.1 | System SHALL download attachments from presigned URLs | P0 | Existing |
 | FR-2.2 | System SHALL validate URLs against domain allowlist (SSRF prevention) | P0 | Existing |
-<note-FR2.2>I would also like to be able to allow-list by file type</note-FR2.2>
-| FR-2.3 | System SHALL detect and handle expired presigned URLs | P0 | Existing |
-<note-FR-2.3>Let's review exactly how this should be done - and remember we need to be able to define the strategy by domain (claimx can fetch new URLs while xact can't)</note-FR-2.3>
+| FR-2.2.1 | System SHALL validate files against allowed file type list | P0 | New |
+| FR-2.3 | System SHALL detect and handle expired presigned URLs via domain strategy | P0 | Existing |
 | FR-2.4 | System SHALL stream large files (>50MB) to avoid memory exhaustion | P0 | Existing |
 | FR-2.5 | System SHALL upload files to OneLake with deterministic paths | P0 | Existing |
 | FR-2.6 | System SHALL process downloads concurrently (configurable parallelism) | P0 | Existing |
-| FR-2.7 | System SHALL classify download failures as transient or permanent | P0 | Existing |
-<note-FR-2.7>Configurable by domain - what is permanent for one service/domain may not be for another.</note-FR-2.7>
-| FR-2.8 | System SHALL be able to configure how to handle URL redirects | P0 | Existing
-| FR-2.9 | System SHALL have a decoupled file uploader service separate from data ops | P0 | New
-| FR-3.0 | System SHALL support file attachment encryption at rest | P0 | New
-| FR-3.1 | System SHALL interact with onelake using accepted community best practices/microsoft guidance | P0 | New
-
-
+| FR-2.7 | System SHALL classify download failures as transient/permanent via domain strategy | P0 | Existing |
+| FR-2.8 | System SHALL handle URL redirects per domain configuration | P0 | New |
+| FR-2.9 | System SHALL have a decoupled file uploader service separate from data ops | P0 | New |
+| FR-2.10 | System SHALL support file attachment encryption at rest | P0 | New |
+| FR-2.11 | System SHALL interact with OneLake using Microsoft best practices | P0 | New |
 
 ### 1.3 Retry Handling
 
@@ -140,6 +134,43 @@ Each Claude Code session should:
 | FR-5.2 | System SHALL support ClaimX domain events | P0 | Existing |
 | FR-5.3 | System SHALL support the addition of new domains | P1 | New |
 | FR-5.4 | System SHALL route events to domain-specific handlers based on message headers | P0 | New |
+
+### 1.6 Domain Strategy Pattern
+
+> Several requirements above reference "domain strategy" - this section defines the pattern.
+
+Each domain (XACT, ClaimX, future domains) may have different behaviors. These are encapsulated in a **DomainStrategy** interface:
+
+```python
+class DomainStrategy(Protocol):
+    """Domain-specific behavior configuration."""
+
+    domain_name: str
+
+    # URL handling
+    def can_refresh_expired_url(self) -> bool: ...
+    def refresh_url(self, expired_url: str, context: dict) -> Optional[str]: ...
+
+    # Error classification
+    def classify_error(self, error: Exception) -> ErrorCategory: ...
+    def is_transient(self, status_code: int) -> bool: ...
+
+    # Redirect handling
+    def should_follow_redirect(self, original_url: str, redirect_url: str) -> bool: ...
+
+    # File validation
+    def allowed_file_types(self) -> List[str]: ...
+    def validate_file(self, filename: str, content_type: str) -> bool: ...
+```
+
+**Current Domain Behaviors:**
+
+| Behavior | XACT | ClaimX |
+|----------|------|--------|
+| Refresh expired URLs | No | Yes (via API) |
+| Follow redirects | Configurable | Yes |
+| Transient HTTP codes | 429, 500, 502, 503, 504 | 429, 500, 502, 503, 504, 401 |
+| Allowed file types | PDF, XML, images | All |
 
 ---
 
@@ -284,6 +315,59 @@ Each Claude Code session should:
 | `xact-download-worker` | `downloads.pending`, `retry.*` | 6 | At-least-once |
 | `xact-result-processor` | `downloads.results` | 2 | Exactly-once (txn) |
 | `xact-dlq-handler` | `downloads.dlq` | 1 | Manual ack |
+
+### 3.4 Data Compatibility & Migration
+
+> **Constraint**: Preserve existing data. No unnecessary file I/O for restructuring.
+
+#### 3.4.1 Existing Delta Tables (Reuse As-Is)
+
+| Table | Current Schema | Kafka Pipeline Usage | Migration |
+|-------|----------------|---------------------|-----------|
+| `xact_events` | trace_id, event_type, timestamp, payload, ... | Continue writing ingested events | **None** - schema compatible |
+| `xact_attachments` | trace_id, attachment_url, blob_path, ... | Continue writing inventory | **None** - schema compatible |
+| `xact_retry` | trace_id, retry_count, next_retry_at, ... | **Deprecated** - replaced by Kafka retry topics | Read-only for migration |
+
+#### 3.4.2 OneLake File Structure (Preserve)
+
+```
+Files/
+├── xact/
+│   ├── documentsReceived/{assignment_id}/{trace_id}/...
+│   ├── estimatePackageReceived/{assignment_id}/{trace_id}/...
+│   └── FNOL/{assignment_id}/{trace_id}/...
+└── claimx/
+    └── {claim_id}/{document_type}/...
+```
+
+**No changes to file paths.** The `generate_blob_path()` function remains unchanged.
+
+#### 3.4.3 Migration Strategy
+
+| Phase | Action | Risk |
+|-------|--------|------|
+| **Pre-cutover** | New pipeline writes to same tables | None - additive |
+| **Cutover** | Stop legacy pipeline, Kafka takes over | Low - same schemas |
+| **Post-cutover** | Drain `xact_retry` table via one-time job | Low - read-only |
+
+#### 3.4.4 Retry Queue Migration
+
+The legacy Delta-based retry queue (`xact_retry`) will be migrated to Kafka:
+
+```python
+# One-time migration job (run once at cutover)
+async def migrate_retry_queue():
+    pending = retry_queue_reader.get_pending_retries(max_retries=10)
+    for row in pending.iter_rows(named=True):
+        task = DownloadTaskMessage(
+            trace_id=row["trace_id"],
+            attachment_url=row["attachment_url"],
+            retry_count=row["retry_count"],
+            # ... map remaining fields
+        )
+        await producer.send("xact.downloads.pending", task.trace_id, task)
+    # After validation, truncate xact_retry table
+```
 
 ---
 
