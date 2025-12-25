@@ -49,7 +49,7 @@
 - [x] **WP-115**: Extract security - presigned URL handling (commit: 5274dd8)
 - [x] **WP-116**: Extract path resolution (commit: 4e09b6a)
 - [x] **WP-117**: Extract async download - core HTTP logic (commit: b546028)
-- [x] **WP-118**: Extract async download - streaming for large files (commit: PENDING)
+- [x] **WP-118**: Extract async download - streaming for large files (commit: a1f2acd)
 
 ---
 
