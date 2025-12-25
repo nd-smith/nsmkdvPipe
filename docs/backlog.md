@@ -49,7 +49,7 @@
 - [x] **WP-112**: Add Kafka error classifier (commit: ec21f42)
 - [x] **WP-113**: Extract security - URL validation (commit: 9088292)
 - [x] **WP-114**: Extract security - file type validation (commit: 261fc27)
-- [x] **WP-115**: Extract security - presigned URL handling (commit: PENDING)
+- [x] **WP-115**: Extract security - presigned URL handling (commit: 5274dd8)
 
 ---
 
