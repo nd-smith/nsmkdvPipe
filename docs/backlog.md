@@ -15,11 +15,10 @@
 ### In Progress
 <!-- Move tasks here when starting work -->
 
-- [ ] **WP-106**: Extract retry decorator to core/resilience
+- [ ] **WP-107**: Extract logging - base logger and formatters
 
 ### Ready
 <!-- Tasks ready to be picked up -->
-- [ ] **WP-107**: Extract logging - base logger and formatters
 - [ ] **WP-108**: Extract logging - context managers
 - [ ] **WP-109**: Add Kafka context to logging
 - [ ] **WP-110**: Extract error classification - exception hierarchy
@@ -50,6 +49,7 @@
 - [x] **WP-103**: Extract and review auth module - Azure credentials (commit: 9d74b72)
 - [x] **WP-104**: Add Kafka OAUTHBEARER support to auth (commit: b054206)
 - [x] **WP-105**: Extract circuit breaker to core/resilience (commit: 7c7f064)
+- [x] **WP-106**: Extract retry decorator to core/resilience (commit: TBD)
 
 ---
 

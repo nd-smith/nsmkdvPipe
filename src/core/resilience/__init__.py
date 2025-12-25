@@ -6,11 +6,10 @@ Provides fault tolerance primitives for distributed systems.
 Components:
     - CircuitBreaker: State machine (closed/open/half-open)
     - @circuit_protected: Decorator for circuit breaker protection
-    - Standard configs: KAFKA_CIRCUIT_CONFIG, KUSTO_CIRCUIT_CONFIG, etc.
-
-Components to extract:
     - RetryConfig: Exponential backoff configuration
     - @with_retry decorator: Retry with jitter
+    - RetryBudget: Retry amplification prevention
+    - Standard configs: KAFKA_CIRCUIT_CONFIG, KUSTO_CIRCUIT_CONFIG, etc.
 """
 
 from .circuit_breaker import (
@@ -27,8 +26,17 @@ from .circuit_breaker import (
     circuit_protected,
     get_circuit_breaker,
 )
+from .retry import (
+    AUTH_RETRY,
+    DEFAULT_RETRY,
+    RetryBudget,
+    RetryConfig,
+    RetryStats,
+    with_retry,
+)
 
 __all__ = [
+    # Circuit Breaker
     "CircuitBreaker",
     "CircuitBreakerConfig",
     "CircuitOpenError",
@@ -36,7 +44,14 @@ __all__ = [
     "CircuitStats",
     "circuit_protected",
     "get_circuit_breaker",
-    # Standard configs
+    # Retry
+    "RetryConfig",
+    "RetryStats",
+    "RetryBudget",
+    "with_retry",
+    "DEFAULT_RETRY",
+    "AUTH_RETRY",
+    # Circuit Breaker Configs
     "CLAIMX_API_CIRCUIT_CONFIG",
     "EXTERNAL_DOWNLOAD_CIRCUIT_CONFIG",
     "KAFKA_CIRCUIT_CONFIG",
