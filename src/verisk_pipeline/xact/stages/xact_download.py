@@ -711,7 +711,7 @@ class DownloadStage:
                                     destination=task.blob_path,
                                     domain="xact",
                                     trace_id=getattr(task, 'trace_id', None),
-                                    metadata={"event_id": task.event_id},
+                                    metadata={"assignment_id": task.assignment_id},
                                 ))
                             else:
                                 await asyncio.to_thread(
@@ -724,7 +724,7 @@ class DownloadStage:
                                     destination=task.blob_path,
                                     domain="xact",
                                     trace_id=getattr(task, 'trace_id', None),
-                                    metadata={"event_id": task.event_id},
+                                    metadata={"assignment_id": task.assignment_id},
                                 ))
                             else:
                                 await asyncio.to_thread(
@@ -741,7 +741,7 @@ class DownloadStage:
                             destination=task.blob_path,
                             domain="xact",
                             trace_id=getattr(task, 'trace_id', None),
-                            metadata={"event_id": task.event_id},
+                            metadata={"assignment_id": task.assignment_id},
                         ))
                     else:
                         await asyncio.to_thread(
@@ -1175,7 +1175,7 @@ async def download_single(
                                 destination=task.blob_path,
                                 domain="xact",
                                 trace_id=getattr(task, 'trace_id', None),
-                                metadata={"event_id": task.event_id},
+                                metadata={"assignment_id": task.assignment_id},
                             ))
                         else:
                             await asyncio.to_thread(
@@ -1189,7 +1189,7 @@ async def download_single(
                                 destination=task.blob_path,
                                 domain="xact",
                                 trace_id=getattr(task, 'trace_id', None),
-                                metadata={"event_id": task.event_id},
+                                metadata={"assignment_id": task.assignment_id},
                             ))
                         else:
                             await asyncio.to_thread(
@@ -1206,7 +1206,7 @@ async def download_single(
                         destination=task.blob_path,
                         domain="xact",
                         trace_id=getattr(task, 'trace_id', None),
-                        metadata={"event_id": task.event_id},
+                        metadata={"assignment_id": task.assignment_id},
                     ))
                 else:
                     await asyncio.to_thread(
