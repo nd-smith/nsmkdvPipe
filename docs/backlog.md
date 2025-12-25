@@ -15,11 +15,10 @@
 ### In Progress
 <!-- Move tasks here when starting work -->
 
-- [ ] **WP-108**: Extract logging - context managers
+- [ ] **WP-109**: Add Kafka context to logging
 
 ### Ready
 <!-- Tasks ready to be picked up -->
-- [ ] **WP-109**: Add Kafka context to logging
 - [ ] **WP-110**: Extract error classification - exception hierarchy
 - [ ] **WP-111**: Extract error classification - Azure error classifier
 - [ ] **WP-112**: Add Kafka error classifier
@@ -50,6 +49,7 @@
 - [x] **WP-105**: Extract circuit breaker to core/resilience (commit: 7c7f064)
 - [x] **WP-106**: Extract retry decorator to core/resilience (commit: 569642c)
 - [x] **WP-107**: Extract logging - base logger and formatters (commit: c908f90)
+- [x] **WP-108**: Extract logging - context managers (commit: 4df0b49)
 
 ---
 
