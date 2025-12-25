@@ -49,7 +49,7 @@
 - [x] **WP-109**: Add Kafka context to logging (commit: 0d7bd86)
 - [x] **WP-110**: Extract error classification - exception hierarchy (commit: 323e765)
 - [x] **WP-111**: Extract error classification - Azure error classifier (commit: d098cf8)
-- [x] **WP-112**: Add Kafka error classifier (commit: PENDING)
+- [x] **WP-112**: Add Kafka error classifier (commit: ec21f42)
 
 ---
 
