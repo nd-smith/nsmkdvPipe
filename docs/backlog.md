@@ -15,11 +15,10 @@
 ### In Progress
 <!-- Move tasks here when starting work -->
 
-- [ ] **WP-116**: Extract path resolution
+- [ ] **WP-117**: Extract async download - core HTTP logic
 
 ### Ready
 <!-- Tasks ready to be picked up -->
-- [ ] **WP-117**: Extract async download - core HTTP logic
 - [ ] **WP-118**: Extract async download - streaming for large files
 - [ ] **WP-119**: Create AttachmentDownloader class with clean interface
 
@@ -50,6 +49,7 @@
 - [x] **WP-113**: Extract security - URL validation (commit: 9088292)
 - [x] **WP-114**: Extract security - file type validation (commit: 261fc27)
 - [x] **WP-115**: Extract security - presigned URL handling (commit: 5274dd8)
+- [x] **WP-116**: Extract path resolution (commit: PENDING)
 
 ---
 
