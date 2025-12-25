@@ -15,11 +15,10 @@
 ### In Progress
 <!-- Move tasks here when starting work -->
 
-- [ ] **WP-118**: Extract async download - streaming for large files
+- [ ] **WP-119**: Create AttachmentDownloader class with clean interface
 
 ### Ready
 <!-- Tasks ready to be picked up -->
-- [ ] **WP-119**: Create AttachmentDownloader class with clean interface
 
 ### Blocked
 <!-- Tasks waiting on dependencies or decisions -->
@@ -50,6 +49,7 @@
 - [x] **WP-115**: Extract security - presigned URL handling (commit: 5274dd8)
 - [x] **WP-116**: Extract path resolution (commit: 4e09b6a)
 - [x] **WP-117**: Extract async download - core HTTP logic (commit: b546028)
+- [x] **WP-118**: Extract async download - streaming for large files (commit: PENDING)
 
 ---
 

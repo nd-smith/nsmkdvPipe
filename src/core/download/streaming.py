@@ -1,0 +1,277 @@
+"""
+Streaming download support for large files with memory bounds.
+
+Provides chunked streaming functionality to handle files larger than
+available memory. Extracts streaming logic from xact_download.py to be
+reusable across pipeline components.
+"""
+
+import asyncio
+from dataclasses import dataclass
+from pathlib import Path
+from typing import AsyncIterator, Optional
+
+import aiohttp
+
+from core.errors.exceptions import (
+    ErrorCategory,
+    TimeoutError as PipelineTimeoutError,
+    classify_http_status,
+)
+
+
+# Download configuration constants
+CHUNK_SIZE = 8 * 1024 * 1024  # 8MB chunks for streaming
+STREAM_THRESHOLD = 50 * 1024 * 1024  # Stream files > 50MB
+
+
+@dataclass
+class StreamDownloadResponse:
+    """
+    Response from streaming HTTP download operation.
+
+    Attributes:
+        status_code: HTTP status code
+        content_length: Size in bytes (from Content-Length header)
+        content_type: MIME type (from Content-Type header)
+        chunk_iterator: Async iterator yielding byte chunks
+    """
+
+    status_code: int
+    content_length: Optional[int]
+    content_type: Optional[str]
+    chunk_iterator: AsyncIterator[bytes]
+
+
+@dataclass
+class StreamDownloadError:
+    """
+    Error result from failed streaming download.
+
+    Attributes:
+        status_code: HTTP status code if received
+        error_message: Error description
+        error_category: Classification for retry decisions
+    """
+
+    status_code: Optional[int]
+    error_message: str
+    error_category: ErrorCategory
+
+
+async def stream_download_url(
+    url: str,
+    session: aiohttp.ClientSession,
+    timeout: int = 60,
+    chunk_size: int = CHUNK_SIZE,
+    allow_redirects: bool = False,
+) -> tuple[Optional[StreamDownloadResponse], Optional[StreamDownloadError]]:
+    """
+    Stream download content from URL using async HTTP with chunked reading.
+
+    This function is optimized for large files (>50MB) and returns an async
+    iterator for memory-efficient processing. The iterator MUST be consumed
+    within the context manager scope.
+
+    Does NOT perform:
+    - URL validation (caller's responsibility)
+    - Circuit breaker checks (higher-level concern)
+    - Retry logic (higher-level concern)
+    - Temp file management (caller's responsibility)
+
+    Args:
+        url: URL to download
+        session: aiohttp ClientSession (caller manages lifecycle)
+        timeout: Timeout in seconds (default: 60)
+        chunk_size: Size of chunks in bytes (default: 8MB)
+        allow_redirects: Whether to follow redirects (default: False for security)
+
+    Returns:
+        Tuple of (StreamDownloadResponse, None) on success
+        or (None, StreamDownloadError) on failure
+
+    Example:
+        async with aiohttp.ClientSession() as session:
+            response, error = await stream_download_url(
+                "https://example.com/largefile.pdf",
+                session,
+                timeout=120
+            )
+            if error:
+                # Handle error
+                print(f"Download failed: {error.error_message}")
+            else:
+                # Stream to file
+                with open("output.pdf", "wb") as f:
+                    async for chunk in response.chunk_iterator:
+                        f.write(chunk)
+    """
+    try:
+        # Create the HTTP request context
+        response_ctx = session.get(
+            url,
+            timeout=aiohttp.ClientTimeout(total=timeout),
+            allow_redirects=allow_redirects,
+        )
+
+        # Get the response object
+        response = await response_ctx.__aenter__()
+
+        # Check status code
+        if response.status != 200:
+            error_category = classify_http_status(response.status)
+            await response_ctx.__aexit__(None, None, None)
+
+            return None, StreamDownloadError(
+                status_code=response.status,
+                error_message=f"HTTP {response.status}",
+                error_category=error_category,
+            )
+
+        # Extract metadata
+        content_length = response.content_length
+        content_type = response.headers.get("Content-Type")
+
+        # Create async iterator for chunks
+        async def chunk_iterator() -> AsyncIterator[bytes]:
+            """
+            Async generator that yields chunks from the response.
+
+            Note: This iterator manages the response context lifecycle.
+            It will close the response when iteration completes or fails.
+            """
+            try:
+                async for chunk in response.content.iter_chunked(chunk_size):
+                    yield chunk
+            finally:
+                # Ensure response is closed after iteration
+                await response_ctx.__aexit__(None, None, None)
+
+        return (
+            StreamDownloadResponse(
+                status_code=response.status,
+                content_length=content_length,
+                content_type=content_type,
+                chunk_iterator=chunk_iterator(),
+            ),
+            None,
+        )
+
+    except asyncio.TimeoutError as e:
+        return None, StreamDownloadError(
+            status_code=None,
+            error_message=f"Download timeout after {timeout}s",
+            error_category=ErrorCategory.TRANSIENT,
+        )
+
+    except aiohttp.ClientError as e:
+        # Connection errors, DNS failures, etc.
+        return None, StreamDownloadError(
+            status_code=None,
+            error_message=f"Connection error: {str(e)}",
+            error_category=ErrorCategory.TRANSIENT,
+        )
+
+
+async def download_to_file(
+    url: str,
+    output_path: Path,
+    session: aiohttp.ClientSession,
+    timeout: int = 120,
+    chunk_size: int = CHUNK_SIZE,
+) -> tuple[Optional[int], Optional[StreamDownloadError]]:
+    """
+    Download URL content directly to file using streaming.
+
+    Convenience function that combines streaming download with file writing.
+    Useful for simple file download scenarios without custom processing.
+
+    Args:
+        url: URL to download
+        output_path: Path where file will be saved
+        session: aiohttp ClientSession (caller manages lifecycle)
+        timeout: Timeout in seconds (default: 120 for large files)
+        chunk_size: Size of chunks in bytes (default: 8MB)
+
+    Returns:
+        Tuple of (bytes_written, None) on success
+        or (None, StreamDownloadError) on failure
+
+    Example:
+        async with aiohttp.ClientSession() as session:
+            bytes_written, error = await download_to_file(
+                "https://example.com/file.pdf",
+                Path("output.pdf"),
+                session
+            )
+            if error:
+                print(f"Download failed: {error.error_message}")
+            else:
+                print(f"Downloaded {bytes_written} bytes")
+    """
+    response, error = await stream_download_url(
+        url=url,
+        session=session,
+        timeout=timeout,
+        chunk_size=chunk_size,
+    )
+
+    if error:
+        return None, error
+
+    try:
+        bytes_written = 0
+        with open(output_path, "wb") as f:
+            async for chunk in response.chunk_iterator:
+                # Use asyncio.to_thread for disk I/O to avoid blocking event loop
+                await asyncio.to_thread(f.write, chunk)
+                bytes_written += len(chunk)
+
+        return bytes_written, None
+
+    except OSError as e:
+        # Disk full, permissions, etc.
+        return None, StreamDownloadError(
+            status_code=None,
+            error_message=f"File write error: {str(e)}",
+            error_category=ErrorCategory.PERMANENT,
+        )
+
+
+def should_stream(content_length: Optional[int]) -> bool:
+    """
+    Determine if content should be streamed based on size.
+
+    Uses STREAM_THRESHOLD (50MB) as the decision boundary.
+    If content_length is unknown (None), defaults to streaming for safety.
+
+    Args:
+        content_length: Size in bytes from Content-Length header
+
+    Returns:
+        True if content should be streamed, False for in-memory download
+
+    Example:
+        if should_stream(content_length):
+            # Use streaming download
+            response, error = await stream_download_url(...)
+        else:
+            # Use in-memory download
+            response, error = await download_url(...)
+    """
+    if content_length is None:
+        # Unknown size - stream to be safe
+        return True
+
+    return content_length > STREAM_THRESHOLD
+
+
+__all__ = [
+    "CHUNK_SIZE",
+    "STREAM_THRESHOLD",
+    "StreamDownloadResponse",
+    "StreamDownloadError",
+    "stream_download_url",
+    "download_to_file",
+    "should_stream",
+]
