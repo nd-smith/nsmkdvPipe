@@ -9,6 +9,13 @@ from core.logging.context import (
     get_log_context,
     set_log_context,
 )
+from core.logging.context_managers import (
+    LogContext,
+    OperationContext,
+    StageLogContext,
+    log_operation,
+    log_phase,
+)
 from core.logging.formatters import ConsoleFormatter, JSONFormatter
 from core.logging.setup import (
     generate_cycle_id,
@@ -16,6 +23,7 @@ from core.logging.setup import (
     get_logger,
     setup_logging,
 )
+from core.logging.utilities import log_exception, log_with_context
 
 __all__ = [
     # Setup
@@ -30,4 +38,13 @@ __all__ = [
     "set_log_context",
     "get_log_context",
     "clear_log_context",
+    # Context Managers
+    "LogContext",
+    "StageLogContext",
+    "OperationContext",
+    "log_phase",
+    "log_operation",
+    # Utilities
+    "log_with_context",
+    "log_exception",
 ]
