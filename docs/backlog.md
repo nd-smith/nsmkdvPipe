@@ -49,7 +49,7 @@
 - [x] **WP-003**: Add Claude Code constraints to plan (commit: d4d5509)
 - [x] **WP-004**: Incorporate user feedback into plan (commit: b48068e)
 - [x] **WP-101**: Create core package structure and base types (commit: 5f38763)
-- [x] **WP-102**: Extract and review auth module - token cache (commit: TBD)
+- [x] **WP-102**: Extract and review auth module - token cache (commit: c510e71)
 
 ---
 
