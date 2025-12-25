@@ -2,22 +2,32 @@
 Structured logging module.
 
 Provides JSON logging with correlation IDs and context propagation.
-
-Components to extract and review from verisk_pipeline.common.logging:
-    - Structured JSON formatter
-    - Context managers for log context (cycle, stage, phase)
-    - Memory checkpoint logging
-    - Log rotation and file management
-
-New functionality to add:
-    - Kafka offset context (topic, partition, offset)
-    - Consumer group context
-    - OpenTelemetry trace ID propagation
-
-Review checklist:
-    [ ] JSON output is valid and parseable
-    [ ] Context propagation works across async boundaries
-    [ ] Sensitive data is not logged (PII, tokens, secrets)
-    [ ] Log levels are appropriate
-    [ ] Performance impact of structured logging
 """
+
+from core.logging.context import (
+    clear_log_context,
+    get_log_context,
+    set_log_context,
+)
+from core.logging.formatters import ConsoleFormatter, JSONFormatter
+from core.logging.setup import (
+    generate_cycle_id,
+    get_log_file_path,
+    get_logger,
+    setup_logging,
+)
+
+__all__ = [
+    # Setup
+    "setup_logging",
+    "get_logger",
+    "generate_cycle_id",
+    "get_log_file_path",
+    # Formatters
+    "JSONFormatter",
+    "ConsoleFormatter",
+    # Context
+    "set_log_context",
+    "get_log_context",
+    "clear_log_context",
+]

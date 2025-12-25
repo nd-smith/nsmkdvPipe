@@ -15,11 +15,10 @@
 ### In Progress
 <!-- Move tasks here when starting work -->
 
-- [ ] **WP-107**: Extract logging - base logger and formatters
+- [ ] **WP-108**: Extract logging - context managers
 
 ### Ready
 <!-- Tasks ready to be picked up -->
-- [ ] **WP-108**: Extract logging - context managers
 - [ ] **WP-109**: Add Kafka context to logging
 - [ ] **WP-110**: Extract error classification - exception hierarchy
 - [ ] **WP-111**: Extract error classification - Azure error classifier
