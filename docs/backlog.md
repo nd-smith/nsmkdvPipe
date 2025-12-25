@@ -14,13 +14,10 @@
 ### In Progress
 <!-- Move tasks here when starting work -->
 
-(none)
+- [ ] **WP-102**: Extract and review auth module - token cache
 
 ### Ready
 <!-- Tasks ready to be picked up -->
-
-- [ ] **WP-101**: Create core package structure and base types
-- [ ] **WP-102**: Extract and review auth module - token cache
 - [ ] **WP-103**: Extract and review auth module - Azure credentials
 - [ ] **WP-104**: Add Kafka OAUTHBEARER support to auth
 - [ ] **WP-105**: Extract circuit breaker to core/resilience
@@ -51,6 +48,7 @@
 - [x] **WP-002**: Set up folder structure (commit: 92e4e9e)
 - [x] **WP-003**: Add Claude Code constraints to plan (commit: d4d5509)
 - [x] **WP-004**: Incorporate user feedback into plan (commit: b48068e)
+- [x] **WP-101**: Create core package structure and base types (commit: TBD)
 
 ---
 
