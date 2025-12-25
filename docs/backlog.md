@@ -15,11 +15,10 @@
 ### In Progress
 <!-- Move tasks here when starting work -->
 
-- [ ] **WP-114**: Extract security - file type validation (new)
+- [ ] **WP-115**: Extract security - presigned URL handling
 
 ### Ready
 <!-- Tasks ready to be picked up -->
-- [ ] **WP-115**: Extract security - presigned URL handling
 - [ ] **WP-116**: Extract path resolution
 - [ ] **WP-117**: Extract async download - core HTTP logic
 - [ ] **WP-118**: Extract async download - streaming for large files
@@ -50,6 +49,7 @@
 - [x] **WP-111**: Extract error classification - Azure error classifier (commit: d098cf8)
 - [x] **WP-112**: Add Kafka error classifier (commit: ec21f42)
 - [x] **WP-113**: Extract security - URL validation (commit: 9088292)
+- [x] **WP-114**: Extract security - file type validation (commit: PENDING)
 
 ---
 

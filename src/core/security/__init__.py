@@ -5,6 +5,7 @@ Provides input validation and sanitization for security-sensitive operations.
 
 Components to extract and review from verisk_pipeline.common:
     - validate_download_url(): SSRF prevention with domain allowlist [DONE - WP-113]
+    - validate_file_type(): File type allowlist validation [DONE - WP-114]
     - check_presigned_url(): AWS S3 and ClaimX URL parsing/expiration
     - sanitize_filename(): Path traversal prevention
     - sanitize_url(): Remove auth tokens from logged URLs
@@ -13,11 +14,22 @@ Components to extract and review from verisk_pipeline.common:
 Review checklist:
     [x] Domain allowlist is complete and correct
     [x] URL validation handles edge cases (unicode, encoding)
+    [x] File type validation enforces allowlist
+    [x] Extension and Content-Type compatibility checked
     [ ] Path traversal prevention is robust
     [ ] Presigned URL expiration detection is accurate
     [ ] No bypass vectors exist
 """
 
+from core.security.file_validation import (
+    ALLOWED_CONTENT_TYPES,
+    ALLOWED_EXTENSIONS,
+    extract_extension,
+    is_allowed_content_type,
+    is_allowed_extension,
+    normalize_content_type,
+    validate_file_type,
+)
 from core.security.url_validation import (
     ALLOWED_SCHEMES,
     BLOCKED_HOSTS,
@@ -29,6 +41,7 @@ from core.security.url_validation import (
 )
 
 __all__ = [
+    # URL validation
     "validate_download_url",
     "get_allowed_domains",
     "is_private_ip",
@@ -36,4 +49,12 @@ __all__ = [
     "BLOCKED_HOSTS",
     "DEFAULT_ALLOWED_DOMAINS",
     "PRIVATE_RANGES",
+    # File type validation
+    "validate_file_type",
+    "extract_extension",
+    "normalize_content_type",
+    "is_allowed_extension",
+    "is_allowed_content_type",
+    "ALLOWED_EXTENSIONS",
+    "ALLOWED_CONTENT_TYPES",
 ]
