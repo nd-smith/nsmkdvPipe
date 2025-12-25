@@ -49,7 +49,7 @@
 - [x] **WP-106**: Extract retry decorator to core/resilience (commit: 569642c)
 - [x] **WP-107**: Extract logging - base logger and formatters (commit: c908f90)
 - [x] **WP-108**: Extract logging - context managers (commit: 4df0b49)
-- [x] **WP-109**: Add Kafka context to logging (commit: PENDING)
+- [x] **WP-109**: Add Kafka context to logging (commit: 0d7bd86)
 
 ---
 
