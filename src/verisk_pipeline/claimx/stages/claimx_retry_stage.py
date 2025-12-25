@@ -40,6 +40,7 @@ from verisk_pipeline.common.exceptions import ErrorCategory
 from verisk_pipeline.common.security import sanitize_error_message
 from verisk_pipeline.storage.delta import DeltaTableReader, DeltaTableWriter
 from verisk_pipeline.storage.onelake import OneLakeClient
+from verisk_pipeline.storage.upload_service import UploadService
 from verisk_pipeline.xact.xact_models import TaskStatus
 from verisk_pipeline.common.circuit_breaker import (
     get_circuit_breaker,
@@ -85,9 +86,20 @@ class RetryStage:
         "created_at",
     ]
 
-    def __init__(self, config: ClaimXConfig):
-        """Initialize retry stage."""
+    def __init__(
+        self,
+        config: ClaimXConfig,
+        upload_service: Optional[UploadService] = None,
+    ):
+        """
+        Initialize retry stage.
+
+        Args:
+            config: ClaimX pipeline configuration
+            upload_service: Optional centralized upload service
+        """
         self.config = config
+        self._upload_service = upload_service
 
         self._max_retries = config.retry.max_retries
         self._min_age = config.retry.min_retry_age_seconds
@@ -915,6 +927,8 @@ class RetryStage:
                             self.config.security.allowed_download_domains
                         ),
                         proxy=self.config.download.proxy,
+                        upload_service=self._upload_service,
+                        encrypt_temp_files=self.config.security.encrypt_temp_files,
                     )
                 )
         log_memory_checkpoint(logger, "after_processing", config=obs_config)

@@ -167,6 +167,10 @@ class ClaimXSecurityConfig:
         ]
     )
 
+    # Temp file encryption (for large file downloads that exceed memory threshold)
+    # Encrypts files at rest using Fernet (AES-128-CBC). Disabled by default for dev.
+    encrypt_temp_files: bool = False
+
     # Audit logging (Task H.1)
     audit_logging_enabled: bool = True
     audit_log_path: str = "/var/log/verisk_pipeline/audit.log"

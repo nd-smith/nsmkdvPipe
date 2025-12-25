@@ -7,11 +7,12 @@ Reads events with attachments, downloads files, and tracks status.
 import asyncio
 import logging
 import os
-import tempfile
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 import aiofiles
+
+from verisk_pipeline.common.secure_temp import SecureTempFile
 import aiohttp
 import polars as pl
 
@@ -44,6 +45,7 @@ from verisk_pipeline.storage.delta import EventsTableReader
 from verisk_pipeline.storage.inventory_writer import InventoryTableWriter
 from verisk_pipeline.storage.onelake import OneLakeClient
 from verisk_pipeline.storage.retry_queue_writer import RetryQueueWriter
+from verisk_pipeline.storage.upload_service import UploadService, UploadTask
 from verisk_pipeline.storage.watermark import WatermarkManager
 from verisk_pipeline.storage.watermark_helpers import WatermarkSession
 from verisk_pipeline.xact.services.path_resolver import generate_blob_path
@@ -71,9 +73,20 @@ class DownloadStage:
     CHUNK_SIZE = 8 * 1024 * 1024  # 8MB chunks
     STREAM_THRESHOLD = 50 * 1024 * 1024  # Stream files > 50MB
 
-    def __init__(self, config: PipelineConfig):
-        """Initialize download stage."""
+    def __init__(
+        self,
+        config: PipelineConfig,
+        upload_service: Optional[UploadService] = None,
+    ):
+        """
+        Initialize download stage.
+
+        Args:
+            config: Pipeline configuration
+            upload_service: Optional centralized upload service (preferred over direct OneLake client)
+        """
         self.config = config
+        self._upload_service = upload_service
 
         self.events_reader = EventsTableReader(
             f"{config.lakehouse.abfss_path}/{config.lakehouse.events_table}"
@@ -676,17 +689,64 @@ class DownloadStage:
                 )
 
                 # Choose streaming vs in-memory based on size
+                encrypt_temp = self.config.security.encrypt_temp_files
                 if content_length > self.STREAM_THRESHOLD:
-                    # Stream large files to temp file
-                    tmp_path = tempfile.mktemp(suffix=f".{task.file_type}")
-                    async with aiofiles.open(tmp_path, "wb") as f:
+                    # Stream large files to secure temp file
+                    with SecureTempFile(
+                        suffix=f".{task.file_type}",
+                        encrypt=encrypt_temp,
+                        secure_delete=True,
+                    ) as stf:
+                        # Stream download to temp file
                         async for chunk in response.content.iter_chunked(self.CHUNK_SIZE):
-                            await f.write(chunk)
-                    self.onelake_client.upload_file(task.blob_path, tmp_path)
+                            await asyncio.to_thread(stf.write, chunk)
+                        await asyncio.to_thread(stf.flush)
+
+                        # Upload: if encrypted, read decrypted bytes; else use file path
+                        if encrypt_temp:
+                            content = await asyncio.to_thread(stf.read_decrypted)
+                            if self._upload_service and self._upload_service.is_running:
+                                await self._upload_service.submit_and_wait(UploadTask(
+                                    source=content,
+                                    destination=task.blob_path,
+                                    domain="xact",
+                                    trace_id=getattr(task, 'trace_id', None),
+                                    metadata={"event_id": task.event_id},
+                                ))
+                            else:
+                                await asyncio.to_thread(
+                                    self.onelake_client.upload_bytes, task.blob_path, content
+                                )
+                        else:
+                            if self._upload_service and self._upload_service.is_running:
+                                await self._upload_service.submit_and_wait(UploadTask(
+                                    source=stf.path,
+                                    destination=task.blob_path,
+                                    domain="xact",
+                                    trace_id=getattr(task, 'trace_id', None),
+                                    metadata={"event_id": task.event_id},
+                                ))
+                            else:
+                                await asyncio.to_thread(
+                                    self.onelake_client.upload_file, task.blob_path, stf.path
+                                )
                 else:
                     # Small files: read into memory
                     content = await response.read()
-                    self.onelake_client.upload_bytes(task.blob_path, content)
+
+                    # Upload via service or direct client
+                    if self._upload_service and self._upload_service.is_running:
+                        await self._upload_service.submit_and_wait(UploadTask(
+                            source=content,
+                            destination=task.blob_path,
+                            domain="xact",
+                            trace_id=getattr(task, 'trace_id', None),
+                            metadata={"event_id": task.event_id},
+                        ))
+                    else:
+                        await asyncio.to_thread(
+                            self.onelake_client.upload_bytes, task.blob_path, content
+                        )
 
                 # Record success with circuit breakers
                 self.download_breaker.record_success()
@@ -966,11 +1026,23 @@ async def download_single(
     timeout: int,
     download_breaker: CircuitBreaker,
     upload_breaker: CircuitBreaker,
+    upload_service: Optional[UploadService] = None,
+    encrypt_temp_files: bool = False,
 ) -> DownloadResult:
     """
     Download single attachment and upload to OneLake.
 
     Standalone utility function used by both DownloadStage and RetryStage.
+
+    Args:
+        task: Download task
+        session: aiohttp session
+        onelake_client: OneLake client (fallback if no upload_service)
+        timeout: Download timeout seconds
+        download_breaker: Circuit breaker for downloads
+        upload_breaker: Circuit breaker for uploads
+        upload_service: Optional centralized upload service (preferred over onelake_client)
+        encrypt_temp_files: Encrypt temp files at rest (for sensitive data)
     """
     CHUNK_SIZE = 8 * 1024 * 1024
     STREAM_THRESHOLD = 50 * 1024 * 1024
@@ -1082,16 +1154,64 @@ async def download_single(
             )
 
             if content_length > STREAM_THRESHOLD:
-                # Stream large files to temp file
-                tmp_path = tempfile.mktemp(suffix=f".{task.file_type}")
-                async with aiofiles.open(tmp_path, "wb") as f:
+                # Stream large files to secure temp file
+                with SecureTempFile(
+                    suffix=f".{task.file_type}",
+                    encrypt=encrypt_temp_files,
+                    secure_delete=True,
+                ) as stf:
+                    # Stream download to temp file
                     async for chunk in response.content.iter_chunked(CHUNK_SIZE):
-                        await f.write(chunk)
-                onelake_client.upload_file(task.blob_path, tmp_path)
+                        await asyncio.to_thread(stf.write, chunk)
+                    await asyncio.to_thread(stf.flush)
+
+                    # Upload: if encrypted, read decrypted bytes; else use file path
+                    if encrypt_temp_files:
+                        # Read back decrypted content for upload
+                        content = await asyncio.to_thread(stf.read_decrypted)
+                        if upload_service and upload_service.is_running:
+                            await upload_service.submit_and_wait(UploadTask(
+                                source=content,
+                                destination=task.blob_path,
+                                domain="xact",
+                                trace_id=getattr(task, 'trace_id', None),
+                                metadata={"event_id": task.event_id},
+                            ))
+                        else:
+                            await asyncio.to_thread(
+                                onelake_client.upload_bytes, task.blob_path, content
+                            )
+                    else:
+                        # No encryption: upload file directly
+                        if upload_service and upload_service.is_running:
+                            await upload_service.submit_and_wait(UploadTask(
+                                source=stf.path,
+                                destination=task.blob_path,
+                                domain="xact",
+                                trace_id=getattr(task, 'trace_id', None),
+                                metadata={"event_id": task.event_id},
+                            ))
+                        else:
+                            await asyncio.to_thread(
+                                onelake_client.upload_file, task.blob_path, stf.path
+                            )
             else:
                 # Small files: read into memory
                 content = await response.read()
-                onelake_client.upload_bytes(task.blob_path, content)
+
+                # Upload via service or direct client
+                if upload_service and upload_service.is_running:
+                    await upload_service.submit_and_wait(UploadTask(
+                        source=content,
+                        destination=task.blob_path,
+                        domain="xact",
+                        trace_id=getattr(task, 'trace_id', None),
+                        metadata={"event_id": task.event_id},
+                    ))
+                else:
+                    await asyncio.to_thread(
+                        onelake_client.upload_bytes, task.blob_path, content
+                    )
 
             download_breaker.record_success()
             upload_breaker.record_success()
@@ -1177,11 +1297,23 @@ async def download_batch(
     timeout: int,
     download_breaker: CircuitBreaker,
     upload_breaker: CircuitBreaker,
+    upload_service: Optional[UploadService] = None,
+    encrypt_temp_files: bool = False,
 ) -> List[DownloadResult]:
     """
     Download batch of attachments concurrently.
 
     Standalone utility function used by both DownloadStage and RetryStage.
+
+    Args:
+        tasks: List of download tasks
+        onelake_client: OneLake client (fallback if no upload_service)
+        max_concurrent: Maximum concurrent downloads
+        timeout: Download timeout seconds
+        download_breaker: Circuit breaker for downloads
+        upload_breaker: Circuit breaker for uploads
+        upload_service: Optional centralized upload service (preferred over onelake_client)
+        encrypt_temp_files: Encrypt temp files at rest (for sensitive data)
     """
     if not tasks:
         return []
@@ -1202,7 +1334,8 @@ async def download_batch(
     ) -> DownloadResult:
         async with semaphore:
             return await download_single(
-                task, session, onelake_client, timeout, download_breaker, upload_breaker
+                task, session, onelake_client, timeout, download_breaker, upload_breaker,
+                upload_service, encrypt_temp_files,
             )
 
     connector = aiohttp.TCPConnector(
