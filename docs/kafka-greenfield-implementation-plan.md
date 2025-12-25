@@ -17,6 +17,68 @@ This document outlines the requirements and implementation plan for rebuilding t
 
 ---
 
+## 0. Development Constraints: Claude Code
+
+> **Golden Rule:** This project is developed 100% with Claude Code. All work packages must be designed around context window constraints.
+
+### 0.1 Context Window Limitations
+
+Claude Code operates within a finite context window. Large files, complex refactors, or tasks requiring awareness of many files simultaneously can exceed these limits. Work packages must be:
+
+- **Self-contained**: Each task completable without needing to hold the entire codebase in context
+- **Focused**: One module, one concern, one deliverable per session
+- **Well-documented**: Clear interfaces so dependent work doesn't require re-reading implementations
+
+### 0.2 Work Package Sizing Guidelines
+
+| Size | Lines of Code | Files | Context Required | Example |
+|------|---------------|-------|------------------|---------|
+| **Small** | < 200 | 1-2 | Minimal | Single class, utility function |
+| **Medium** | 200-500 | 2-4 | Moderate | Module with tests |
+| **Large** | 500-800 | 4-6 | Significant | Component with integration |
+| **Too Large** | > 800 | > 6 | Exceeds limits | **Split into smaller tasks** |
+
+### 0.3 Task Design Principles
+
+1. **Atomic commits**: Each work package produces a working, tested increment
+2. **Clear inputs/outputs**: Define interfaces before implementation
+3. **Minimal cross-file edits**: Prefer new files over modifying many existing ones
+4. **Tests alongside code**: Write tests in the same session as implementation
+5. **Documentation as you go**: Docstrings and type hints reduce future context needs
+
+### 0.4 Session Boundaries
+
+Each Claude Code session should:
+- Start with a clear, specific task from the backlog
+- Read only the files necessary for that task
+- Produce a commit with passing tests
+- Update the task tracker before ending
+
+### 0.5 Work Package Template
+
+```markdown
+## Task: [NAME]
+
+**Objective**: [One sentence]
+**Files to read**: [List - keep minimal]
+**Files to create/modify**: [List]
+**Dependencies**: [What must exist first]
+**Deliverable**: [What "done" looks like]
+**Estimated size**: [Small/Medium/Large]
+```
+
+### 0.6 Anti-Patterns to Avoid
+
+| Anti-Pattern | Problem | Solution |
+|--------------|---------|----------|
+| "Refactor everything" | Exceeds context | Break into focused refactors |
+| "Read the whole codebase" | Wastes context | Read only what's needed |
+| "Fix all tests at once" | Too many files | Fix tests per-module |
+| "Large file extraction" | Can't hold source + target | Extract in stages |
+| "Simultaneous multi-file edit" | Context fragmentation | Sequential file edits |
+
+---
+
 ## 1. Functional Requirements
 
 ### 1.1 Event Ingestion
