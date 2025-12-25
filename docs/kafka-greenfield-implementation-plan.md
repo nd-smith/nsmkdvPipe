@@ -17,6 +17,68 @@ This document outlines the requirements and implementation plan for rebuilding t
 
 ---
 
+## 0. Development Constraints: Claude Code
+
+> **Golden Rule:** This project is developed 100% with Claude Code. All work packages must be designed around context window constraints.
+
+### 0.1 Context Window Limitations
+
+Claude Code operates within a finite context window. Large files, complex refactors, or tasks requiring awareness of many files simultaneously can exceed these limits. Work packages must be:
+
+- **Self-contained**: Each task completable without needing to hold the entire codebase in context
+- **Focused**: One module, one concern, one deliverable per session
+- **Well-documented**: Clear interfaces so dependent work doesn't require re-reading implementations
+
+### 0.2 Work Package Sizing Guidelines
+
+| Size | Lines of Code | Files | Context Required | Example |
+|------|---------------|-------|------------------|---------|
+| **Small** | < 200 | 1-2 | Minimal | Single class, utility function |
+| **Medium** | 200-500 | 2-4 | Moderate | Module with tests |
+| **Large** | 500-800 | 4-6 | Significant | Component with integration |
+| **Too Large** | > 800 | > 6 | Exceeds limits | **Split into smaller tasks** |
+
+### 0.3 Task Design Principles
+
+1. **Atomic commits**: Each work package produces a working, tested increment
+2. **Clear inputs/outputs**: Define interfaces before implementation
+3. **Minimal cross-file edits**: Prefer new files over modifying many existing ones
+4. **Tests alongside code**: Write tests in the same session as implementation
+5. **Documentation as you go**: Docstrings and type hints reduce future context needs
+
+### 0.4 Session Boundaries
+
+Each Claude Code session should:
+- Start with a clear, specific task from the backlog
+- Read only the files necessary for that task
+- Produce a commit with passing tests
+- Update the task tracker before ending
+
+### 0.5 Work Package Template
+
+```markdown
+## Task: [NAME]
+
+**Objective**: [One sentence]
+**Files to read**: [List - keep minimal]
+**Files to create/modify**: [List]
+**Dependencies**: [What must exist first]
+**Deliverable**: [What "done" looks like]
+**Estimated size**: [Small/Medium/Large]
+```
+
+### 0.6 Anti-Patterns to Avoid
+
+| Anti-Pattern | Problem | Solution |
+|--------------|---------|----------|
+| "Refactor everything" | Exceeds context | Break into focused refactors |
+| "Read the whole codebase" | Wastes context | Read only what's needed |
+| "Fix all tests at once" | Too many files | Fix tests per-module |
+| "Large file extraction" | Can't hold source + target | Extract in stages |
+| "Simultaneous multi-file edit" | Context fragmentation | Sequential file edits |
+
+---
+
 ## 1. Functional Requirements
 
 ### 1.1 Event Ingestion
@@ -24,9 +86,7 @@ This document outlines the requirements and implementation plan for rebuilding t
 | ID | Requirement | Priority | Source |
 |----|-------------|----------|--------|
 | FR-1.1 | System SHALL consume events from source Kafka topic | P0 | New |
-| FR-1.2 | System SHALL support consuming from Kusto as a fallback/bridge | P1 | Existing | 
-<note - FR-1.2>Not sure if this is really needed - we don't need to bridge functionality.  As a matter of backup functionality, if there are issues w/ kafka this is the least of our concerns. Do we really need this?</note - FR-1.2>
-
+| ~~FR-1.2~~ | ~~System SHALL support consuming from Kusto as a fallback/bridge~~ | ~~P1~~ | **REMOVED** - Kafka is source of truth; fallback adds complexity without value |
 | FR-1.3 | System SHALL deduplicate events by `trace_id` within a configurable window | P0 | Existing |
 | FR-1.4 | System SHALL write ingested events to Delta Lake for analytics | P1 | Existing |
 | FR-1.5 | System SHALL track consumer offsets for exactly-once processing | P0 | New |
@@ -37,20 +97,16 @@ This document outlines the requirements and implementation plan for rebuilding t
 |----|-------------|----------|--------|
 | FR-2.1 | System SHALL download attachments from presigned URLs | P0 | Existing |
 | FR-2.2 | System SHALL validate URLs against domain allowlist (SSRF prevention) | P0 | Existing |
-<note-FR2.2>I would also like to be able to allow-list by file type</note-FR2.2>
-| FR-2.3 | System SHALL detect and handle expired presigned URLs | P0 | Existing |
-<note-FR-2.3>Let's review exactly how this should be done - and remember we need to be able to define the strategy by domain (claimx can fetch new URLs while xact can't)</note-FR-2.3>
+| FR-2.2.1 | System SHALL validate files against allowed file type list | P0 | New |
+| FR-2.3 | System SHALL detect and handle expired presigned URLs via domain strategy | P0 | Existing |
 | FR-2.4 | System SHALL stream large files (>50MB) to avoid memory exhaustion | P0 | Existing |
 | FR-2.5 | System SHALL upload files to OneLake with deterministic paths | P0 | Existing |
 | FR-2.6 | System SHALL process downloads concurrently (configurable parallelism) | P0 | Existing |
-| FR-2.7 | System SHALL classify download failures as transient or permanent | P0 | Existing |
-<note-FR-2.7>Configurable by domain - what is permanent for one service/domain may not be for another.</note-FR-2.7>
-| FR-2.8 | System SHALL be able to configure how to handle URL redirects | P0 | Existing
-| FR-2.9 | System SHALL have a decoupled file uploader service separate from data ops | P0 | New
-| FR-3.0 | System SHALL support file attachment encryption at rest | P0 | New
-| FR-3.1 | System SHALL interact with onelake using accepted community best practices/microsoft guidance | P0 | New
-
-
+| FR-2.7 | System SHALL classify download failures as transient/permanent via domain strategy | P0 | Existing |
+| FR-2.8 | System SHALL handle URL redirects per domain configuration | P0 | New |
+| FR-2.9 | System SHALL have a decoupled file uploader service separate from data ops | P0 | New |
+| FR-2.10 | System SHALL support file attachment encryption at rest | P0 | New |
+| FR-2.11 | System SHALL interact with OneLake using Microsoft best practices | P0 | New |
 
 ### 1.3 Retry Handling
 
@@ -78,6 +134,43 @@ This document outlines the requirements and implementation plan for rebuilding t
 | FR-5.2 | System SHALL support ClaimX domain events | P0 | Existing |
 | FR-5.3 | System SHALL support the addition of new domains | P1 | New |
 | FR-5.4 | System SHALL route events to domain-specific handlers based on message headers | P0 | New |
+
+### 1.6 Domain Strategy Pattern
+
+> Several requirements above reference "domain strategy" - this section defines the pattern.
+
+Each domain (XACT, ClaimX, future domains) may have different behaviors. These are encapsulated in a **DomainStrategy** interface:
+
+```python
+class DomainStrategy(Protocol):
+    """Domain-specific behavior configuration."""
+
+    domain_name: str
+
+    # URL handling
+    def can_refresh_expired_url(self) -> bool: ...
+    def refresh_url(self, expired_url: str, context: dict) -> Optional[str]: ...
+
+    # Error classification
+    def classify_error(self, error: Exception) -> ErrorCategory: ...
+    def is_transient(self, status_code: int) -> bool: ...
+
+    # Redirect handling
+    def should_follow_redirect(self, original_url: str, redirect_url: str) -> bool: ...
+
+    # File validation
+    def allowed_file_types(self) -> List[str]: ...
+    def validate_file(self, filename: str, content_type: str) -> bool: ...
+```
+
+**Current Domain Behaviors:**
+
+| Behavior | XACT | ClaimX |
+|----------|------|--------|
+| Refresh expired URLs | No | Yes (via API) |
+| Follow redirects | Configurable | Yes |
+| Transient HTTP codes | 429, 500, 502, 503, 504 | 429, 500, 502, 503, 504, 401 |
+| Allowed file types | PDF, XML, images | All |
 
 ---
 
@@ -222,6 +315,59 @@ This document outlines the requirements and implementation plan for rebuilding t
 | `xact-download-worker` | `downloads.pending`, `retry.*` | 6 | At-least-once |
 | `xact-result-processor` | `downloads.results` | 2 | Exactly-once (txn) |
 | `xact-dlq-handler` | `downloads.dlq` | 1 | Manual ack |
+
+### 3.4 Data Compatibility & Migration
+
+> **Constraint**: Preserve existing data. No unnecessary file I/O for restructuring.
+
+#### 3.4.1 Existing Delta Tables (Reuse As-Is)
+
+| Table | Current Schema | Kafka Pipeline Usage | Migration |
+|-------|----------------|---------------------|-----------|
+| `xact_events` | trace_id, event_type, timestamp, payload, ... | Continue writing ingested events | **None** - schema compatible |
+| `xact_attachments` | trace_id, attachment_url, blob_path, ... | Continue writing inventory | **None** - schema compatible |
+| `xact_retry` | trace_id, retry_count, next_retry_at, ... | **Deprecated** - replaced by Kafka retry topics | Read-only for migration |
+
+#### 3.4.2 OneLake File Structure (Preserve)
+
+```
+Files/
+├── xact/
+│   ├── documentsReceived/{assignment_id}/{trace_id}/...
+│   ├── estimatePackageReceived/{assignment_id}/{trace_id}/...
+│   └── FNOL/{assignment_id}/{trace_id}/...
+└── claimx/
+    └── {claim_id}/{document_type}/...
+```
+
+**No changes to file paths.** The `generate_blob_path()` function remains unchanged.
+
+#### 3.4.3 Migration Strategy
+
+| Phase | Action | Risk |
+|-------|--------|------|
+| **Pre-cutover** | New pipeline writes to same tables | None - additive |
+| **Cutover** | Stop legacy pipeline, Kafka takes over | Low - same schemas |
+| **Post-cutover** | Drain `xact_retry` table via one-time job | Low - read-only |
+
+#### 3.4.4 Retry Queue Migration
+
+The legacy Delta-based retry queue (`xact_retry`) will be migrated to Kafka:
+
+```python
+# One-time migration job (run once at cutover)
+async def migrate_retry_queue():
+    pending = retry_queue_reader.get_pending_retries(max_retries=10)
+    for row in pending.iter_rows(named=True):
+        task = DownloadTaskMessage(
+            trace_id=row["trace_id"],
+            attachment_url=row["attachment_url"],
+            retry_count=row["retry_count"],
+            # ... map remaining fields
+        )
+        await producer.send("xact.downloads.pending", task.trace_id, task)
+    # After validation, truncate xact_retry table
+```
 
 ---
 
