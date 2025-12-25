@@ -15,11 +15,10 @@
 ### In Progress
 <!-- Move tasks here when starting work -->
 
-- [ ] **WP-111**: Extract error classification - Azure error classifier
+- [ ] **WP-112**: Add Kafka error classifier
 
 ### Ready
 <!-- Tasks ready to be picked up -->
-- [ ] **WP-112**: Add Kafka error classifier
 - [ ] **WP-113**: Extract security - URL validation
 - [ ] **WP-114**: Extract security - file type validation (new)
 - [ ] **WP-115**: Extract security - presigned URL handling
@@ -50,6 +49,7 @@
 - [x] **WP-108**: Extract logging - context managers (commit: 4df0b49)
 - [x] **WP-109**: Add Kafka context to logging (commit: 0d7bd86)
 - [x] **WP-110**: Extract error classification - exception hierarchy (commit: 323e765)
+- [x] **WP-111**: Extract error classification - Azure error classifier (commit: PENDING)
 
 ---
 
