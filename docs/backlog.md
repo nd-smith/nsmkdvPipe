@@ -15,11 +15,10 @@
 ### In Progress
 <!-- Move tasks here when starting work -->
 
-- [ ] **WP-103**: Extract and review auth module - Azure credentials
+- [ ] **WP-104**: Add Kafka OAUTHBEARER support to auth
 
 ### Ready
 <!-- Tasks ready to be picked up -->
-- [ ] **WP-104**: Add Kafka OAUTHBEARER support to auth
 - [ ] **WP-105**: Extract circuit breaker to core/resilience
 - [ ] **WP-106**: Extract retry decorator to core/resilience
 - [ ] **WP-107**: Extract logging - base logger and formatters
@@ -50,6 +49,7 @@
 - [x] **WP-004**: Incorporate user feedback into plan (commit: b48068e)
 - [x] **WP-101**: Create core package structure and base types (commit: 5f38763)
 - [x] **WP-102**: Extract and review auth module - token cache (commit: c510e71)
+- [x] **WP-103**: Extract and review auth module - Azure credentials (commit: pending)
 
 ---
 
