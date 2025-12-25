@@ -533,7 +533,11 @@ def init_upload_service(
 
     with _upload_service_lock:
         if _upload_service is not None:
-            logger.warning("UploadService already initialized, returning existing instance")
+            log_with_context(
+                logger,
+                logging.WARNING,
+                "UploadService already initialized, returning existing instance",
+            )
             return _upload_service
 
         _upload_service = UploadService(
