@@ -1,8 +1,10 @@
 # Kafka Refactor Plan for Verisk Pipeline
 
+> **Note:** After analyzing the codebase coupling (65% infrastructure-coupled, 35% reusable), we decided on a **greenfield approach with selective reuse** rather than incremental migration. See [`kafka-greenfield-implementation-plan.md`](./kafka-greenfield-implementation-plan.md) for the detailed implementation plan.
+
 ## Executive Summary
 
-This document outlines a plan to refactor the current polling-based Delta/Kusto architecture to a Kafka-centric event-driven system. The refactor aims to improve real-time processing capabilities, reduce latency, and establish a more scalable foundation for future growth.
+This document outlines the initial analysis of the current polling-based Delta/Kusto architecture and considerations for migrating to a Kafka-centric event-driven system. This analysis informed the decision to pursue a greenfield rebuild that preserves valuable business logic while replacing the tightly-coupled infrastructure layer.
 
 ---
 
