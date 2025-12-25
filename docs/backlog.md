@@ -49,6 +49,7 @@
 - [x] **WP-104**: Add Kafka OAUTHBEARER support to auth (commit: b054206)
 - [x] **WP-105**: Extract circuit breaker to core/resilience (commit: 7c7f064)
 - [x] **WP-106**: Extract retry decorator to core/resilience (commit: 569642c)
+- [x] **WP-107**: Extract logging - base logger and formatters (commit: c908f90)
 
 ---
 
