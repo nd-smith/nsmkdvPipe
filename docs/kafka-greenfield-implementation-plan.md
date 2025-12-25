@@ -12,8 +12,8 @@ This document outlines the requirements and implementation plan for rebuilding t
 - Maintain all existing business logic and security controls
 
 **Timeline:** 8 weeks
-**Team Size:** 2-3 engineers
-**Risk Level:** Medium (mitigated by parallel run period)
+**Team Size:** 1 Engineer, 1 Claude-Code 
+**Risk Level:** Low - this application is pre-production.  Backwards compatability is not important.  While the current application is pre-prod, we have been running it and have built up sizeable databases.  Being able to preserve and re-use that data is the only thing I really care about. 
 
 ---
 
@@ -24,7 +24,9 @@ This document outlines the requirements and implementation plan for rebuilding t
 | ID | Requirement | Priority | Source |
 |----|-------------|----------|--------|
 | FR-1.1 | System SHALL consume events from source Kafka topic | P0 | New |
-| FR-1.2 | System SHALL support consuming from Kusto as a fallback/bridge | P1 | Existing |
+| FR-1.2 | System SHALL support consuming from Kusto as a fallback/bridge | P1 | Existing | 
+<note - FR-1.2>Not sure if this is really needed - we don't need to bridge functionality.  As a matter of backup functionality, if there are issues w/ kafka this is the least of our concerns. Do we really need this?</note - FR-1.2>
+
 | FR-1.3 | System SHALL deduplicate events by `trace_id` within a configurable window | P0 | Existing |
 | FR-1.4 | System SHALL write ingested events to Delta Lake for analytics | P1 | Existing |
 | FR-1.5 | System SHALL track consumer offsets for exactly-once processing | P0 | New |
@@ -35,11 +37,20 @@ This document outlines the requirements and implementation plan for rebuilding t
 |----|-------------|----------|--------|
 | FR-2.1 | System SHALL download attachments from presigned URLs | P0 | Existing |
 | FR-2.2 | System SHALL validate URLs against domain allowlist (SSRF prevention) | P0 | Existing |
+<note-FR2.2>I would also like to be able to allow-list by file type</note-FR2.2>
 | FR-2.3 | System SHALL detect and handle expired presigned URLs | P0 | Existing |
+<note-FR-2.3>Let's review exactly how this should be done - and remember we need to be able to define the strategy by domain (claimx can fetch new URLs while xact can't)</note-FR-2.3>
 | FR-2.4 | System SHALL stream large files (>50MB) to avoid memory exhaustion | P0 | Existing |
 | FR-2.5 | System SHALL upload files to OneLake with deterministic paths | P0 | Existing |
 | FR-2.6 | System SHALL process downloads concurrently (configurable parallelism) | P0 | Existing |
 | FR-2.7 | System SHALL classify download failures as transient or permanent | P0 | Existing |
+<note-FR-2.7>Configurable by domain - what is permanent for one service/domain may not be for another.</note-FR-2.7>
+| FR-2.8 | System SHALL be able to configure how to handle URL redirects | P0 | Existing
+| FR-2.9 | System SHALL have a decoupled file uploader service separate from data ops | P0 | New
+| FR-3.0 | System SHALL support file attachment encryption at rest | P0 | New
+| FR-3.1 | System SHALL interact with onelake using accepted community best practices/microsoft guidance | P0 | New
+
+
 
 ### 1.3 Retry Handling
 
@@ -64,8 +75,9 @@ This document outlines the requirements and implementation plan for rebuilding t
 | ID | Requirement | Priority | Source |
 |----|-------------|----------|--------|
 | FR-5.1 | System SHALL support XACT domain events | P0 | Existing |
-| FR-5.2 | System SHALL support ClaimX domain events | P1 | Existing |
-| FR-5.3 | System SHALL route events to domain-specific handlers based on message headers | P0 | New |
+| FR-5.2 | System SHALL support ClaimX domain events | P0 | Existing |
+| FR-5.3 | System SHALL support the addition of new domains | P1 | New |
+| FR-5.4 | System SHALL route events to domain-specific handlers based on message headers | P0 | New |
 
 ---
 
@@ -90,6 +102,15 @@ This document outlines the requirements and implementation plan for rebuilding t
 | NFR-2.4 | Recovery time objective (RTO) | < 5 minutes |
 | NFR-2.5 | Recovery point objective (RPO) | Zero (Kafka retains messages) |
 
+### 2.25 Readability, coding style, best practices 
+| NFR-2.25.1 | Limited comments in the codebase - reserved for high impact, succinct messages |
+| NFR-2.25.2 | DRY violations is an acceptable sacrifice for more readable code |
+| NFR-2.25.3 | Codebase should be designed for maximum readability |
+| NFR-2.25.4 | Readability over clever or highly technical  | EX: one-liner" versus the explicit loop, Bitwise tricks, Nested ternaries, Regex golf, Chained boolean short-circuits, etc | Developer of average level skill should be able to read and maintain this application |
+
+
+
+
 ### 2.3 Scalability
 
 | ID | Requirement | Target |
@@ -104,20 +125,27 @@ This document outlines the requirements and implementation plan for rebuilding t
 | ID | Requirement | Target |
 |----|-------------|--------|
 | NFR-4.1 | Structured logging | JSON with correlation IDs |
+<note-NFR-4.1> It is imperative we get logging right. Logs need to contain all details needed to identify a problem.  Person reviewing/capturing logs may be non-technical.  Logs should be easy to parse and clearly tell the 'story'.  Research best practices. </note-NFR-4.1>
 | NFR-4.2 | Metrics | Prometheus-compatible |
 | NFR-4.3 | Consumer lag monitoring | Real-time dashboard |
 | NFR-4.4 | Distributed tracing | OpenTelemetry compatible |
-| NFR-4.5 | Alerting | PagerDuty/Slack integration |
+| NFR-4.5 | Alerting | PagerDuty/Slack integration | <note-NFR-4.5>This is deferred, and when implemented it will be for microsoft teams
+</note-NFR-4.5>
+| NFR-4.6 | WebUI for remote management |
+
+
 
 ### 2.5 Security
 
 | ID | Requirement | Target |
 |----|-------------|--------|
-| NFR-5.1 | Kafka authentication | SASL/OAUTHBEARER (Azure AD) |
+| NFR-5.1 | Kafka authentication | SASL/OAUTHBEARER (Azure AD) | <note-NFR-5.1>What about SPN?</note-NFR-5.1>
 | NFR-5.2 | Encryption in transit | TLS 1.2+ |
 | NFR-5.3 | Secret management | Azure Key Vault |
 | NFR-5.4 | URL validation | Domain allowlist (SSRF prevention) |
+| NFR-5.4.5 | File type validation |
 | NFR-5.5 | Sensitive data handling | No PII in logs |
+| NFR-5.6 | No issues identified in the OWASP list may be present in codebase |
 
 ---
 
