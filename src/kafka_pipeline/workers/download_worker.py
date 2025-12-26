@@ -22,9 +22,12 @@ from aiokafka.structs import ConsumerRecord
 
 from core.download.downloader import AttachmentDownloader
 from core.download.models import DownloadTask, DownloadOutcome
+from core.errors.exceptions import CircuitOpenError
+from core.types import ErrorCategory
 from kafka_pipeline.config import KafkaConfig
 from kafka_pipeline.consumer import BaseKafkaConsumer
 from kafka_pipeline.producer import BaseKafkaProducer
+from kafka_pipeline.retry.handler import RetryHandler
 from kafka_pipeline.schemas.results import DownloadResultMessage
 from kafka_pipeline.schemas.tasks import DownloadTaskMessage
 from kafka_pipeline.storage import OneLakeClient
@@ -105,6 +108,9 @@ class DownloadWorker:
         # Create OneLake client (lazy initialized in start())
         self.onelake_client: Optional[OneLakeClient] = None
 
+        # Create retry handler for error routing (lazy initialized in start())
+        self.retry_handler: Optional[RetryHandler] = None
+
         logger.info(
             "Initialized download worker",
             extra={
@@ -129,6 +135,9 @@ class DownloadWorker:
 
         # Start producer
         await self.producer.start()
+
+        # Initialize retry handler (requires producer to be started)
+        self.retry_handler = RetryHandler(self.config, self.producer)
 
         # Initialize OneLake client
         self.onelake_client = OneLakeClient(self.config.onelake_base_path)
@@ -156,6 +165,9 @@ class DownloadWorker:
         if self.onelake_client is not None:
             await self.onelake_client.close()
             self.onelake_client = None
+
+        # Clear retry handler reference
+        self.retry_handler = None
 
     async def _handle_task_message(self, message: ConsumerRecord) -> None:
         """
@@ -331,43 +343,104 @@ class DownloadWorker:
         processing_time_ms: int,
     ) -> None:
         """
-        Handle failed download: produce result and clean up.
+        Handle failed download: route to retry/DLQ and produce result.
+
+        Routes failures based on error category:
+        - CIRCUIT_OPEN: Re-raise exception (don't commit offset, reprocess when circuit closes)
+        - PERMANENT: Send to DLQ and commit offset (no retry)
+        - TRANSIENT: Send to retry topic and commit offset
+        - AUTH: Send to retry topic and commit offset (credentials may refresh)
+        - UNKNOWN: Send to retry topic and commit offset (conservative retry)
 
         Args:
             task_message: Original task message
             outcome: Download outcome with error details
             processing_time_ms: Total processing time in milliseconds
 
-        Note:
-            Error routing (retry/DLQ) will be added in WP-306.
-            For now, just logs failure and produces result message.
+        Raises:
+            CircuitOpenError: If circuit breaker is open (offset not committed)
         """
+        assert self.retry_handler is not None, "RetryHandler not initialized"
+
+        error_category = outcome.error_category or ErrorCategory.UNKNOWN
+
         logger.warning(
             "Download failed",
             extra={
                 "trace_id": task_message.trace_id,
                 "attachment_url": task_message.attachment_url,
                 "error_message": outcome.error_message,
-                "error_category": outcome.error_category.value if outcome.error_category else None,
+                "error_category": error_category.value,
                 "status_code": outcome.status_code,
                 "processing_time_ms": processing_time_ms,
+                "retry_count": task_message.retry_count,
             },
         )
 
-        # Determine status based on error category
-        if outcome.error_category:
-            if outcome.error_category.value == "transient":
-                status = "failed_transient"
-            elif outcome.error_category.value == "permanent":
-                status = "failed_permanent"
-            else:
-                # Auth errors, etc. - treat as transient for retry
-                status = "failed_transient"
+        # Handle circuit breaker errors specially: re-raise to prevent offset commit
+        # Message will be reprocessed when circuit closes
+        if error_category == ErrorCategory.CIRCUIT_OPEN:
+            logger.warning(
+                "Circuit breaker open - re-raising to prevent offset commit",
+                extra={
+                    "trace_id": task_message.trace_id,
+                    "attachment_url": task_message.attachment_url,
+                },
+            )
+            # Clean up temporary file before re-raising
+            if outcome.file_path:
+                await self._cleanup_temp_file(outcome.file_path)
+
+            # Re-raise circuit open error to prevent offset commit
+            raise CircuitOpenError(
+                circuit_name="download_worker",
+                retry_after=60.0,  # Circuit breaker will handle timing
+                cause=Exception(outcome.error_message or "Circuit breaker open"),
+            )
+
+        # For all other errors, route through RetryHandler
+        # This will send to retry topics or DLQ based on error category and retry count
+        try:
+            # Create exception from outcome
+            error_message = outcome.error_message or "Download failed"
+            error = Exception(error_message)
+
+            # Route through retry handler (sends to retry topic or DLQ)
+            await self.retry_handler.handle_failure(
+                task=task_message,
+                error=error,
+                error_category=error_category,
+            )
+
+            logger.info(
+                "Routed failed task through retry handler",
+                extra={
+                    "trace_id": task_message.trace_id,
+                    "error_category": error_category.value,
+                    "retry_count": task_message.retry_count,
+                },
+            )
+
+        except Exception as e:
+            # If retry routing fails, log but don't fail the message processing
+            # The message will be reprocessed on next poll
+            logger.error(
+                "Failed to route task through retry handler",
+                extra={
+                    "trace_id": task_message.trace_id,
+                    "error": str(e),
+                },
+                exc_info=True,
+            )
+            raise  # Re-raise to prevent offset commit
+
+        # Determine status for result message
+        if error_category == ErrorCategory.PERMANENT:
+            status = "failed_permanent"
         else:
-            # Unknown category - treat as transient
             status = "failed_transient"
 
-        # Produce result message
+        # Produce result message for observability
         result_message = DownloadResultMessage(
             trace_id=task_message.trace_id,
             attachment_url=task_message.attachment_url,
@@ -375,7 +448,7 @@ class DownloadWorker:
             destination_path=None,
             bytes_downloaded=None,
             error_message=outcome.error_message,
-            error_category=outcome.error_category.value if outcome.error_category else "unknown",
+            error_category=error_category.value,
             processing_time_ms=processing_time_ms,
             completed_at=datetime.now(timezone.utc),
         )
@@ -398,8 +471,6 @@ class DownloadWorker:
         # Clean up temporary file if it exists
         if outcome.file_path:
             await self._cleanup_temp_file(outcome.file_path)
-
-        # TODO (WP-306): Route to retry or DLQ based on error_category
 
     async def _cleanup_temp_file(self, file_path: Path) -> None:
         """

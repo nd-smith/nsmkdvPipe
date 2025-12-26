@@ -15,11 +15,10 @@
 ### In Progress
 <!-- Move tasks here when starting work -->
 
-- [ ] **WP-306**: Download Worker - Error Handling
+- [ ] **WP-307**: Download Worker - Testing
 
 ### Ready
 <!-- Tasks ready to be picked up -->
-- [ ] **WP-307**: Download Worker - Testing
 - [ ] **WP-308**: Result Processor - Core Implementation
 - [ ] **WP-309**: Result Processor - Delta Inventory Integration
 - [ ] **WP-310**: Result Processor - Testing
@@ -74,6 +73,7 @@
 - [x] **WP-303**: Event Ingester - Testing (commit: e6a915a)
 - [x] **WP-304**: Download Worker - Core Implementation (commit: 53a0205)
 - [x] **WP-305**: Download Worker - Upload Integration (commit: 0c0ccf0)
+- [x] **WP-306**: Download Worker - Error Handling (commit: PENDING)
 
 ---
 
