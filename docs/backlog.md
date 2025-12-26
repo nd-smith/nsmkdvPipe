@@ -56,6 +56,9 @@
 
 ## Work Package Details
 
+<details>
+<summary><strong>Phase 1: Foundation (WP-101 to WP-119) ✅ Complete</strong></summary>
+
 ### WP-101: Create core package structure and base types
 
 **Objective**: Set up core package with base types and protocols used across modules
@@ -361,9 +364,10 @@
 **Dependencies**: WP-117, WP-118
 **Deliverable**: `AttachmentDownloader.download(task) -> DownloadOutcome`
 
----
+</details>
 
-## Phase 2: Kafka Infrastructure
+<details open>
+<summary><strong>Phase 2: Kafka Infrastructure (WP-201 to WP-212)</strong></summary>
 
 ### WP-201: Create kafka_pipeline package structure and KafkaConfig
 
@@ -606,6 +610,8 @@
 - [ ] Container starts/stops reliably
 - [ ] Tests are isolated (unique topics per test)
 - [ ] CI-friendly (works in GitHub Actions)
+
+</details>
 
 ---
 
