@@ -6,8 +6,7 @@ Pydantic models for all Kafka message types with validation and serialization.
 Schemas:
     events.py   - EventMessage (raw events from source)
     tasks.py    - DownloadTaskMessage (work items for download workers)
-    results.py  - DownloadResultMessage (download outcomes)
-    dlq.py      - FailedDownloadMessage (dead-letter queue entries)
+    results.py  - DownloadResultMessage, FailedDownloadMessage (outcomes and DLQ)
 
 Design Decisions:
     - Pydantic for validation and JSON serialization
@@ -21,9 +20,12 @@ Future Consideration:
 """
 
 from kafka_pipeline.schemas.events import EventMessage
+from kafka_pipeline.schemas.results import DownloadResultMessage, FailedDownloadMessage
 from kafka_pipeline.schemas.tasks import DownloadTaskMessage
 
 __all__ = [
     "EventMessage",
     "DownloadTaskMessage",
+    "DownloadResultMessage",
+    "FailedDownloadMessage",
 ]
