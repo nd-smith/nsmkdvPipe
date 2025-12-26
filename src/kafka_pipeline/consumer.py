@@ -136,23 +136,26 @@ class BaseKafkaConsumer:
             extra={"topics": self.topics, "group_id": self.group_id},
         )
 
-        # Create OAuth callback for authentication
-        oauth_callback = create_kafka_oauth_callback()
+        # Create aiokafka consumer configuration
+        consumer_config = {
+            "bootstrap_servers": self.config.bootstrap_servers,
+            "group_id": self.group_id,
+            "security_protocol": self.config.security_protocol,
+            "sasl_mechanism": self.config.sasl_mechanism,
+            "enable_auto_commit": self.config.enable_auto_commit,
+            "auto_offset_reset": self.config.auto_offset_reset,
+            "max_poll_records": self.config.max_poll_records,
+            "max_poll_interval_ms": self.config.max_poll_interval_ms,
+            "session_timeout_ms": self.config.session_timeout_ms,
+        }
+
+        # Only add OAuth callback for OAUTHBEARER authentication
+        if self.config.sasl_mechanism == "OAUTHBEARER":
+            oauth_callback = create_kafka_oauth_callback()
+            consumer_config["sasl_oauth_token_provider"] = oauth_callback
 
         # Create aiokafka consumer
-        self._consumer = AIOKafkaConsumer(
-            *self.topics,
-            bootstrap_servers=self.config.bootstrap_servers,
-            group_id=self.group_id,
-            security_protocol=self.config.security_protocol,
-            sasl_mechanism=self.config.sasl_mechanism,
-            sasl_oauth_token_provider=oauth_callback,
-            enable_auto_commit=self.config.enable_auto_commit,
-            auto_offset_reset=self.config.auto_offset_reset,
-            max_poll_records=self.config.max_poll_records,
-            max_poll_interval_ms=self.config.max_poll_interval_ms,
-            session_timeout_ms=self.config.session_timeout_ms,
-        )
+        self._consumer = AIOKafkaConsumer(*self.topics, **consumer_config)
 
         await self._consumer.start()
         self._running = True

@@ -15,8 +15,6 @@
 ### In Progress
 <!-- Move tasks here when starting work -->
 
-- [ ] **WP-212**: Integration tests with Testcontainers
-
 ### Ready
 <!-- Tasks ready to be picked up -->
 
@@ -62,6 +60,7 @@
 - [x] **WP-209**: Implement RetryHandler (commit: 7413495)
 - [x] **WP-210**: Implement DelayedRedeliveryScheduler (commit: 9f9c627)
 - [x] **WP-211**: DLQ Handler skeleton (commit: 1cfde74)
+- [x] **WP-212**: Integration tests with Testcontainers (commit: c510372)
 
 ---
 

@@ -102,21 +102,24 @@ class BaseKafkaProducer:
 
         logger.info("Starting Kafka producer")
 
-        # Create OAuth callback for authentication
-        oauth_callback = create_kafka_oauth_callback()
+        # Create aiokafka producer configuration
+        producer_config = {
+            "bootstrap_servers": self.config.bootstrap_servers,
+            "security_protocol": self.config.security_protocol,
+            "sasl_mechanism": self.config.sasl_mechanism,
+            "acks": self.config.acks,
+            "value_serializer": lambda v: v,  # We'll handle serialization in send()
+        }
+
+        # Note: aiokafka handles retries internally - we don't pass explicit retry config
+
+        # Only add OAuth callback for OAUTHBEARER authentication
+        if self.config.sasl_mechanism == "OAUTHBEARER":
+            oauth_callback = create_kafka_oauth_callback()
+            producer_config["sasl_oauth_token_provider"] = oauth_callback
 
         # Create aiokafka producer
-        self._producer = AIOKafkaProducer(
-            bootstrap_servers=self.config.bootstrap_servers,
-            security_protocol=self.config.security_protocol,
-            sasl_mechanism=self.config.sasl_mechanism,
-            sasl_oauth_token_provider=oauth_callback,
-            acks=self.config.acks,
-            retries=self.config.retries,
-            retry_backoff_ms=self.config.retry_backoff_ms,
-            # Use JSON serialization for values
-            value_serializer=lambda v: v,  # We'll handle serialization in send()
-        )
+        self._producer = AIOKafkaProducer(**producer_config)
 
         await self._producer.start()
         self._started = True
