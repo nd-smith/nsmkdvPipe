@@ -316,9 +316,8 @@ class TestBaseKafkaConsumerMessageProcessing:
 
         message = create_consumer_record()
 
-        # Processing should raise
-        with pytest.raises(ValueError, match="Processing failed"):
-            await consumer._process_message(message)
+        # Processing should NOT raise (error handling added in WP-207)
+        await consumer._process_message(message)
 
         # Handler was called
         mock_message_handler.assert_called_once_with(message)

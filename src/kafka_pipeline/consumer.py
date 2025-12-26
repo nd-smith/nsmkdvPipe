@@ -8,6 +8,7 @@ Provides async Kafka consumer functionality with:
 - Multiple topic subscription
 - Graceful shutdown handling
 - Message handler pattern for processing logic
+- Intelligent error classification and routing
 """
 
 import asyncio
@@ -18,6 +19,8 @@ from aiokafka import AIOKafkaConsumer
 from aiokafka.structs import ConsumerRecord
 
 from core.auth.kafka_oauth import create_kafka_oauth_callback
+from core.errors.exceptions import CircuitOpenError, ErrorCategory
+from core.errors.kafka_classifier import KafkaErrorClassifier
 from core.resilience.circuit_breaker import (
     CircuitBreaker,
     KAFKA_CIRCUIT_CONFIG,
@@ -243,7 +246,13 @@ class BaseKafkaConsumer:
 
     async def _process_message(self, message: ConsumerRecord) -> None:
         """
-        Process a single message and commit offset on success.
+        Process a single message with error classification and routing.
+
+        Handles errors according to their category:
+        - TRANSIENT: Will be retried (don't commit, message reprocessed)
+        - PERMANENT: Should go to DLQ (don't commit for now, logged)
+        - AUTH: Token refresh needed (don't commit, will reprocess)
+        - CIRCUIT_OPEN: Circuit breaker open (don't commit, will reprocess)
 
         Args:
             message: ConsumerRecord to process
@@ -275,19 +284,99 @@ class BaseKafkaConsumer:
             )
 
         except Exception as e:
-            logger.error(
-                "Failed to process message",
-                extra={
-                    "topic": message.topic,
-                    "partition": message.partition,
-                    "offset": message.offset,
-                    "error": str(e),
-                },
+            # Classify the error to determine routing
+            await self._handle_processing_error(message, e)
+
+    async def _handle_processing_error(
+        self, message: ConsumerRecord, error: Exception
+    ) -> None:
+        """
+        Handle message processing errors with intelligent routing.
+
+        Classifies the error and determines appropriate action:
+        - TRANSIENT: Log and don't commit (message will be retried on next poll)
+        - PERMANENT: Log for DLQ routing (future: send to DLQ topic)
+        - AUTH: Log and don't commit (will reprocess after token refresh)
+        - CIRCUIT_OPEN: Log and don't commit (will reprocess when circuit closes)
+        - UNKNOWN: Log and don't commit (conservative retry)
+
+        Args:
+            message: The ConsumerRecord that failed processing
+            error: The exception that occurred during processing
+        """
+        # Classify the error using Kafka error classifier
+        classified_error = KafkaErrorClassifier.classify_consumer_error(
+            error,
+            context={
+                "topic": message.topic,
+                "partition": message.partition,
+                "offset": message.offset,
+                "group_id": self.group_id,
+            },
+        )
+
+        error_category = classified_error.category
+
+        # Build log context
+        log_extra = {
+            "topic": message.topic,
+            "partition": message.partition,
+            "offset": message.offset,
+            "error_type": type(error).__name__,
+            "error_category": error_category.value,
+            "error_message": str(error),
+            "classified_as": type(classified_error).__name__,
+        }
+
+        # Route based on error category
+        if error_category == ErrorCategory.TRANSIENT:
+            logger.warning(
+                "Transient error processing message - will retry on next poll",
+                extra=log_extra,
                 exc_info=True,
             )
-            # Don't commit offset on failure - message will be reprocessed
-            # The message_handler is responsible for retry/DLQ routing
-            raise
+            # Don't commit offset - message will be reprocessed
+            # TODO (WP-209): Send to retry topic with exponential backoff
+
+        elif error_category == ErrorCategory.PERMANENT:
+            logger.error(
+                "Permanent error processing message - should route to DLQ",
+                extra=log_extra,
+                exc_info=True,
+            )
+            # Don't commit offset yet
+            # TODO (WP-211): Send to DLQ topic for manual review
+            # For now, just log - message will be reprocessed (not ideal)
+
+        elif error_category == ErrorCategory.AUTH:
+            logger.warning(
+                "Authentication error - will reprocess after token refresh",
+                extra=log_extra,
+                exc_info=True,
+            )
+            # Don't commit offset - message will be reprocessed after auth refresh
+            # The token cache will refresh automatically on next attempt
+
+        elif error_category == ErrorCategory.CIRCUIT_OPEN:
+            logger.warning(
+                "Circuit breaker open - will reprocess when circuit closes",
+                extra=log_extra,
+                exc_info=True,
+            )
+            # Don't commit offset - message will be reprocessed when circuit recovers
+            # Circuit breaker will track failure rate and open/close accordingly
+
+        else:  # UNKNOWN or other categories
+            logger.error(
+                "Unknown error category - applying conservative retry",
+                extra=log_extra,
+                exc_info=True,
+            )
+            # Don't commit offset - conservative retry for unknown errors
+
+        # Note: We don't re-raise the exception here because we want to continue
+        # processing other messages. The offset won't be committed, so this message
+        # will be retried on the next poll.
 
     @property
     def is_running(self) -> bool:

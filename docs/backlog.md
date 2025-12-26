@@ -15,7 +15,7 @@
 ### In Progress
 <!-- Move tasks here when starting work -->
 
-- [ ] **WP-207**: Implement BaseKafkaConsumer - error handling
+- [ ] **WP-208**: Add Kafka metrics (Prometheus)
 
 ### Ready
 <!-- Tasks ready to be picked up -->
@@ -57,6 +57,7 @@
 - [x] **WP-204**: Implement DownloadResultMessage and FailedDownloadMessage schemas (commit: 2f374f2)
 - [x] **WP-205**: Implement BaseKafkaProducer (commit: e7fbf6d)
 - [x] **WP-206**: Implement BaseKafkaConsumer - core message loop (commit: 32bbd00)
+- [x] **WP-207**: Implement BaseKafkaConsumer - error handling (commit: PENDING)
 
 ---
 
