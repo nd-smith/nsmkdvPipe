@@ -363,15 +363,253 @@
 
 ---
 
-## Future Phases (Not Yet Detailed)
+## Phase 2: Kafka Infrastructure
 
-### Phase 2: Kafka Infrastructure
-- WP-201: Kafka configuration and connection
-- WP-202: Message schemas (Pydantic)
-- WP-203: Base producer
-- WP-204: Base consumer
-- WP-205: Retry handler
-- WP-206: Integration tests with Testcontainers
+### WP-201: Create kafka_pipeline package structure and KafkaConfig
+
+**Objective**: Set up kafka_pipeline package with configuration dataclass
+**Size**: Small
+**Files to read**:
+- `src/kafka_pipeline/__init__.py` (existing skeleton)
+- `docs/kafka-greenfield-implementation-plan.md` (Section 4.2.1, 7.1)
+**Files to create/modify**:
+- `src/kafka_pipeline/__init__.py` (update)
+- `src/kafka_pipeline/config.py` (KafkaConfig dataclass)
+- `src/kafka_pipeline/py.typed` (PEP 561 marker)
+- `tests/kafka_pipeline/test_config.py`
+**Dependencies**: None
+**Deliverable**: `KafkaConfig.from_env()` loading from environment variables
+**Review checklist**:
+- [ ] All env vars from Section 7.1 supported
+- [ ] Sensible defaults for optional settings
+- [ ] Validation for required fields
+
+---
+
+### WP-202: Implement EventMessage schema
+
+**Objective**: Create Pydantic model for raw event messages from source
+**Size**: Small
+**Files to read**:
+- `docs/kafka-greenfield-implementation-plan.md` (Section 4.2.2)
+- Existing event schemas if any
+**Files to create/modify**:
+- `src/kafka_pipeline/schemas/__init__.py`
+- `src/kafka_pipeline/schemas/events.py`
+- `tests/kafka_pipeline/schemas/test_events.py`
+**Dependencies**: WP-201
+**Deliverable**: `EventMessage` with JSON serialization tests
+**Review checklist**:
+- [ ] datetime serialization to ISO format
+- [ ] Optional fields handled correctly
+- [ ] Validation for required fields (trace_id, event_type)
+
+---
+
+### WP-203: Implement DownloadTaskMessage schema
+
+**Objective**: Create Pydantic model for download work items
+**Size**: Small
+**Files to read**:
+- `docs/kafka-greenfield-implementation-plan.md` (Section 4.2.2)
+- `src/kafka_pipeline/schemas/events.py` (from WP-202)
+**Files to create/modify**:
+- `src/kafka_pipeline/schemas/tasks.py`
+- `tests/kafka_pipeline/schemas/test_tasks.py`
+**Dependencies**: WP-202
+**Deliverable**: `DownloadTaskMessage` with retry_count tracking
+**Review checklist**:
+- [ ] Metadata dict for extensibility
+- [ ] retry_count defaults to 0
+- [ ] original_timestamp preserved through retries
+
+---
+
+### WP-204: Implement DownloadResultMessage and FailedDownloadMessage schemas
+
+**Objective**: Create Pydantic models for download outcomes and DLQ messages
+**Size**: Small
+**Files to read**:
+- `docs/kafka-greenfield-implementation-plan.md` (Section 4.2.2, 4.2.5)
+- `src/kafka_pipeline/schemas/tasks.py` (from WP-203)
+**Files to create/modify**:
+- `src/kafka_pipeline/schemas/results.py`
+- `tests/kafka_pipeline/schemas/test_results.py`
+**Dependencies**: WP-203
+**Deliverable**: `DownloadResultMessage`, `FailedDownloadMessage` schemas
+**Review checklist**:
+- [ ] Status enum: success, failed_transient, failed_permanent
+- [ ] FailedDownloadMessage includes original_task reference
+- [ ] Error context preserved (truncated to avoid huge messages)
+
+---
+
+### WP-205: Implement BaseKafkaProducer
+
+**Objective**: Create async Kafka producer with circuit breaker integration
+**Size**: Medium
+**Files to read**:
+- `docs/kafka-greenfield-implementation-plan.md` (Section 4.2.4)
+- `src/kafka_pipeline/config.py` (from WP-201)
+- `src/core/resilience/circuit_breaker.py` (from WP-105)
+**Files to create/modify**:
+- `src/kafka_pipeline/producer.py`
+- `tests/kafka_pipeline/test_producer.py`
+**Dependencies**: WP-201, WP-105 (circuit breaker)
+**Deliverable**: `BaseKafkaProducer` with `send()` and `send_batch()` methods
+**Review checklist**:
+- [ ] OAUTHBEARER callback integration
+- [ ] Circuit breaker wraps send operations
+- [ ] Proper cleanup in `stop()`
+- [ ] Headers support for routing metadata
+
+---
+
+### WP-206: Implement BaseKafkaConsumer - core message loop
+
+**Objective**: Create async Kafka consumer with manual commit
+**Size**: Medium
+**Files to read**:
+- `docs/kafka-greenfield-implementation-plan.md` (Section 4.2.3)
+- `src/kafka_pipeline/config.py` (from WP-201)
+**Files to create/modify**:
+- `src/kafka_pipeline/consumer.py`
+- `tests/kafka_pipeline/test_consumer.py`
+**Dependencies**: WP-201, WP-105 (circuit breaker)
+**Deliverable**: `BaseKafkaConsumer` with `start()`, `stop()`, message iteration
+**Review checklist**:
+- [ ] Manual offset commit after successful processing
+- [ ] Graceful shutdown handling
+- [ ] OAUTHBEARER callback integration
+- [ ] Multiple topics subscription
+
+---
+
+### WP-207: Implement BaseKafkaConsumer - error handling
+
+**Objective**: Add error classification and retry/DLQ routing to consumer
+**Size**: Medium
+**Files to read**:
+- `src/kafka_pipeline/consumer.py` (from WP-206)
+- `src/core/errors/` (from WP-110, WP-112)
+- `docs/kafka-greenfield-implementation-plan.md` (Section 4.2.3 error handling)
+**Files to create/modify**:
+- `src/kafka_pipeline/consumer.py` (extend)
+- `tests/kafka_pipeline/test_consumer_errors.py`
+**Dependencies**: WP-206, WP-110, WP-112
+**Deliverable**: Error routing: transient→retry, permanent→DLQ, auth→reprocess
+**Review checklist**:
+- [ ] ErrorCategory correctly routes messages
+- [ ] Circuit open errors don't commit (will reprocess)
+- [ ] Logging includes error context
+
+---
+
+### WP-208: Add Kafka metrics (Prometheus)
+
+**Objective**: Instrument producer and consumer with Prometheus metrics
+**Size**: Small
+**Files to read**:
+- `src/kafka_pipeline/producer.py` (from WP-205)
+- `src/kafka_pipeline/consumer.py` (from WP-206)
+- prometheus_client docs
+**Files to create/modify**:
+- `src/kafka_pipeline/metrics.py`
+- `src/kafka_pipeline/producer.py` (add metrics)
+- `src/kafka_pipeline/consumer.py` (add metrics)
+- `tests/kafka_pipeline/test_metrics.py`
+**Dependencies**: WP-205, WP-206
+**Deliverable**: Metrics: messages_produced, messages_consumed, consumer_lag, errors
+**Review checklist**:
+- [ ] Labels: topic, partition, consumer_group
+- [ ] Histogram for processing time
+- [ ] Counter for errors by category
+
+---
+
+### WP-209: Implement RetryHandler
+
+**Objective**: Create retry routing logic with exponential backoff topics
+**Size**: Medium
+**Files to read**:
+- `docs/kafka-greenfield-implementation-plan.md` (Section 4.2.5)
+- `src/kafka_pipeline/producer.py` (from WP-205)
+- `src/kafka_pipeline/schemas/tasks.py` (from WP-203)
+**Files to create/modify**:
+- `src/kafka_pipeline/retry/__init__.py`
+- `src/kafka_pipeline/retry/handler.py`
+- `tests/kafka_pipeline/retry/test_handler.py`
+**Dependencies**: WP-205, WP-203, WP-204
+**Deliverable**: `RetryHandler.handle_failure()` routing to retry topics or DLQ
+**Review checklist**:
+- [ ] Retry count incremented correctly
+- [ ] Error context preserved in metadata
+- [ ] DLQ routing after max retries exhausted
+- [ ] Configurable retry delays
+
+---
+
+### WP-210: Implement DelayedRedeliveryScheduler
+
+**Objective**: Create scheduler for moving messages from retry topics to pending
+**Size**: Medium
+**Files to read**:
+- `src/kafka_pipeline/retry/handler.py` (from WP-209)
+- `src/kafka_pipeline/consumer.py` (from WP-206)
+**Files to create/modify**:
+- `src/kafka_pipeline/retry/scheduler.py`
+- `tests/kafka_pipeline/retry/test_scheduler.py`
+**Dependencies**: WP-209, WP-206
+**Deliverable**: Scheduler that consumes retry topics and redelivers after delay
+**Review checklist**:
+- [ ] Respects retry_at timestamp in metadata
+- [ ] Pauses if pending topic has high lag
+- [ ] Graceful shutdown
+
+---
+
+### WP-211: DLQ Handler skeleton
+
+**Objective**: Create basic DLQ consumer for manual review/replay
+**Size**: Small
+**Files to read**:
+- `src/kafka_pipeline/consumer.py` (from WP-206)
+- `src/kafka_pipeline/schemas/results.py` (from WP-204)
+**Files to create/modify**:
+- `src/kafka_pipeline/dlq/__init__.py`
+- `src/kafka_pipeline/dlq/handler.py`
+- `tests/kafka_pipeline/dlq/test_handler.py`
+**Dependencies**: WP-206, WP-204
+**Deliverable**: `DLQHandler` with manual ack and replay capability
+**Review checklist**:
+- [ ] Manual ack (no auto-commit)
+- [ ] Replay sends to original pending topic
+- [ ] Logging for audit trail
+
+---
+
+### WP-212: Integration tests with Testcontainers
+
+**Objective**: Set up Docker-based Kafka for integration testing
+**Size**: Medium
+**Files to read**:
+- All kafka_pipeline modules
+- testcontainers-python docs
+**Files to create/modify**:
+- `tests/kafka_pipeline/conftest.py` (Kafka fixtures)
+- `tests/kafka_pipeline/integration/__init__.py`
+- `tests/kafka_pipeline/integration/test_produce_consume.py`
+- `tests/kafka_pipeline/integration/test_retry_flow.py`
+**Dependencies**: WP-205, WP-206, WP-209
+**Deliverable**: Working integration tests with real Kafka container
+**Review checklist**:
+- [ ] Container starts/stops reliably
+- [ ] Tests are isolated (unique topics per test)
+- [ ] CI-friendly (works in GitHub Actions)
+
+---
+
+## Future Phases (Not Yet Detailed)
 
 ### Phase 3: Workers
 - WP-301: Event ingester worker
