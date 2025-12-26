@@ -21,7 +21,9 @@ Dependencies:
 """
 
 from kafka_pipeline.workers.event_ingester import EventIngesterWorker
+from kafka_pipeline.workers.result_processor import ResultProcessor
 
 __all__ = [
     "EventIngesterWorker",
+    "ResultProcessor",
 ]
