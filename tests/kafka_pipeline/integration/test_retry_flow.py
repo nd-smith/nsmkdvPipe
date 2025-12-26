@@ -28,7 +28,7 @@ async def test_transient_error_routes_to_retry_topic(
     kafka_producer: BaseKafkaProducer,
     kafka_consumer_factory: callable,
     message_collector: callable,
-    kafka_config: KafkaConfig,
+    test_kafka_config: KafkaConfig,
     test_topics: dict[str, str],
 ):
     """
@@ -41,7 +41,7 @@ async def test_transient_error_routes_to_retry_topic(
     - retry_at timestamp is added
     """
     # Create retry handler
-    retry_handler = RetryHandler(config=kafka_config, producer=kafka_producer)
+    retry_handler = RetryHandler(config=test_kafka_config, producer=kafka_producer)
 
     # Create initial task
     task = DownloadTaskMessage(
@@ -110,7 +110,7 @@ async def test_permanent_error_routes_to_dlq(
     kafka_producer: BaseKafkaProducer,
     kafka_consumer_factory: callable,
     message_collector: callable,
-    kafka_config: KafkaConfig,
+    test_kafka_config: KafkaConfig,
     test_topics: dict[str, str],
 ):
     """
@@ -121,10 +121,8 @@ async def test_permanent_error_routes_to_dlq(
     - DLQ message contains full context
     - Original task is preserved for replay
     """
-    # Override DLQ topic in config for this test
-    kafka_config.dlq_topic = test_topics["dlq"]
-
-    retry_handler = RetryHandler(config=kafka_config, producer=kafka_producer)
+    # Config already has test-specific DLQ topic
+    retry_handler = RetryHandler(config=test_kafka_config, producer=kafka_producer)
 
     # Create task
     task = DownloadTaskMessage(
@@ -197,7 +195,7 @@ async def test_exhausted_retries_route_to_dlq(
     kafka_producer: BaseKafkaProducer,
     kafka_consumer_factory: callable,
     message_collector: callable,
-    kafka_config: KafkaConfig,
+    test_kafka_config: KafkaConfig,
     test_topics: dict[str, str],
 ):
     """
@@ -207,11 +205,10 @@ async def test_exhausted_retries_route_to_dlq(
     - After max retries, task goes to DLQ
     - DLQ message reflects retry exhaustion
     """
-    # Override config for this test
-    kafka_config.dlq_topic = test_topics["dlq"]
-    kafka_config.max_retries = 4
+    # Config already has test-specific DLQ topic, just set max retries
+    test_kafka_config.max_retries = 4
 
-    retry_handler = RetryHandler(config=kafka_config, producer=kafka_producer)
+    retry_handler = RetryHandler(config=test_kafka_config, producer=kafka_producer)
 
     # Create task that has already been retried max times
     task = DownloadTaskMessage(
@@ -270,7 +267,7 @@ async def test_exhausted_retries_route_to_dlq(
 async def test_retry_progression_through_backoff_topics(
     kafka_producer: BaseKafkaProducer,
     kafka_consumer_factory: callable,
-    kafka_config: KafkaConfig,
+    test_kafka_config: KafkaConfig,
     test_topics: dict[str, str],
 ):
     """
@@ -283,11 +280,10 @@ async def test_retry_progression_through_backoff_topics(
     - Fourth retry goes to 40m topic
     - Fifth attempt goes to DLQ
     """
-    # Override config
-    kafka_config.dlq_topic = test_topics["dlq"]
-    kafka_config.max_retries = 4
+    # Config already has test-specific topics, just set max retries
+    test_kafka_config.max_retries = 4
 
-    retry_handler = RetryHandler(config=kafka_config, producer=kafka_producer)
+    retry_handler = RetryHandler(config=test_kafka_config, producer=kafka_producer)
 
     # Track which topics messages appear in
     topic_sequence = []
@@ -320,9 +316,7 @@ async def test_retry_progression_through_backoff_topics(
         # Determine expected topic
         if attempt < 4:
             # Should go to retry topic
-            expected_topic = kafka_config.get_retry_topic(attempt)
-            # Map to test topic
-            expected_topic = test_topics[f"retry_{kafka_config.retry_delays[attempt]//60}m"]
+            expected_topic = test_kafka_config.get_retry_topic(attempt)
 
             # Consume from retry topic
             consumer = await kafka_consumer_factory(
@@ -395,7 +389,7 @@ async def test_error_metadata_preserved_through_retries(
     kafka_producer: BaseKafkaProducer,
     kafka_consumer_factory: callable,
     message_collector: callable,
-    kafka_config: KafkaConfig,
+    test_kafka_config: KafkaConfig,
     test_topics: dict[str, str],
 ):
     """
@@ -406,7 +400,7 @@ async def test_error_metadata_preserved_through_retries(
     - Metadata accumulates context
     - Original timestamp is preserved
     """
-    retry_handler = RetryHandler(config=kafka_config, producer=kafka_producer)
+    retry_handler = RetryHandler(config=test_kafka_config, producer=kafka_producer)
 
     # Initial task
     original_timestamp = datetime.now(timezone.utc)
@@ -430,7 +424,7 @@ async def test_error_metadata_preserved_through_retries(
     )
 
     # Consume from first retry topic
-    retry_topic_1 = test_topics["retry_5m"]
+    retry_topic_1 = test_kafka_config.get_retry_topic(0)
     consumer1 = await kafka_consumer_factory(
         topics=[retry_topic_1],
         group_id="test-metadata-consumer-1",
@@ -473,7 +467,7 @@ async def test_error_metadata_preserved_through_retries(
     )
 
     # Consume from second retry topic
-    retry_topic_2 = test_topics["retry_10m"]
+    retry_topic_2 = test_kafka_config.get_retry_topic(1)
     consumer2 = await kafka_consumer_factory(
         topics=[retry_topic_2],
         group_id="test-metadata-consumer-2",

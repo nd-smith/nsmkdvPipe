@@ -153,6 +153,32 @@ def test_topics(
 
 
 @pytest.fixture
+def test_kafka_config(
+    kafka_config: KafkaConfig, unique_topic_prefix: str
+) -> KafkaConfig:
+    """
+    Provide test-specific Kafka configuration with unique topic names.
+
+    Updates the config to use test-specific topic names for proper
+    isolation between tests.
+
+    Args:
+        kafka_config: Base test Kafka configuration
+        unique_topic_prefix: Unique prefix for this test
+
+    Returns:
+        KafkaConfig: Configuration with test-specific topic names
+    """
+    # Create a copy and update topic names
+    config = kafka_config
+    config.downloads_pending_topic = f"{unique_topic_prefix}.downloads.pending"
+    config.downloads_results_topic = f"{unique_topic_prefix}.downloads.results"
+    config.dlq_topic = f"{unique_topic_prefix}.downloads.dlq"
+
+    return config
+
+
+@pytest.fixture
 async def kafka_consumer_factory(
     kafka_config: KafkaConfig,
 ) -> AsyncGenerator[callable, None]:

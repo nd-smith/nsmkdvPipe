@@ -356,6 +356,7 @@ async def test_consumer_manual_offset_commit(
     kafka_producer: BaseKafkaProducer,
     kafka_consumer_factory: callable,
     test_topics: dict[str, str],
+    unique_topic_prefix: str,
 ):
     """
     Test that consumer uses manual offset commit (at-least-once semantics).
@@ -393,9 +394,11 @@ async def test_consumer_manual_offset_commit(
     await kafka_producer.send(topic=topic, key=task.trace_id, value=task)
 
     # First consumer attempt (will fail)
+    # Use unique group_id to avoid interference from other tests
+    group_id = f"{unique_topic_prefix}.consumer-commit"
     consumer = await kafka_consumer_factory(
         topics=[topic],
-        group_id="test-consumer-commit",
+        group_id=group_id,
         message_handler=counting_handler,
     )
 
@@ -407,33 +410,35 @@ async def test_consumer_manual_offset_commit(
             break
         await asyncio.sleep(0.1)
 
-    # Stop consumer (simulating crash)
-    await consumer.stop()
+    # Simulate crash by canceling task WITHOUT calling stop()
+    # This ensures offset is NOT committed (unlike graceful stop())
     consumer_task.cancel()
     try:
         await consumer_task
     except asyncio.CancelledError:
         pass
 
-    # Wait a moment for state to settle
-    await asyncio.sleep(0.5)
+    # Wait longer for consumer group to rebalance and Kafka state to settle
+    # This is necessary because Kafka needs time to recognize the consumer is gone
+    # and release the partition assignment
+    await asyncio.sleep(3)
 
     # Second consumer attempt (should reprocess because offset wasn't committed)
     consumer2 = await kafka_consumer_factory(
         topics=[topic],
-        group_id="test-consumer-commit",  # Same group
+        group_id=group_id,  # Same group as first consumer
         message_handler=counting_handler,
     )
 
     consumer_task2 = asyncio.create_task(consumer2.start())
 
-    # Wait for reprocessing
-    for _ in range(50):
+    # Wait longer for reprocessing (Kafka needs time to assign partitions)
+    for _ in range(100):  # 10 seconds max
         if processing_count[0] >= 2:
             break
         await asyncio.sleep(0.1)
 
-    await consumer2.stop()
+    # Cancel second consumer task (no need for graceful stop in test)
     consumer_task2.cancel()
     try:
         await consumer_task2
