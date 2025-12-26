@@ -22,4 +22,7 @@ Dependencies:
     - pydantic: Message schema validation
 """
 
+from kafka_pipeline.config import KafkaConfig
+
 __version__ = "0.1.0"
+__all__ = ["KafkaConfig"]
