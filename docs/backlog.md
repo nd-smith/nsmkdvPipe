@@ -15,7 +15,7 @@
 ### In Progress
 <!-- Move tasks here when starting work -->
 
-- [ ] **WP-211**: DLQ Handler skeleton
+- [ ] **WP-212**: Integration tests with Testcontainers
 
 ### Ready
 <!-- Tasks ready to be picked up -->
@@ -61,6 +61,7 @@
 - [x] **WP-208**: Add Kafka metrics (Prometheus) (commit: ebaa751)
 - [x] **WP-209**: Implement RetryHandler (commit: 7413495)
 - [x] **WP-210**: Implement DelayedRedeliveryScheduler (commit: 9f9c627)
+- [x] **WP-211**: DLQ Handler skeleton (commit: 1cfde74)
 
 ---
 
