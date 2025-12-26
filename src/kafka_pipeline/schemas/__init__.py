@@ -19,3 +19,9 @@ Future Consideration:
     - Avro/Protobuf for schema registry integration
     - Schema versioning strategy
 """
+
+from kafka_pipeline.schemas.events import EventMessage
+
+__all__ = [
+    "EventMessage",
+]

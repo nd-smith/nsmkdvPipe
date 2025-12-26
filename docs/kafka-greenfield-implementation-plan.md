@@ -248,7 +248,7 @@ class DomainStrategy(Protocol):
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                              KAFKA CLUSTER                                   │
+│                              KAFKA CLUSTER                                  │
 │  ┌───────────────┐ ┌───────────────┐ ┌───────────────┐ ┌─────────────────┐  │
 │  │ events.raw    │ │ downloads.    │ │ downloads.    │ │ downloads.dlq   │  │
 │  │ (12 parts)    │ │ pending (12)  │ │ results (6)   │ │ (3 parts)       │  │
@@ -1391,10 +1391,3 @@ spec:
 
 ---
 
-## 11. Approval
-
-| Role | Name | Date | Signature |
-|------|------|------|-----------|
-| Tech Lead | | | |
-| Architect | | | |
-| Product Owner | | | |

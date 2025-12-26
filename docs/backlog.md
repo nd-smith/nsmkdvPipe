@@ -15,10 +15,10 @@
 ### In Progress
 <!-- Move tasks here when starting work -->
 
+- [ ] **WP-203**: Implement DownloadTaskMessage schema
+
 ### Ready
 <!-- Tasks ready to be picked up -->
-
-- [ ] **WP-202**: Implement EventMessage schema (Phase 2 - Next task)
 
 ### Blocked
 <!-- Tasks waiting on dependencies or decisions -->
@@ -52,6 +52,7 @@
 - [x] **WP-118**: Extract async download - streaming for large files (commit: a1f2acd)
 - [x] **WP-119**: Create AttachmentDownloader class with clean interface (commit: 07e7cda)
 - [x] **WP-201**: Kafka configuration and connection (commit: 5324f55)
+- [x] **WP-202**: Implement EventMessage schema (commit: pending)
 
 ---
 
