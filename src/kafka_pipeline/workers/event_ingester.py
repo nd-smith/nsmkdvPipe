@@ -6,12 +6,15 @@ This worker is the entry point to the download pipeline:
 2. Validates attachment URLs against domain allowlist
 3. Generates blob storage paths for each attachment
 4. Produces DownloadTaskMessage to downloads.pending topic
+5. Writes events to Delta Lake (xact_events table) for analytics
 
 Consumer group: {prefix}-event-ingester
 Input topic: events.raw
 Output topic: downloads.pending
+Delta table: xact_events (analytics and deduplication)
 """
 
+import asyncio
 import json
 import logging
 from typing import Optional
@@ -23,9 +26,12 @@ from core.paths.resolver import generate_blob_path
 from core.security.url_validation import validate_download_url
 from kafka_pipeline.config import KafkaConfig
 from kafka_pipeline.consumer import BaseKafkaConsumer
+from kafka_pipeline.metrics import record_delta_write
 from kafka_pipeline.producer import BaseKafkaProducer
 from kafka_pipeline.schemas.events import EventMessage
 from kafka_pipeline.schemas.tasks import DownloadTaskMessage
+from kafka_pipeline.writers import DeltaEventsWriter
+from verisk_pipeline.common.config.xact import get_config
 from verisk_pipeline.common.security import sanitize_url
 
 logger = logging.getLogger(__name__)
@@ -39,12 +45,16 @@ class EventIngesterWorker:
     attachment URLs, generates storage paths, and produces DownloadTaskMessage
     records to the downloads.pending topic for processing by download workers.
 
+    Also writes events to Delta Lake xact_events table for analytics and
+    deduplication tracking.
+
     Features:
     - URL validation with domain allowlist
     - Automatic blob path generation
     - Event deduplication ready (trace_id preservation)
     - Graceful handling of events without attachments
     - Sanitized logging of validation failures
+    - Non-blocking Delta Lake writes for analytics
 
     Usage:
         >>> config = KafkaConfig.from_env()
@@ -54,19 +64,30 @@ class EventIngesterWorker:
         >>> await worker.stop()
     """
 
-    def __init__(self, config: KafkaConfig):
+    def __init__(self, config: KafkaConfig, enable_delta_writes: bool = True):
         """
         Initialize event ingester worker.
 
         Args:
             config: Kafka configuration with topic names and connection settings
+            enable_delta_writes: Whether to enable Delta Lake writes (default: True)
         """
         self.config = config
         self.producer: Optional[BaseKafkaProducer] = None
         self.consumer: Optional[BaseKafkaConsumer] = None
+        self.delta_writer: Optional[DeltaEventsWriter] = None
+        self.enable_delta_writes = enable_delta_writes
 
         # Consumer group for event ingestion
         self.consumer_group = f"{config.consumer_group_prefix}-event-ingester"
+
+        # Initialize Delta writer if enabled
+        if self.enable_delta_writes:
+            pipeline_config = get_config()
+            self.delta_writer = DeltaEventsWriter(
+                table_path=pipeline_config.lakehouse.events_table_path,
+                dedupe_window_hours=24,
+            )
 
         logger.info(
             "Initialized EventIngesterWorker",
@@ -74,6 +95,7 @@ class EventIngesterWorker:
                 "consumer_group": self.consumer_group,
                 "events_topic": config.events_topic,
                 "pending_topic": config.downloads_pending_topic,
+                "delta_writes_enabled": self.enable_delta_writes,
             },
         )
 
@@ -128,7 +150,8 @@ class EventIngesterWorker:
         Process a single event message from Kafka.
 
         Parses the EventMessage, validates attachments, generates download tasks,
-        and produces them to the pending topic.
+        and produces them to the pending topic. Also writes event to Delta Lake
+        for analytics (non-blocking).
 
         Args:
             record: ConsumerRecord containing EventMessage JSON
@@ -162,6 +185,11 @@ class EventIngesterWorker:
                 "attachment_count": len(event.attachments) if event.attachments else 0,
             },
         )
+
+        # Write event to Delta Lake for analytics (non-blocking)
+        # This happens in the background and doesn't block Kafka processing
+        if self.delta_writer:
+            asyncio.create_task(self._write_event_to_delta(event))
 
         # Skip events without attachments
         if not event.attachments:
@@ -290,6 +318,46 @@ class EventIngesterWorker:
                 exc_info=True,
             )
             raise
+
+    async def _write_event_to_delta(self, event: EventMessage) -> None:
+        """
+        Write event to Delta Lake table (background task).
+
+        This method runs as a background task and doesn't block Kafka processing.
+        Failures are logged but don't affect the main event processing flow.
+
+        Args:
+            event: EventMessage to write to Delta
+        """
+        try:
+            success = await self.delta_writer.write_event(event)
+            record_delta_write(
+                table="xact_events",
+                event_count=1,
+                success=success,
+            )
+
+            if not success:
+                logger.warning(
+                    "Delta write failed for event",
+                    extra={"trace_id": event.trace_id},
+                )
+
+        except Exception as e:
+            # Catch all exceptions to prevent background task from crashing
+            logger.error(
+                "Unexpected error writing event to Delta",
+                extra={
+                    "trace_id": event.trace_id,
+                    "error": str(e),
+                },
+                exc_info=True,
+            )
+            record_delta_write(
+                table="xact_events",
+                event_count=1,
+                success=False,
+            )
 
 
 __all__ = ["EventIngesterWorker"]

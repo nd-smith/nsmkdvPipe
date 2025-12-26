@@ -119,6 +119,26 @@ consumer_assigned_partitions = Gauge(
     ["consumer_group"],
 )
 
+# Delta Lake write metrics
+delta_writes_total = Counter(
+    "delta_writes_total",
+    "Total number of Delta Lake write operations",
+    ["table", "status"],  # status: success, error
+)
+
+delta_events_written_total = Counter(
+    "delta_events_written_total",
+    "Total number of events written to Delta tables",
+    ["table"],
+)
+
+delta_write_duration_seconds = Histogram(
+    "delta_write_duration_seconds",
+    "Time spent writing to Delta Lake tables",
+    ["table"],
+    buckets=(0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0),  # From 100ms to 2min
+)
+
 
 def record_message_produced(topic: str, message_bytes: int, success: bool = True) -> None:
     """
@@ -261,6 +281,21 @@ def update_assigned_partitions(consumer_group: str, count: int) -> None:
     consumer_assigned_partitions.labels(consumer_group=consumer_group).set(count)
 
 
+def record_delta_write(table: str, event_count: int, success: bool = True) -> None:
+    """
+    Record a Delta Lake write operation.
+
+    Args:
+        table: Delta table name (e.g., xact_events, xact_attachments)
+        event_count: Number of events written
+        success: Whether the write was successful
+    """
+    status = "success" if success else "error"
+    delta_writes_total.labels(table=table, status=status).inc()
+    if success:
+        delta_events_written_total.labels(table=table).inc(event_count)
+
+
 __all__ = [
     # Metrics
     "messages_produced_total",
@@ -277,6 +312,9 @@ __all__ = [
     "circuit_breaker_failures",
     "kafka_connection_status",
     "consumer_assigned_partitions",
+    "delta_writes_total",
+    "delta_events_written_total",
+    "delta_write_duration_seconds",
     # Helper functions
     "record_message_produced",
     "record_message_consumed",
@@ -288,4 +326,5 @@ __all__ = [
     "record_circuit_breaker_failure",
     "update_connection_status",
     "update_assigned_partitions",
+    "record_delta_write",
 ]

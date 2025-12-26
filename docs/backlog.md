@@ -15,7 +15,7 @@
 ### In Progress
 <!-- Move tasks here when starting work -->
 
-- [ ] **WP-302**: Event Ingester - Delta Analytics Integration
+- [ ] **WP-303**: Event Ingester - Testing
 
 ### Ready
 <!-- Tasks ready to be picked up -->
@@ -74,6 +74,7 @@
 - [x] **WP-211**: DLQ Handler skeleton (commit: 1cfde74)
 - [x] **WP-212**: Integration tests with Testcontainers (commit: c510372)
 - [x] **WP-301**: Event Ingester Worker - Core Implementation (commit: 178ae86)
+- [x] **WP-302**: Event Ingester - Delta Analytics Integration (commit: pending)
 
 ---
 
