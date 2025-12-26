@@ -1,0 +1,8 @@
+Defaulting to user installation because normal site-packages is not writeable
+Collecting aiokafka
+  Using cached aiokafka-0.12.0-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (1.1 MB)
+Requirement already satisfied: async-timeout in /home/nick/.local/lib/python3.10/site-packages (from aiokafka) (5.0.1)
+Requirement already satisfied: packaging in /home/nick/.local/lib/python3.10/site-packages (from aiokafka) (25.0)
+Requirement already satisfied: typing-extensions>=4.10.0 in /home/nick/.local/lib/python3.10/site-packages (from aiokafka) (4.14.1)
+Installing collected packages: aiokafka
+Successfully installed aiokafka-0.12.0
