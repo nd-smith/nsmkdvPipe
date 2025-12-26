@@ -10,13 +10,26 @@
 
 ---
 
-## Current Sprint: Phase 1 - Foundation
+## Current Sprint: Phase 3 - Workers
 
 ### In Progress
 <!-- Move tasks here when starting work -->
 
 ### Ready
 <!-- Tasks ready to be picked up -->
+
+- [ ] **WP-301**: Event Ingester Worker - Core Implementation
+- [ ] **WP-302**: Event Ingester - Delta Analytics Integration
+- [ ] **WP-303**: Event Ingester - Testing
+- [ ] **WP-304**: Download Worker - Core Implementation
+- [ ] **WP-305**: Download Worker - Upload Integration
+- [ ] **WP-306**: Download Worker - Error Handling
+- [ ] **WP-307**: Download Worker - Testing
+- [ ] **WP-308**: Result Processor - Core Implementation
+- [ ] **WP-309**: Result Processor - Delta Inventory Integration
+- [ ] **WP-310**: Result Processor - Testing
+- [ ] **WP-311**: DLQ Handler - Implementation
+- [ ] **WP-312**: DLQ Handler - Testing
 
 ### Blocked
 <!-- Tasks waiting on dependencies or decisions -->
@@ -627,13 +640,319 @@
 
 ---
 
-## Future Phases (Not Yet Detailed)
+<details>
+<summary><strong>Phase 3: Workers (WP-301 to WP-312)</strong></summary>
 
-### Phase 3: Workers
-- WP-301: Event ingester worker
-- WP-302: Download worker
-- WP-303: Result processor
-- WP-304: DLQ handler
+## Phase 3 Overview
+
+**Goal**: Build the worker components that process events, download attachments, and write results.
+
+**Structure**: Phase 3 implements the three main workers plus DLQ handler:
+1. **Event Ingester** (WP-301 to WP-303): Consumes events, produces download tasks
+2. **Download Worker** (WP-304 to WP-307): Downloads attachments, uploads to OneLake
+3. **Result Processor** (WP-308 to WP-310): Batches results, writes to Delta inventory
+4. **DLQ Handler** (WP-311 to WP-312): Manual review and replay for failed tasks
+
+**Recommended Implementation Order**:
+- Start with Event Ingester (WP-301→302→303) - establishes the entry point
+- Then Download Worker (WP-304→305→306→307) - core business logic
+- Then Result Processor (WP-308→309→310) - completes the pipeline
+- Finally DLQ Handler (WP-311→312) - failure handling
+
+**Context Management Best Practices**:
+- Each work package is sized to fit within Claude Code context limits
+- Testing work packages are separate to reduce context load
+- Integration work packages extend base implementations rather than creating from scratch
+- Review checklists ensure completeness without requiring re-reading implementations
+
+---
+
+### WP-301: Event Ingester Worker - Core Implementation
+
+**Objective**: Create worker to consume events and produce download tasks
+**Size**: Medium
+**Files to read**:
+- `src/kafka_pipeline/consumer.py` (from WP-206)
+- `src/kafka_pipeline/producer.py` (from WP-205)
+- `src/kafka_pipeline/schemas/events.py` (from WP-202)
+- `src/kafka_pipeline/schemas/tasks.py` (from WP-203)
+- `src/core/security/url_validation.py` (from WP-113)
+- `src/core/paths/resolver.py` (from WP-116)
+- `docs/kafka-greenfield-implementation-plan.md` (Section 4.2.6)
+**Files to create/modify**:
+- `src/kafka_pipeline/workers/__init__.py`
+- `src/kafka_pipeline/workers/event_ingester.py`
+- `tests/kafka_pipeline/workers/test_event_ingester.py`
+**Dependencies**: WP-206, WP-205, WP-202, WP-203, WP-113, WP-116
+**Deliverable**: `EventIngesterWorker` consuming events.raw, producing to downloads.pending
+**Review checklist**:
+- [ ] Consumes from events.raw topic with correct consumer group
+- [ ] Validates URLs before creating download tasks
+- [ ] Generates correct blob paths for each attachment
+- [ ] Produces well-formed DownloadTaskMessage to pending topic
+- [ ] Skips events with no attachments
+- [ ] Logs validation failures with sanitized URLs
+
+---
+
+### WP-302: Event Ingester - Delta Analytics Integration
+
+**Objective**: Add Delta Lake write for event analytics and deduplication
+**Size**: Medium
+**Files to read**:
+- `src/kafka_pipeline/workers/event_ingester.py` (from WP-301)
+- Existing Delta write patterns from legacy codebase
+**Files to create/modify**:
+- `src/kafka_pipeline/workers/event_ingester.py` (extend)
+- `src/kafka_pipeline/writers/__init__.py`
+- `src/kafka_pipeline/writers/delta_events.py`
+- `tests/kafka_pipeline/writers/test_delta_events.py`
+**Dependencies**: WP-301
+**Deliverable**: Event ingester writing to Delta `xact_events` table with deduplication
+**Review checklist**:
+- [ ] Delta writes are non-blocking (asyncio.create_task)
+- [ ] Deduplication by trace_id within configurable window
+- [ ] Schema matches existing `xact_events` table
+- [ ] Write failures don't block Kafka processing
+- [ ] Metrics for Delta write success/failure
+
+---
+
+### WP-303: Event Ingester - Testing
+
+**Objective**: Comprehensive testing for event ingestion flow
+**Size**: Medium
+**Files to read**:
+- `src/kafka_pipeline/workers/event_ingester.py` (from WP-302)
+- `tests/kafka_pipeline/conftest.py` (from WP-212)
+**Files to create/modify**:
+- `tests/kafka_pipeline/workers/test_event_ingester.py` (extend)
+- `tests/kafka_pipeline/integration/test_event_ingestion.py`
+**Dependencies**: WP-302, WP-212
+**Deliverable**: Unit and integration tests with >90% coverage
+**Review checklist**:
+- [ ] Unit tests: URL validation, path generation, message production
+- [ ] Integration test: event → download task flow
+- [ ] Integration test: deduplication behavior
+- [ ] Integration test: invalid URL handling
+- [ ] Integration test: Delta write success/failure
+- [ ] Tests use Testcontainers for real Kafka
+
+---
+
+### WP-304: Download Worker - Core Implementation
+
+**Objective**: Create worker to process download tasks
+**Size**: Medium
+**Files to read**:
+- `src/kafka_pipeline/consumer.py` (from WP-206)
+- `src/kafka_pipeline/producer.py` (from WP-205)
+- `src/kafka_pipeline/schemas/tasks.py` (from WP-203)
+- `src/core/download/downloader.py` (from WP-119)
+- `docs/kafka-greenfield-implementation-plan.md` (Section 4.2.7)
+**Files to create/modify**:
+- `src/kafka_pipeline/workers/download_worker.py`
+- `tests/kafka_pipeline/workers/test_download_worker.py`
+**Dependencies**: WP-206, WP-205, WP-203, WP-119
+**Deliverable**: `DownloadWorker` consuming from pending + retry topics
+**Review checklist**:
+- [ ] Subscribes to all required topics (pending + retry.*)
+- [ ] Integrates with AttachmentDownloader
+- [ ] Handles DownloadTask → DownloadOutcome conversion
+- [ ] Measures processing time per task
+- [ ] Consumer group configured correctly
+
+---
+
+### WP-305: Download Worker - Upload Integration
+
+**Objective**: Add OneLake upload and result production
+**Size**: Medium
+**Files to read**:
+- `src/kafka_pipeline/workers/download_worker.py` (from WP-304)
+- `src/kafka_pipeline/schemas/results.py` (from WP-204)
+- Existing OneLake client patterns
+**Files to create/modify**:
+- `src/kafka_pipeline/workers/download_worker.py` (extend)
+- `src/kafka_pipeline/storage/__init__.py`
+- `src/kafka_pipeline/storage/onelake_client.py`
+- `tests/kafka_pipeline/storage/test_onelake_client.py`
+**Dependencies**: WP-304, WP-204
+**Deliverable**: Download worker uploading to OneLake and producing results
+**Review checklist**:
+- [ ] Successful downloads uploaded to correct blob path
+- [ ] DownloadResultMessage produced with all fields
+- [ ] Upload failures handled gracefully
+- [ ] Temporary files cleaned up after upload
+- [ ] OneLake client follows Microsoft best practices (NFR-2.10, FR-2.11)
+
+---
+
+### WP-306: Download Worker - Error Handling
+
+**Objective**: Add error classification and retry/DLQ routing
+**Size**: Medium
+**Files to read**:
+- `src/kafka_pipeline/workers/download_worker.py` (from WP-305)
+- `src/kafka_pipeline/retry/handler.py` (from WP-209)
+- `src/core/errors/classifiers.py` (from WP-111, WP-112)
+**Files to create/modify**:
+- `src/kafka_pipeline/workers/download_worker.py` (extend)
+- `tests/kafka_pipeline/workers/test_download_worker_errors.py`
+**Dependencies**: WP-305, WP-209, WP-111, WP-112
+**Deliverable**: Complete error handling with retry/DLQ routing
+**Review checklist**:
+- [ ] Transient errors routed to retry topics
+- [ ] Permanent errors routed to DLQ
+- [ ] Retry count incremented correctly
+- [ ] Error context preserved in metadata
+- [ ] Circuit breaker errors don't commit offset
+- [ ] Auth errors trigger reprocessing
+
+---
+
+### WP-307: Download Worker - Testing
+
+**Objective**: Comprehensive testing for download worker
+**Size**: Medium
+**Files to read**:
+- `src/kafka_pipeline/workers/download_worker.py` (from WP-306)
+- `tests/kafka_pipeline/conftest.py` (from WP-212)
+**Files to create/modify**:
+- `tests/kafka_pipeline/workers/test_download_worker.py` (extend)
+- `tests/kafka_pipeline/integration/test_download_flow.py`
+**Dependencies**: WP-306, WP-212
+**Deliverable**: Unit and integration tests with >90% coverage
+**Review checklist**:
+- [ ] Unit tests: download success, transient failure, permanent failure
+- [ ] Integration test: pending → download → upload → result
+- [ ] Integration test: transient failure → retry topic
+- [ ] Integration test: permanent failure → DLQ
+- [ ] Integration test: retry exhaustion → DLQ
+- [ ] Mock OneLake for unit tests, real for integration
+
+---
+
+### WP-308: Result Processor - Core Implementation
+
+**Objective**: Create worker to consume results with batching logic
+**Size**: Medium
+**Files to read**:
+- `src/kafka_pipeline/consumer.py` (from WP-206)
+- `src/kafka_pipeline/schemas/results.py` (from WP-204)
+- `docs/kafka-greenfield-implementation-plan.md` (Section 4.2.8)
+**Files to create/modify**:
+- `src/kafka_pipeline/workers/result_processor.py`
+- `tests/kafka_pipeline/workers/test_result_processor.py`
+**Dependencies**: WP-206, WP-204
+**Deliverable**: `ResultProcessor` with size and timeout-based batching
+**Review checklist**:
+- [ ] Consumes from downloads.results topic
+- [ ] Batches messages by size (default: 100)
+- [ ] Batches messages by timeout (default: 5s)
+- [ ] Thread-safe batch accumulation
+- [ ] Filters for successful downloads only
+- [ ] Graceful shutdown flushes pending batch
+
+---
+
+### WP-309: Result Processor - Delta Inventory Integration
+
+**Objective**: Add Delta inventory table writes with idempotency
+**Size**: Medium
+**Files to read**:
+- `src/kafka_pipeline/workers/result_processor.py` (from WP-308)
+- Existing Delta inventory patterns
+**Files to create/modify**:
+- `src/kafka_pipeline/workers/result_processor.py` (extend)
+- `src/kafka_pipeline/writers/delta_inventory.py`
+- `tests/kafka_pipeline/writers/test_delta_inventory.py`
+**Dependencies**: WP-308
+**Deliverable**: Result processor writing to Delta `xact_attachments` table
+**Review checklist**:
+- [ ] Schema matches existing `xact_attachments` table
+- [ ] Merge on (trace_id, attachment_url) for idempotency
+- [ ] Batch writes use asyncio.to_thread for blocking I/O
+- [ ] Write failures logged with batch details
+- [ ] Metrics for batch size and write latency
+
+---
+
+### WP-310: Result Processor - Testing
+
+**Objective**: Comprehensive testing for result processing
+**Size**: Small
+**Files to read**:
+- `src/kafka_pipeline/workers/result_processor.py` (from WP-309)
+- `tests/kafka_pipeline/conftest.py` (from WP-212)
+**Files to create/modify**:
+- `tests/kafka_pipeline/workers/test_result_processor.py` (extend)
+- `tests/kafka_pipeline/integration/test_result_processing.py`
+**Dependencies**: WP-309, WP-212
+**Deliverable**: Unit and integration tests with >90% coverage
+**Review checklist**:
+- [ ] Unit tests: batch accumulation, size flush, timeout flush
+- [ ] Unit tests: successful download filtering
+- [ ] Integration test: result → batch → Delta write
+- [ ] Integration test: idempotency (duplicate results)
+- [ ] Integration test: graceful shutdown with pending batch
+- [ ] Mock Delta for unit tests, real for integration
+
+---
+
+### WP-311: DLQ Handler - Implementation
+
+**Objective**: Create DLQ consumer with manual review and replay
+**Size**: Medium
+**Files to read**:
+- `src/kafka_pipeline/consumer.py` (from WP-206)
+- `src/kafka_pipeline/producer.py` (from WP-205)
+- `src/kafka_pipeline/schemas/results.py` (from WP-204)
+- `src/kafka_pipeline/dlq/handler.py` (from WP-211)
+- `docs/kafka-greenfield-implementation-plan.md` (Section 4.2.6)
+**Files to create/modify**:
+- `src/kafka_pipeline/dlq/handler.py` (extend from WP-211 skeleton)
+- `src/kafka_pipeline/dlq/cli.py`
+- `tests/kafka_pipeline/dlq/test_handler.py` (extend)
+**Dependencies**: WP-206, WP-205, WP-204, WP-211
+**Deliverable**: DLQ handler with CLI for manual review and replay
+**Review checklist**:
+- [ ] Consumes from DLQ topic with manual commit
+- [ ] CLI tool to list DLQ messages
+- [ ] CLI tool to view message details
+- [ ] CLI tool to replay message to pending topic
+- [ ] CLI tool to mark message as resolved (commit offset)
+- [ ] Audit logging for all DLQ operations
+
+---
+
+### WP-312: DLQ Handler - Testing
+
+**Objective**: Testing for DLQ handler and CLI
+**Size**: Small
+**Files to read**:
+- `src/kafka_pipeline/dlq/handler.py` (from WP-311)
+- `src/kafka_pipeline/dlq/cli.py` (from WP-311)
+- `tests/kafka_pipeline/conftest.py` (from WP-212)
+**Files to create/modify**:
+- `tests/kafka_pipeline/dlq/test_handler.py` (extend)
+- `tests/kafka_pipeline/dlq/test_cli.py`
+- `tests/kafka_pipeline/integration/test_dlq_flow.py`
+**Dependencies**: WP-311, WP-212
+**Deliverable**: Unit and integration tests for DLQ operations
+**Review checklist**:
+- [ ] Unit tests: message listing, viewing, replay, resolve
+- [ ] Integration test: permanent failure → DLQ
+- [ ] Integration test: exhausted retry → DLQ
+- [ ] Integration test: replay from DLQ → pending topic
+- [ ] Integration test: manual ack after resolve
+- [ ] CLI tests with mock consumer/producer
+
+</details>
+
+---
+
+## Future Phases (Not Yet Detailed)
 
 ### Phase 4: Integration
 - WP-401: End-to-end tests
