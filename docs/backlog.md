@@ -15,7 +15,7 @@
 ### In Progress
 <!-- Move tasks here when starting work -->
 
-- [ ] **WP-208**: Add Kafka metrics (Prometheus)
+- [ ] **WP-209**: Implement RetryHandler
 
 ### Ready
 <!-- Tasks ready to be picked up -->
@@ -58,6 +58,7 @@
 - [x] **WP-205**: Implement BaseKafkaProducer (commit: e7fbf6d)
 - [x] **WP-206**: Implement BaseKafkaConsumer - core message loop (commit: 32bbd00)
 - [x] **WP-207**: Implement BaseKafkaConsumer - error handling (commit: b8af83a)
+- [x] **WP-208**: Add Kafka metrics (Prometheus) (commit: PLACEHOLDER)
 
 ---
 

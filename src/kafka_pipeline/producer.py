@@ -9,6 +9,7 @@ Provides async Kafka producer functionality with:
 """
 
 import logging
+import time
 from typing import Dict, List, Optional, Tuple
 
 from aiokafka import AIOKafkaProducer
@@ -22,6 +23,12 @@ from core.resilience.circuit_breaker import (
     get_circuit_breaker,
 )
 from kafka_pipeline.config import KafkaConfig
+from kafka_pipeline.metrics import (
+    record_message_produced,
+    record_producer_error,
+    update_connection_status,
+    batch_processing_duration_seconds,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +121,9 @@ class BaseKafkaProducer:
         await self._producer.start()
         self._started = True
 
+        # Update connection status metric
+        update_connection_status("producer", connected=True)
+
         logger.info(
             "Kafka producer started successfully",
             extra={
@@ -149,6 +159,8 @@ class BaseKafkaProducer:
             )
             raise
         finally:
+            # Update connection status metric
+            update_connection_status("producer", connected=False)
             self._producer = None
             self._started = False
 
@@ -211,6 +223,9 @@ class BaseKafkaProducer:
         try:
             metadata = await self._circuit_breaker.call_async(_send)
 
+            # Record successful message production
+            record_message_produced(topic, len(value_bytes), success=True)
+
             logger.debug(
                 "Message sent successfully",
                 extra={
@@ -223,6 +238,10 @@ class BaseKafkaProducer:
             return metadata
 
         except Exception as e:
+            # Record failed message production
+            record_message_produced(topic, len(value_bytes), success=False)
+            record_producer_error(topic, type(e).__name__)
+
             logger.error(
                 "Failed to send message",
                 extra={
@@ -279,11 +298,16 @@ class BaseKafkaProducer:
         if headers:
             headers_list = [(k, v.encode("utf-8")) for k, v in headers.items()]
 
+        # Track batch processing time
+        start_time = time.perf_counter()
+
         # Send all messages and collect futures
         futures = []
+        total_bytes = 0
         for key, value in messages:
             # Serialize value to JSON bytes
             value_bytes = value.model_dump_json().encode("utf-8")
+            total_bytes += len(value_bytes)
 
             # Send message (returns Future)
             future = await self._producer.send(
@@ -306,24 +330,43 @@ class BaseKafkaProducer:
         try:
             results = await self._circuit_breaker.call_async(_wait_for_batch)
 
+            # Record batch metrics
+            duration = time.perf_counter() - start_time
+            batch_processing_duration_seconds.labels(topic=topic).observe(duration)
+
+            # Record each message as successfully produced
+            for _ in results:
+                record_message_produced(topic, total_bytes // len(results), success=True)
+
             logger.info(
                 "Batch sent successfully",
                 extra={
                     "topic": topic,
                     "message_count": len(results),
                     "partitions": list({r.partition for r in results}),
+                    "duration_seconds": duration,
                 },
             )
 
             return results
 
         except Exception as e:
+            # Record batch failure
+            duration = time.perf_counter() - start_time
+            batch_processing_duration_seconds.labels(topic=topic).observe(duration)
+
+            # Record failures for each message
+            for _ in messages:
+                record_message_produced(topic, total_bytes // len(messages), success=False)
+            record_producer_error(topic, type(e).__name__)
+
             logger.error(
                 "Failed to send batch",
                 extra={
                     "topic": topic,
                     "message_count": len(messages),
                     "error": str(e),
+                    "duration_seconds": duration,
                 },
                 exc_info=True,
             )

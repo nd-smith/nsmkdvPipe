@@ -13,6 +13,7 @@ Provides async Kafka consumer functionality with:
 
 import asyncio
 import logging
+import time
 from typing import Awaitable, Callable, List, Optional
 
 from aiokafka import AIOKafkaConsumer
@@ -27,6 +28,15 @@ from core.resilience.circuit_breaker import (
     get_circuit_breaker,
 )
 from kafka_pipeline.config import KafkaConfig
+from kafka_pipeline.metrics import (
+    record_message_consumed,
+    record_processing_error,
+    update_connection_status,
+    update_assigned_partitions,
+    update_consumer_lag,
+    update_consumer_offset,
+    message_processing_duration_seconds,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -147,12 +157,17 @@ class BaseKafkaConsumer:
         await self._consumer.start()
         self._running = True
 
+        # Update connection status and partition assignment metrics
+        update_connection_status("consumer", connected=True)
+        partition_count = len(self._consumer.assignment())
+        update_assigned_partitions(self.group_id, partition_count)
+
         logger.info(
             "Kafka consumer started successfully",
             extra={
                 "topics": self.topics,
                 "group_id": self.group_id,
-                "partitions": len(self._consumer.assignment()),
+                "partitions": partition_count,
             },
         )
 
@@ -201,6 +216,9 @@ class BaseKafkaConsumer:
             )
             raise
         finally:
+            # Update connection status metrics
+            update_connection_status("consumer", connected=False)
+            update_assigned_partitions(self.group_id, 0)
             self._consumer = None
 
     async def _consume_loop(self) -> None:
@@ -267,12 +285,30 @@ class BaseKafkaConsumer:
             },
         )
 
+        # Track processing time
+        start_time = time.perf_counter()
+        message_size = len(message.value) if message.value else 0
+
         try:
             # Call user-provided message handler
             await self.message_handler(message)
 
+            # Record processing duration
+            duration = time.perf_counter() - start_time
+            message_processing_duration_seconds.labels(
+                topic=message.topic, consumer_group=self.group_id
+            ).observe(duration)
+
             # Commit offset after successful processing (at-least-once semantics)
             await self._consumer.commit()
+
+            # Update offset and lag metrics
+            self._update_partition_metrics(message)
+
+            # Record successful message consumption
+            record_message_consumed(
+                message.topic, self.group_id, message_size, success=True
+            )
 
             logger.debug(
                 "Message processed successfully",
@@ -280,10 +316,22 @@ class BaseKafkaConsumer:
                     "topic": message.topic,
                     "partition": message.partition,
                     "offset": message.offset,
+                    "duration_seconds": duration,
                 },
             )
 
         except Exception as e:
+            # Record processing duration even for failures
+            duration = time.perf_counter() - start_time
+            message_processing_duration_seconds.labels(
+                topic=message.topic, consumer_group=self.group_id
+            ).observe(duration)
+
+            # Record failed message consumption
+            record_message_consumed(
+                message.topic, self.group_id, message_size, success=False
+            )
+
             # Classify the error to determine routing
             await self._handle_processing_error(message, e)
 
@@ -327,6 +375,9 @@ class BaseKafkaConsumer:
             "error_message": str(error),
             "classified_as": type(classified_error).__name__,
         }
+
+        # Record error metric
+        record_processing_error(message.topic, self.group_id, error_category.value)
 
         # Route based on error category
         if error_category == ErrorCategory.TRANSIENT:
@@ -377,6 +428,47 @@ class BaseKafkaConsumer:
         # Note: We don't re-raise the exception here because we want to continue
         # processing other messages. The offset won't be committed, so this message
         # will be retried on the next poll.
+
+    def _update_partition_metrics(self, message: ConsumerRecord) -> None:
+        """
+        Update offset and lag metrics for the partition.
+
+        Args:
+            message: The consumed message with partition and offset info
+        """
+        if not self._consumer:
+            return
+
+        try:
+            # Update current offset
+            update_consumer_offset(
+                message.topic, message.partition, self.group_id, message.offset
+            )
+
+            # Calculate and update lag (high watermark - current offset)
+            # Get high watermark for the partition
+            partition_metadata = self._consumer.highwater(
+                partition=message.partition, topic=message.topic
+            )
+
+            if partition_metadata is not None:
+                # Lag = high watermark - (current offset + 1)
+                # +1 because we've consumed this message
+                lag = partition_metadata - (message.offset + 1)
+                update_consumer_lag(
+                    message.topic, message.partition, self.group_id, lag
+                )
+
+        except Exception as e:
+            # Don't fail message processing due to metrics issues
+            logger.debug(
+                "Failed to update partition metrics",
+                extra={
+                    "topic": message.topic,
+                    "partition": message.partition,
+                    "error": str(e),
+                },
+            )
 
     @property
     def is_running(self) -> bool:
