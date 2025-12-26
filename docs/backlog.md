@@ -15,7 +15,7 @@
 ### In Progress
 <!-- Move tasks here when starting work -->
 
-- [ ] **WP-206**: Implement BaseKafkaConsumer - core message loop
+- [ ] **WP-207**: Implement BaseKafkaConsumer - error handling
 
 ### Ready
 <!-- Tasks ready to be picked up -->
@@ -56,6 +56,7 @@
 - [x] **WP-203**: Implement DownloadTaskMessage schema (commit: b1dbc73)
 - [x] **WP-204**: Implement DownloadResultMessage and FailedDownloadMessage schemas (commit: 2f374f2)
 - [x] **WP-205**: Implement BaseKafkaProducer (commit: e7fbf6d)
+- [x] **WP-206**: Implement BaseKafkaConsumer - core message loop (commit: PENDING)
 
 ---
 
