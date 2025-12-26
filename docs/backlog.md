@@ -54,7 +54,7 @@
 - [x] **WP-201**: Kafka configuration and connection (commit: 5324f55)
 - [x] **WP-202**: Implement EventMessage schema (commit: eb795f9)
 - [x] **WP-203**: Implement DownloadTaskMessage schema (commit: b1dbc73)
-- [x] **WP-204**: Implement DownloadResultMessage and FailedDownloadMessage schemas (commit: PENDING)
+- [x] **WP-204**: Implement DownloadResultMessage and FailedDownloadMessage schemas (commit: 2f374f2)
 
 ---
 
