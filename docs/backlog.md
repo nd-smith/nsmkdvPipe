@@ -60,7 +60,7 @@
 - [x] **WP-207**: Implement BaseKafkaConsumer - error handling (commit: b8af83a)
 - [x] **WP-208**: Add Kafka metrics (Prometheus) (commit: ebaa751)
 - [x] **WP-209**: Implement RetryHandler (commit: 7413495)
-- [x] **WP-210**: Implement DelayedRedeliveryScheduler (commit: PENDING)
+- [x] **WP-210**: Implement DelayedRedeliveryScheduler (commit: 9f9c627)
 
 ---
 
