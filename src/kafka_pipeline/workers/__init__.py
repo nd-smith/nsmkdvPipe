@@ -19,3 +19,9 @@ Dependencies:
     - kafka_pipeline.schemas: Message schemas
     - core.*: Reusable business logic
 """
+
+from kafka_pipeline.workers.event_ingester import EventIngesterWorker
+
+__all__ = [
+    "EventIngesterWorker",
+]
