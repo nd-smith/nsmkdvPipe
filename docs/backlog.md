@@ -15,7 +15,7 @@
 ### In Progress
 <!-- Move tasks here when starting work -->
 
-- [ ] **WP-203**: Implement DownloadTaskMessage schema
+- [ ] **WP-204**: Implement DownloadResultMessage and FailedDownloadMessage schemas
 
 ### Ready
 <!-- Tasks ready to be picked up -->
@@ -53,6 +53,7 @@
 - [x] **WP-119**: Create AttachmentDownloader class with clean interface (commit: 07e7cda)
 - [x] **WP-201**: Kafka configuration and connection (commit: 5324f55)
 - [x] **WP-202**: Implement EventMessage schema (commit: eb795f9)
+- [x] **WP-203**: Implement DownloadTaskMessage schema (commit: pending)
 
 ---
 

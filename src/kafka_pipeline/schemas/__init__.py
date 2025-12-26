@@ -21,7 +21,9 @@ Future Consideration:
 """
 
 from kafka_pipeline.schemas.events import EventMessage
+from kafka_pipeline.schemas.tasks import DownloadTaskMessage
 
 __all__ = [
     "EventMessage",
+    "DownloadTaskMessage",
 ]
