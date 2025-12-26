@@ -43,6 +43,9 @@ class KafkaConfig:
     retry_delays: List[int] = field(default_factory=lambda: [300, 600, 1200, 2400])
     max_retries: int = 4
 
+    # Storage configuration
+    onelake_base_path: str = ""  # abfss:// path to OneLake files directory
+
     @classmethod
     def from_env(cls) -> "KafkaConfig":
         """Load configuration from environment variables.
@@ -62,6 +65,7 @@ class KafkaConfig:
             KAFKA_SESSION_TIMEOUT_MS: 30000 (default)
             RETRY_DELAYS: 300,600,1200,2400 (default, comma-separated seconds)
             MAX_RETRIES: 4 (default)
+            ONELAKE_BASE_PATH: OneLake abfss:// path (required for upload)
 
         Raises:
             ValueError: If required environment variables are missing
@@ -100,6 +104,9 @@ class KafkaConfig:
             # Retry configuration
             retry_delays=retry_delays,
             max_retries=int(os.getenv("MAX_RETRIES", "4")),
+
+            # Storage configuration
+            onelake_base_path=os.getenv("ONELAKE_BASE_PATH", ""),
         )
 
     def get_retry_topic(self, attempt: int) -> str:
