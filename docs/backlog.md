@@ -55,7 +55,7 @@
 - [x] **WP-202**: Implement EventMessage schema (commit: eb795f9)
 - [x] **WP-203**: Implement DownloadTaskMessage schema (commit: b1dbc73)
 - [x] **WP-204**: Implement DownloadResultMessage and FailedDownloadMessage schemas (commit: 2f374f2)
-- [x] **WP-205**: Implement BaseKafkaProducer (commit: 2327b90)
+- [x] **WP-205**: Implement BaseKafkaProducer (commit: e7fbf6d)
 
 ---
 
