@@ -32,6 +32,23 @@ def kafka_config():
 
 
 @pytest.fixture
+def inventory_table_path():
+    """Create test inventory table path."""
+    return "abfss://test@storage.dfs.core.windows.net/xact_attachments"
+
+
+@pytest.fixture
+def mock_inventory_writer():
+    """Create mock DeltaInventoryWriter."""
+    with patch("kafka_pipeline.workers.result_processor.DeltaInventoryWriter") as mock:
+        # Mock instance returned when DeltaInventoryWriter() is called
+        mock_instance = AsyncMock()
+        mock_instance.write_results = AsyncMock(return_value=True)
+        mock.return_value = mock_instance
+        yield mock_instance
+
+
+@pytest.fixture
 def sample_success_result():
     """Create sample successful DownloadResultMessage."""
     return DownloadResultMessage(
@@ -98,9 +115,11 @@ def create_consumer_record(result: DownloadResultMessage, offset: int = 0) -> Co
 class TestResultProcessor:
     """Test suite for ResultProcessor."""
 
-    async def test_initialization(self, kafka_config):
+    async def test_initialization(
+        self, kafka_config, inventory_table_path, mock_inventory_writer
+    ):
         """Test processor initialization with correct configuration."""
-        processor = ResultProcessor(kafka_config)
+        processor = ResultProcessor(kafka_config, inventory_table_path)
 
         assert processor.config == kafka_config
         assert processor.batch_size == 100
@@ -108,10 +127,13 @@ class TestResultProcessor:
         assert processor._batch == []
         assert not processor.is_running
 
-    async def test_initialization_custom_batch_config(self, kafka_config):
+    async def test_initialization_custom_batch_config(
+        self, kafka_config, inventory_table_path, mock_inventory_writer
+    ):
         """Test processor initialization with custom batch configuration."""
         processor = ResultProcessor(
             kafka_config,
+            inventory_table_path,
             batch_size=50,
             batch_timeout_seconds=10.0,
         )
@@ -119,9 +141,11 @@ class TestResultProcessor:
         assert processor.batch_size == 50
         assert processor.batch_timeout_seconds == 10.0
 
-    async def test_handle_successful_result(self, kafka_config, sample_success_result):
+    async def test_handle_successful_result(
+        self, kafka_config, inventory_table_path, mock_inventory_writer, sample_success_result
+    ):
         """Test handling successful download result."""
-        processor = ResultProcessor(kafka_config)
+        processor = ResultProcessor(kafka_config, inventory_table_path)
         record = create_consumer_record(sample_success_result)
 
         await processor._handle_result(record)
@@ -132,10 +156,10 @@ class TestResultProcessor:
         assert processor._batch[0].status == "success"
 
     async def test_filter_failed_transient_result(
-        self, kafka_config, sample_failed_transient_result
+        self, kafka_config, inventory_table_path, mock_inventory_writer, sample_failed_transient_result
     ):
         """Test that failed_transient results are filtered out."""
-        processor = ResultProcessor(kafka_config)
+        processor = ResultProcessor(kafka_config, inventory_table_path)
         record = create_consumer_record(sample_failed_transient_result)
 
         await processor._handle_result(record)
@@ -144,10 +168,10 @@ class TestResultProcessor:
         assert len(processor._batch) == 0
 
     async def test_filter_failed_permanent_result(
-        self, kafka_config, sample_failed_permanent_result
+        self, kafka_config, inventory_table_path, mock_inventory_writer, sample_failed_permanent_result
     ):
         """Test that failed_permanent results are filtered out."""
-        processor = ResultProcessor(kafka_config)
+        processor = ResultProcessor(kafka_config, inventory_table_path)
         record = create_consumer_record(sample_failed_permanent_result)
 
         await processor._handle_result(record)
@@ -155,9 +179,11 @@ class TestResultProcessor:
         # Verify result NOT added to batch
         assert len(processor._batch) == 0
 
-    async def test_batch_size_flush(self, kafka_config, sample_success_result):
+    async def test_batch_size_flush(
+        self, kafka_config, inventory_table_path, mock_inventory_writer, sample_success_result
+    ):
         """Test that batch flushes when size threshold reached."""
-        processor = ResultProcessor(kafka_config, batch_size=3)
+        processor = ResultProcessor(kafka_config, inventory_table_path, batch_size=3)
 
         # Add results up to batch size
         for i in range(3):
@@ -177,10 +203,10 @@ class TestResultProcessor:
         assert len(processor._batch) == 0
 
     async def test_batch_accumulation_below_threshold(
-        self, kafka_config, sample_success_result
+        self, kafka_config, inventory_table_path, mock_inventory_writer, sample_success_result
     ):
         """Test that batch accumulates when below size threshold."""
-        processor = ResultProcessor(kafka_config, batch_size=10)
+        processor = ResultProcessor(kafka_config, inventory_table_path, batch_size=10)
 
         # Add 5 results (below threshold)
         for i in range(5):
@@ -199,9 +225,11 @@ class TestResultProcessor:
         # Batch should contain 5 results (no flush yet)
         assert len(processor._batch) == 5
 
-    async def test_periodic_flush_timeout(self, kafka_config, sample_success_result):
+    async def test_periodic_flush_timeout(
+        self, kafka_config, inventory_table_path, mock_inventory_writer, sample_success_result
+    ):
         """Test that periodic flush triggers after timeout."""
-        processor = ResultProcessor(kafka_config, batch_timeout_seconds=0.5)
+        processor = ResultProcessor(kafka_config, inventory_table_path, batch_timeout_seconds=0.5)
 
         # Add one result to batch
         record = create_consumer_record(sample_success_result)
@@ -229,10 +257,10 @@ class TestResultProcessor:
                 pass
 
     async def test_graceful_shutdown_flushes_pending_batch(
-        self, kafka_config, sample_success_result
+        self, kafka_config, inventory_table_path, mock_inventory_writer, sample_success_result
     ):
         """Test that graceful shutdown flushes pending batch."""
-        processor = ResultProcessor(kafka_config)
+        processor = ResultProcessor(kafka_config, inventory_table_path)
 
         # Mock the consumer
         mock_consumer = AsyncMock()
@@ -264,9 +292,11 @@ class TestResultProcessor:
         assert len(processor._batch) == 0
         assert not processor.is_running
 
-    async def test_empty_batch_no_flush(self, kafka_config):
+    async def test_empty_batch_no_flush(
+        self, kafka_config, inventory_table_path, mock_inventory_writer
+    ):
         """Test that empty batch doesn't trigger flush."""
-        processor = ResultProcessor(kafka_config)
+        processor = ResultProcessor(kafka_config, inventory_table_path)
 
         # Call flush with empty batch
         async with processor._batch_lock:
@@ -275,9 +305,11 @@ class TestResultProcessor:
         # Should complete without error
         assert len(processor._batch) == 0
 
-    async def test_invalid_message_raises_exception(self, kafka_config):
+    async def test_invalid_message_raises_exception(
+        self, kafka_config, inventory_table_path, mock_inventory_writer
+    ):
         """Test that invalid message parsing raises exception."""
-        processor = ResultProcessor(kafka_config)
+        processor = ResultProcessor(kafka_config, inventory_table_path)
 
         # Create invalid consumer record
         invalid_record = ConsumerRecord(
@@ -298,9 +330,11 @@ class TestResultProcessor:
         with pytest.raises(Exception):
             await processor._handle_result(invalid_record)
 
-    async def test_thread_safe_batch_accumulation(self, kafka_config):
+    async def test_thread_safe_batch_accumulation(
+        self, kafka_config, inventory_table_path, mock_inventory_writer
+    ):
         """Test that concurrent batch accumulation is thread-safe."""
-        processor = ResultProcessor(kafka_config, batch_size=1000)
+        processor = ResultProcessor(kafka_config, inventory_table_path, batch_size=1000)
 
         # Create multiple results
         async def add_result(i):
@@ -324,10 +358,10 @@ class TestResultProcessor:
         assert len(processor._batch) == 50
 
     async def test_flush_batch_converts_to_inventory_records(
-        self, kafka_config, sample_success_result
+        self, kafka_config, inventory_table_path, mock_inventory_writer, sample_success_result
     ):
         """Test that flush_batch converts results to inventory record format."""
-        processor = ResultProcessor(kafka_config)
+        processor = ResultProcessor(kafka_config, inventory_table_path)
 
         # Add result to batch
         record = create_consumer_record(sample_success_result)
@@ -343,9 +377,11 @@ class TestResultProcessor:
         # Batch should be empty after flush
         assert len(processor._batch) == 0
 
-    async def test_multiple_flush_cycles(self, kafka_config):
+    async def test_multiple_flush_cycles(
+        self, kafka_config, inventory_table_path, mock_inventory_writer
+    ):
         """Test that processor handles multiple flush cycles correctly."""
-        processor = ResultProcessor(kafka_config, batch_size=2)
+        processor = ResultProcessor(kafka_config, inventory_table_path, batch_size=2)
 
         # First batch
         for i in range(2):
@@ -381,9 +417,11 @@ class TestResultProcessor:
         # Second batch should also be flushed
         assert len(processor._batch) == 0
 
-    async def test_is_running_property(self, kafka_config):
+    async def test_is_running_property(
+        self, kafka_config, inventory_table_path, mock_inventory_writer
+    ):
         """Test is_running property reflects processor state."""
-        processor = ResultProcessor(kafka_config)
+        processor = ResultProcessor(kafka_config, inventory_table_path)
 
         # Initially not running
         assert not processor.is_running
@@ -401,3 +439,109 @@ class TestResultProcessor:
         mock_consumer.is_running = False
 
         assert not processor.is_running
+
+    async def test_delta_writer_called_on_flush(
+        self, kafka_config, inventory_table_path, mock_inventory_writer, sample_success_result
+    ):
+        """Test that Delta writer is called when batch is flushed."""
+        processor = ResultProcessor(kafka_config, inventory_table_path, batch_size=2)
+
+        # Add 2 results to trigger flush
+        for i in range(2):
+            result = DownloadResultMessage(
+                trace_id=f"evt-{i}",
+                attachment_url=f"https://storage.example.com/file{i}.pdf",
+                status="success",
+                destination_path=f"claims/C-{i}/file{i}.pdf",
+                bytes_downloaded=1024 * i,
+                processing_time_ms=100,
+                completed_at=datetime.now(timezone.utc),
+            )
+            record = create_consumer_record(result, offset=i)
+            await processor._handle_result(record)
+
+        # Verify Delta writer was called
+        mock_inventory_writer.write_results.assert_called_once()
+
+        # Verify batch was passed to writer
+        call_args = mock_inventory_writer.write_results.call_args[0][0]
+        assert len(call_args) == 2
+        assert call_args[0].trace_id == "evt-0"
+        assert call_args[1].trace_id == "evt-1"
+
+    async def test_delta_write_failure_logged(
+        self, kafka_config, inventory_table_path, mock_inventory_writer
+    ):
+        """Test that Delta write failures are logged but don't crash processor."""
+        # Configure mock to return False (failure)
+        mock_inventory_writer.write_results = AsyncMock(return_value=False)
+
+        processor = ResultProcessor(kafka_config, inventory_table_path, batch_size=1)
+
+        # Add result to trigger flush
+        result = DownloadResultMessage(
+            trace_id="evt-fail",
+            attachment_url="https://storage.example.com/file.pdf",
+            status="success",
+            destination_path="claims/C-123/file.pdf",
+            bytes_downloaded=1024,
+            processing_time_ms=100,
+            completed_at=datetime.now(timezone.utc),
+        )
+        record = create_consumer_record(result)
+
+        # Should not raise exception even though write failed
+        await processor._handle_result(record)
+
+        # Verify batch was still cleared
+        assert len(processor._batch) == 0
+
+    async def test_duplicate_start_warning(
+        self, kafka_config, inventory_table_path, mock_inventory_writer
+    ):
+        """Test that starting already-running processor logs warning."""
+        processor = ResultProcessor(kafka_config, inventory_table_path)
+
+        # Mock as already running
+        processor._running = True
+
+        # Calling start again should return immediately
+        await processor.start()
+
+        # Should not have created new consumer
+        assert processor._running
+
+    async def test_stop_already_stopped_processor(
+        self, kafka_config, inventory_table_path, mock_inventory_writer
+    ):
+        """Test that stopping already-stopped processor is safe."""
+        processor = ResultProcessor(kafka_config, inventory_table_path)
+
+        # Processor not running
+        assert not processor._running
+
+        # Calling stop should be safe
+        await processor.stop()
+
+        # Should still not be running
+        assert not processor._running
+
+    async def test_stop_with_error_in_consumer_stop(
+        self, kafka_config, inventory_table_path, mock_inventory_writer
+    ):
+        """Test that errors during consumer stop are propagated."""
+        processor = ResultProcessor(kafka_config, inventory_table_path)
+
+        # Mock the consumer to raise exception on stop
+        mock_consumer = AsyncMock()
+        mock_consumer.is_running = True
+        mock_consumer.stop = AsyncMock(side_effect=Exception("Consumer stop failed"))
+        processor._consumer = mock_consumer
+        processor._running = True
+
+        # Should raise the exception
+        with pytest.raises(Exception, match="Consumer stop failed"):
+            await processor.stop()
+
+        # Processor should still be marked as not running
+        assert not processor._running
