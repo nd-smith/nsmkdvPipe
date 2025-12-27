@@ -30,7 +30,7 @@ Phase 4 work packages are now available (WP-401 to WP-410). Recommended implemen
 5. ~~WP-405: E2E Failure Scenarios~~ ✅ Complete
 
 **Performance Track** (depends on WP-402):
-6. WP-406: Performance Benchmarking
+6. ~~WP-406: Performance Benchmarking~~ 🔄 In Progress
 7. WP-407: Load Testing and Scaling Validation
 
 **Observability Track** (can start early, depends on metrics from Phase 2):
@@ -98,6 +98,7 @@ Phase 4 work packages are now available (WP-401 to WP-410). Recommended implemen
 - [x] **WP-403**: E2E Retry Flow Test (commit: f7c149f)
 - [x] **WP-404**: E2E DLQ Flow Test (commit: ee5dcce)
 - [x] **WP-405**: E2E Failure Scenarios (commit: 99ed4a2)
+- [x] **WP-406**: Performance Benchmarking (commit: [pending])
 
 ---
 
