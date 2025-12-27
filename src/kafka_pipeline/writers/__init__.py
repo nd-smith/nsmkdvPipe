@@ -7,5 +7,6 @@ Provides specialized writers for:
 """
 
 from kafka_pipeline.writers.delta_events import DeltaEventsWriter
+from kafka_pipeline.writers.delta_inventory import DeltaInventoryWriter
 
-__all__ = ["DeltaEventsWriter"]
+__all__ = ["DeltaEventsWriter", "DeltaInventoryWriter"]

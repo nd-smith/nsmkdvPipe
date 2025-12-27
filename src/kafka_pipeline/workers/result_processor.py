@@ -24,6 +24,7 @@ from aiokafka.structs import ConsumerRecord
 from kafka_pipeline.config import KafkaConfig
 from kafka_pipeline.consumer import BaseKafkaConsumer
 from kafka_pipeline.schemas.results import DownloadResultMessage
+from kafka_pipeline.writers.delta_inventory import DeltaInventoryWriter
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,7 @@ class ResultProcessor:
     def __init__(
         self,
         config: KafkaConfig,
+        inventory_table_path: str,
         batch_size: Optional[int] = None,
         batch_timeout_seconds: Optional[float] = None,
     ):
@@ -70,12 +72,16 @@ class ResultProcessor:
 
         Args:
             config: Kafka configuration
+            inventory_table_path: Full abfss:// path to xact_attachments Delta table
             batch_size: Optional custom batch size (default: 100)
             batch_timeout_seconds: Optional custom timeout (default: 5.0)
         """
         self.config = config
         self.batch_size = batch_size or self.BATCH_SIZE
         self.batch_timeout_seconds = batch_timeout_seconds or self.BATCH_TIMEOUT_SECONDS
+
+        # Delta inventory writer
+        self._inventory_writer = DeltaInventoryWriter(table_path=inventory_table_path)
 
         # Batching state
         self._batch: List[DownloadResultMessage] = []
@@ -100,6 +106,7 @@ class ResultProcessor:
                 "batch_size": self.batch_size,
                 "batch_timeout_seconds": self.batch_timeout_seconds,
                 "results_topic": config.downloads_results_topic,
+                "inventory_table_path": inventory_table_path,
             },
         )
 
@@ -286,8 +293,6 @@ class ResultProcessor:
         Resets batch and updates flush timestamp.
 
         Note: This method assumes the caller holds self._batch_lock
-
-        TODO (WP-309): Replace placeholder with actual Delta writer integration
         """
         if not self._batch:
             return
@@ -307,34 +312,19 @@ class ResultProcessor:
             },
         )
 
-        # Convert to inventory records (schema for Delta write)
-        # TODO (WP-309): This is a placeholder. WP-309 will implement actual Delta integration
-        records = [
-            {
-                "trace_id": r.trace_id,
-                "attachment_url": r.attachment_url,
-                "blob_path": r.destination_path,
-                "bytes_downloaded": r.bytes_downloaded,
-                "downloaded_at": r.completed_at.isoformat(),
-                "processing_time_ms": r.processing_time_ms,
-            }
-            for r in batch
-        ]
+        # Write to Delta inventory table
+        # Uses asyncio.to_thread internally for non-blocking I/O
+        success = await self._inventory_writer.write_results(batch)
 
-        # Placeholder: Log batch instead of writing to Delta
-        # WP-309 will replace this with:
-        # await asyncio.to_thread(
-        #     self.inventory_writer.merge,
-        #     pl.DataFrame(records),
-        #     merge_keys=["trace_id", "attachment_url"],
-        # )
-        logger.info(
-            "Batch converted to inventory records (Delta write placeholder)",
-            extra={
-                "batch_size": batch_size,
-                "sample_record": records[0] if records else None,
-            },
-        )
+        if not success:
+            logger.error(
+                "Failed to write batch to Delta inventory",
+                extra={
+                    "batch_size": batch_size,
+                    "first_trace_id": batch[0].trace_id,
+                    "last_trace_id": batch[-1].trace_id,
+                },
+            )
 
     @property
     def is_running(self) -> bool:
