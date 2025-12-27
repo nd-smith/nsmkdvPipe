@@ -98,7 +98,7 @@ Phase 4 work packages are now available (WP-401 to WP-410). Recommended implemen
 - [x] **WP-403**: E2E Retry Flow Test (commit: f7c149f)
 - [x] **WP-404**: E2E DLQ Flow Test (commit: ee5dcce)
 - [x] **WP-405**: E2E Failure Scenarios (commit: 99ed4a2)
-- [x] **WP-406**: Performance Benchmarking (commit: [pending])
+- [x] **WP-406**: Performance Benchmarking (commit: 1cf4c78)
 
 ---
 
