@@ -15,7 +15,7 @@
 ### In Progress
 <!-- Move tasks here when starting work -->
 
-- **WP-405**: E2E Failure Scenarios
+(none)
 
 ### Ready
 <!-- Tasks ready to be picked up -->
@@ -27,7 +27,7 @@ Phase 4 work packages are now available (WP-401 to WP-410). Recommended implemen
 2. ~~WP-402: E2E Happy Path Test~~ ✅ Complete
 3. ~~WP-403: E2E Retry Flow Test~~ ✅ Complete
 4. ~~WP-404: E2E DLQ Flow Test~~ ✅ Complete
-5. WP-405: E2E Failure Scenarios
+5. ~~WP-405: E2E Failure Scenarios~~ ✅ Complete
 
 **Performance Track** (depends on WP-402):
 6. WP-406: Performance Benchmarking
@@ -96,6 +96,8 @@ Phase 4 work packages are now available (WP-401 to WP-410). Recommended implemen
 - [x] **WP-401**: E2E Test Infrastructure Setup (commit: a281078)
 - [x] **WP-402**: E2E Happy Path Test (commit: 928d09c)
 - [x] **WP-403**: E2E Retry Flow Test (commit: f7c149f)
+- [x] **WP-404**: E2E DLQ Flow Test (commit: ee5dcce)
+- [x] **WP-405**: E2E Failure Scenarios (commit: [pending])
 
 ---
 
