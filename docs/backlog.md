@@ -15,7 +15,7 @@
 ### In Progress
 <!-- Move tasks here when starting work -->
 
-**WP-409**: Alerting Configuration
+**WP-410**: Runbook Documentation
 
 ### Ready
 <!-- Tasks ready to be picked up -->
@@ -30,12 +30,12 @@ Phase 4 work packages are now available (WP-401 to WP-410). Recommended implemen
 5. ~~WP-405: E2E Failure Scenarios~~ ✅ Complete
 
 **Performance Track** (depends on WP-402):
-6. ~~WP-406: Performance Benchmarking~~ 🔄 In Progress
-7. WP-407: Load Testing and Scaling Validation
+6. ~~WP-406: Performance Benchmarking~~ ✅ Complete
+7. ~~WP-407: Load Testing and Scaling Validation~~ ✅ Complete
 
 **Observability Track** (can start early, depends on metrics from Phase 2):
-8. WP-408: Grafana Dashboards
-9. WP-409: Alerting Configuration
+8. ~~WP-408: Grafana Dashboards~~ ✅ Complete
+9. ~~WP-409: Alerting Configuration~~ ✅ Complete
 10. WP-410: Runbook Documentation
 
 ### Blocked
@@ -101,6 +101,7 @@ Phase 4 work packages are now available (WP-401 to WP-410). Recommended implemen
 - [x] **WP-406**: Performance Benchmarking (commit: 1cf4c78)
 - [x] **WP-407**: Load Testing and Scaling Validation (commit: 3e0badd)
 - [x] **WP-408**: Grafana Dashboards (commit: 7b4152b)
+- [x] **WP-409**: Alerting Configuration (commit: a32e8f7)
 
 ---
 
