@@ -15,7 +15,7 @@
 ### In Progress
 <!-- Move tasks here when starting work -->
 
-(none)
+**WP-409**: Alerting Configuration
 
 ### Ready
 <!-- Tasks ready to be picked up -->
@@ -100,6 +100,7 @@ Phase 4 work packages are now available (WP-401 to WP-410). Recommended implemen
 - [x] **WP-405**: E2E Failure Scenarios (commit: 99ed4a2)
 - [x] **WP-406**: Performance Benchmarking (commit: 1cf4c78)
 - [x] **WP-407**: Load Testing and Scaling Validation (commit: 3e0badd)
+- [x] **WP-408**: Grafana Dashboards (commit: PENDING)
 
 ---
 
