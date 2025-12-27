@@ -15,7 +15,7 @@
 ### In Progress
 <!-- Move tasks here when starting work -->
 
-- **WP-403**: E2E Retry Flow Test
+- **WP-404**: E2E DLQ Flow Test
 
 ### Ready
 <!-- Tasks ready to be picked up -->
@@ -25,7 +25,7 @@ Phase 4 work packages are now available (WP-401 to WP-410). Recommended implemen
 **Testing Track** (can run in parallel):
 1. ~~WP-401: E2E Test Infrastructure Setup~~ ✅ Complete
 2. ~~WP-402: E2E Happy Path Test~~ ✅ Complete
-3. WP-403: E2E Retry Flow Test
+3. ~~WP-403: E2E Retry Flow Test~~ ✅ Complete
 4. WP-404: E2E DLQ Flow Test
 5. WP-405: E2E Failure Scenarios
 
@@ -95,6 +95,7 @@ Phase 4 work packages are now available (WP-401 to WP-410). Recommended implemen
 - [x] **WP-312**: DLQ Handler - Testing (commit: 8479138)
 - [x] **WP-401**: E2E Test Infrastructure Setup (commit: a281078)
 - [x] **WP-402**: E2E Happy Path Test (commit: 928d09c)
+- [x] **WP-403**: E2E Retry Flow Test (commit: f7c149f)
 
 ---
 
