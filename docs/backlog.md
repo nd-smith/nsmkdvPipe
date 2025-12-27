@@ -15,7 +15,7 @@
 ### In Progress
 <!-- Move tasks here when starting work -->
 
-**WP-410**: Runbook Documentation
+(none)
 
 ### Ready
 <!-- Tasks ready to be picked up -->
@@ -36,7 +36,7 @@ Phase 4 work packages are now available (WP-401 to WP-410). Recommended implemen
 **Observability Track** (can start early, depends on metrics from Phase 2):
 8. ~~WP-408: Grafana Dashboards~~ ✅ Complete
 9. ~~WP-409: Alerting Configuration~~ ✅ Complete
-10. WP-410: Runbook Documentation
+10. ~~WP-410: Runbook Documentation~~ ✅ Complete
 
 ### Blocked
 <!-- Tasks waiting on dependencies or decisions -->
