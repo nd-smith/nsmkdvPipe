@@ -15,7 +15,7 @@
 ### In Progress
 <!-- Move tasks here when starting work -->
 
-(none)
+**WP-407**: Load Testing and Scaling Validation
 
 ### Ready
 <!-- Tasks ready to be picked up -->
