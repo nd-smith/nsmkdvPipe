@@ -93,7 +93,7 @@ Phase 4 work packages are now available (WP-401 to WP-410). Recommended implemen
 - [x] **WP-310**: Result Processor - Testing (commit: 6a360c8)
 - [x] **WP-311**: DLQ Handler - Implementation (commit: 07d3712)
 - [x] **WP-312**: DLQ Handler - Testing (commit: 8479138)
-- [x] **WP-401**: E2E Test Infrastructure Setup (commit: 1facc3a)
+- [x] **WP-401**: E2E Test Infrastructure Setup (commit: a281078)
 
 ---
 
