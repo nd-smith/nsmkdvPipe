@@ -15,11 +15,12 @@
 ### In Progress
 <!-- Move tasks here when starting work -->
 
-- [ ] **WP-311**: DLQ Handler - Implementation
+- [ ] **WP-312**: DLQ Handler - Testing
 
 ### Ready
 <!-- Tasks ready to be picked up -->
-- [ ] **WP-312**: DLQ Handler - Testing
+
+(none)
 
 ### Blocked
 <!-- Tasks waiting on dependencies or decisions -->
@@ -74,6 +75,7 @@
 - [x] **WP-308**: Result Processor - Core Implementation (commit: aaf283d)
 - [x] **WP-309**: Result Processor - Delta Inventory Integration (commit: 0704b11)
 - [x] **WP-310**: Result Processor - Testing (commit: 6a360c8)
+- [x] **WP-311**: DLQ Handler - Implementation (commit: 07d3712)
 
 ---
 
