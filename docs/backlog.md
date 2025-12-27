@@ -10,17 +10,33 @@
 
 ---
 
-## Current Sprint: Phase 3 - Workers
+## Current Sprint: Phase 4 - Integration
 
 ### In Progress
 <!-- Move tasks here when starting work -->
 
-(none)
+- **WP-402**: E2E Happy Path Test
 
 ### Ready
 <!-- Tasks ready to be picked up -->
 
-Phase 3 complete! Moving to Phase 4: Integration
+Phase 4 work packages are now available (WP-401 to WP-410). Recommended implementation order:
+
+**Testing Track** (can run in parallel):
+1. ~~WP-401: E2E Test Infrastructure Setup~~ ✅ Complete
+2. WP-402: E2E Happy Path Test
+3. WP-403: E2E Retry Flow Test
+4. WP-404: E2E DLQ Flow Test
+5. WP-405: E2E Failure Scenarios
+
+**Performance Track** (depends on WP-402):
+6. WP-406: Performance Benchmarking
+7. WP-407: Load Testing and Scaling Validation
+
+**Observability Track** (can start early, depends on metrics from Phase 2):
+8. WP-408: Grafana Dashboards
+9. WP-409: Alerting Configuration
+10. WP-410: Runbook Documentation
 
 ### Blocked
 <!-- Tasks waiting on dependencies or decisions -->
@@ -77,6 +93,7 @@ Phase 3 complete! Moving to Phase 4: Integration
 - [x] **WP-310**: Result Processor - Testing (commit: 6a360c8)
 - [x] **WP-311**: DLQ Handler - Implementation (commit: 07d3712)
 - [x] **WP-312**: DLQ Handler - Testing (commit: 8479138)
+- [x] **WP-401**: E2E Test Infrastructure Setup (commit: 1facc3a)
 
 ---
 
@@ -955,12 +972,363 @@ Phase 3 complete! Moving to Phase 4: Integration
 
 ---
 
-## Future Phases (Not Yet Detailed)
+<details open>
+<summary><strong>Phase 4: Integration (WP-401 to WP-410)</strong></summary>
 
-### Phase 4: Integration
-- WP-401: End-to-end tests
-- WP-402: Observability setup
-- WP-403: Performance testing
+## Phase 4 Overview
+
+**Goal**: Validate the complete system through end-to-end testing, establish production observability, and verify performance targets.
+
+**Structure**: Phase 4 implements three critical validation domains:
+1. **End-to-End Testing** (WP-401 to WP-405): Complete flow validation from event ingestion to inventory
+2. **Performance Validation** (WP-406 to WP-407): Benchmarking and load testing
+3. **Production Readiness** (WP-408 to WP-410): Observability, alerting, and operational documentation
+
+**Success Criteria**:
+- All end-to-end flows complete successfully
+- Performance targets met (Section 9 of implementation plan)
+- Observability dashboards operational
+- Runbooks complete for all operational scenarios
+
+**Context Management Best Practices**:
+- Each work package focuses on specific test scenarios or observability components
+- Integration tests build incrementally on existing test infrastructure
+- Performance tests isolated from functional tests to reduce context
+- Observability work packages separated by concern (dashboards, alerts, documentation)
+
+---
+
+### WP-401: E2E Test Infrastructure Setup
+
+**Objective**: Set up complete integration test environment with all workers running
+**Size**: Medium
+**Files to read**:
+- `tests/kafka_pipeline/conftest.py` (existing Kafka fixtures)
+- `tests/kafka_pipeline/integration/` (existing integration tests)
+- `src/kafka_pipeline/workers/` (all workers from Phase 3)
+- `docs/kafka-greenfield-implementation-plan.md` (Section 6.2 integration tests)
+**Files to create/modify**:
+- `tests/kafka_pipeline/integration/conftest.py` (worker fixtures)
+- `tests/kafka_pipeline/integration/fixtures/` (test data generators)
+- `tests/kafka_pipeline/integration/helpers.py` (test utilities)
+- `tests/kafka_pipeline/integration/test_environment.py` (environment validation)
+**Dependencies**: Phase 3 complete (WP-301 to WP-312)
+**Deliverable**: Working integration test environment with all workers, test data generators, and utilities
+**Review checklist**:
+- [ ] All workers can be started in test environment
+- [ ] Test data generators for EventMessage, DownloadTaskMessage
+- [ ] Mock OneLake client for testing without external dependencies
+- [ ] Mock Delta Lake writers with in-memory verification
+- [ ] Utility functions for Kafka topic inspection
+- [ ] Utility functions for waiting on async operations
+- [ ] Environment health checks (all workers connected, topics created)
+
+---
+
+### WP-402: E2E Happy Path Test
+
+**Objective**: Complete end-to-end test from event ingestion through download to inventory write
+**Size**: Medium
+**Files to read**:
+- `tests/kafka_pipeline/integration/conftest.py` (from WP-401)
+- `tests/kafka_pipeline/integration/helpers.py` (from WP-401)
+- `src/kafka_pipeline/workers/event_ingester.py`
+- `src/kafka_pipeline/workers/download_worker.py`
+- `src/kafka_pipeline/workers/result_processor.py`
+**Files to create/modify**:
+- `tests/kafka_pipeline/integration/test_e2e_happy_path.py`
+**Dependencies**: WP-401
+**Deliverable**: Passing E2E test validating complete happy path flow
+**Review checklist**:
+- [ ] Test produces EventMessage to events.raw topic
+- [ ] Validates DownloadTaskMessage created in downloads.pending
+- [ ] Mocks successful download (with configurable file size)
+- [ ] Validates OneLake upload called with correct path
+- [ ] Validates DownloadResultMessage produced to downloads.results
+- [ ] Validates Delta inventory write with correct data
+- [ ] End-to-end latency measured and logged
+- [ ] Test includes multiple events with multiple attachments each
+- [ ] Validates deduplication by trace_id
+
+---
+
+### WP-403: E2E Retry Flow Test
+
+**Objective**: Test transient failure → retry topic → successful redelivery flow
+**Size**: Medium
+**Files to read**:
+- `tests/kafka_pipeline/integration/conftest.py` (from WP-401)
+- `src/kafka_pipeline/workers/download_worker.py`
+- `src/kafka_pipeline/retry/handler.py`
+- `src/kafka_pipeline/retry/scheduler.py`
+**Files to create/modify**:
+- `tests/kafka_pipeline/integration/test_e2e_retry_flow.py`
+**Dependencies**: WP-401
+**Deliverable**: Passing E2E test validating retry flow with exponential backoff
+**Review checklist**:
+- [ ] Test simulates transient download failure (timeout, 503 error)
+- [ ] Validates message routed to first retry topic (5m delay)
+- [ ] Validates retry_count incremented
+- [ ] Validates error metadata preserved
+- [ ] Validates DelayedRedeliveryScheduler redelivers after delay
+- [ ] Validates successful download on retry attempt
+- [ ] Test simulates multiple retry attempts (1st fails, 2nd succeeds)
+- [ ] Validates retry exhaustion → DLQ routing
+- [ ] Validates metrics: retry_count, error_category labels
+
+---
+
+### WP-404: E2E DLQ Flow Test
+
+**Objective**: Test permanent failure → DLQ → manual replay flow
+**Size**: Medium
+**Files to read**:
+- `tests/kafka_pipeline/integration/conftest.py` (from WP-401)
+- `src/kafka_pipeline/workers/download_worker.py`
+- `src/kafka_pipeline/retry/handler.py`
+- `src/kafka_pipeline/dlq/handler.py`
+- `src/kafka_pipeline/dlq/cli.py`
+**Files to create/modify**:
+- `tests/kafka_pipeline/integration/test_e2e_dlq_flow.py`
+**Dependencies**: WP-401
+**Deliverable**: Passing E2E test validating DLQ routing and replay
+**Review checklist**:
+- [ ] Test simulates permanent failure (404, invalid URL, file type validation)
+- [ ] Validates message routed directly to DLQ (no retry)
+- [ ] Validates FailedDownloadMessage contains original_task
+- [ ] Validates error context preserved (final_error, error_category)
+- [ ] Test simulates retry exhaustion scenario
+- [ ] Validates DLQ CLI can list messages
+- [ ] Validates DLQ CLI can view message details
+- [ ] Validates DLQ CLI replay sends message to pending topic
+- [ ] Validates replayed message has retry_count reset to 0
+- [ ] Validates audit log entries for DLQ operations
+
+---
+
+### WP-405: E2E Failure Scenarios
+
+**Objective**: Test error handling for circuit breaker, auth failures, and edge cases
+**Size**: Medium
+**Files to read**:
+- `tests/kafka_pipeline/integration/conftest.py` (from WP-401)
+- `src/kafka_pipeline/consumer.py` (error handling)
+- `src/core/resilience/circuit_breaker.py`
+- `src/core/errors/` (error classifiers)
+**Files to create/modify**:
+- `tests/kafka_pipeline/integration/test_e2e_failure_scenarios.py`
+**Dependencies**: WP-401
+**Deliverable**: Passing tests for all failure modes and edge cases
+**Review checklist**:
+- [ ] Circuit breaker open: no offset commit, reprocessing on recovery
+- [ ] Auth failure: no offset commit, reprocessing on token refresh
+- [ ] Kafka broker unavailability: graceful degradation
+- [ ] OneLake unavailability: retry with backoff
+- [ ] Delta Lake write failure: logged, doesn't block Kafka processing
+- [ ] Invalid event schema: logged, message skipped
+- [ ] Missing required fields in event: validation error handling
+- [ ] Expired presigned URL: refresh logic (if applicable to domain)
+- [ ] Large file streaming (>50MB): validates memory bounds
+- [ ] Consumer lag buildup: scheduler pauses retry delivery
+
+---
+
+### WP-406: Performance Benchmarking
+
+**Objective**: Measure throughput, latency, and resource usage under various loads
+**Size**: Medium
+**Files to read**:
+- `tests/kafka_pipeline/integration/conftest.py` (from WP-401)
+- `docs/kafka-greenfield-implementation-plan.md` (Section 2.1 performance targets)
+**Files to create/modify**:
+- `tests/kafka_pipeline/performance/` (new package)
+- `tests/kafka_pipeline/performance/conftest.py` (performance fixtures)
+- `tests/kafka_pipeline/performance/test_throughput.py`
+- `tests/kafka_pipeline/performance/test_latency.py`
+- `tests/kafka_pipeline/performance/test_resource_usage.py`
+- `tests/kafka_pipeline/performance/benchmarks.md` (results documentation)
+**Dependencies**: WP-402 (happy path must work first)
+**Deliverable**: Performance benchmark suite with baseline measurements
+**Review checklist**:
+- [ ] Throughput test: 1,000 events/second sustained (NFR-1.2)
+- [ ] Latency test: p50, p95, p99 measurements (NFR-1.1 target: <5s p95)
+- [ ] Memory usage per worker: measured under load (target: <512MB per worker)
+- [ ] CPU usage per worker: measured under load
+- [ ] Consumer lag recovery: 100k message backlog cleared in <10min (NFR-1.4)
+- [ ] Download concurrency: 50 parallel downloads (NFR-1.3)
+- [ ] Delta batch write performance: measured
+- [ ] Results documented in benchmarks.md with graphs/tables
+- [ ] Performance regression detection (compare to baselines)
+
+---
+
+### WP-407: Load Testing and Scaling Validation
+
+**Objective**: Validate horizontal scaling and system behavior under peak load
+**Size**: Large
+**Files to read**:
+- `tests/kafka_pipeline/performance/` (from WP-406)
+- `docs/kafka-greenfield-implementation-plan.md` (Section 2.3 scalability)
+**Files to create/modify**:
+- `tests/kafka_pipeline/performance/test_load_scaling.py`
+- `tests/kafka_pipeline/performance/test_consumer_groups.py`
+- `tests/kafka_pipeline/performance/test_peak_load.py`
+- `tests/kafka_pipeline/performance/load_test_report.md`
+**Dependencies**: WP-406
+**Deliverable**: Load test suite validating scaling targets
+**Review checklist**:
+- [ ] Horizontal scaling: add consumers without code changes (NFR-3.1)
+- [ ] Consumer instances: test with 1, 3, 6, 12 instances (target: 1-20, NFR-3.2)
+- [ ] Partition distribution: validate even load distribution
+- [ ] Peak load: 2x normal load (2,000 events/sec)
+- [ ] Sustained load: 4 hour test at target throughput
+- [ ] Failure recovery: kill worker, validate rebalancing
+- [ ] Backpressure: validate scheduler pauses on high lag
+- [ ] Resource limits: memory, CPU under sustained load
+- [ ] Load test results documented in load_test_report.md
+
+---
+
+### WP-408: Grafana Dashboards
+
+**Objective**: Create Grafana dashboards for monitoring pipeline health and performance
+**Size**: Medium
+**Files to read**:
+- `src/kafka_pipeline/metrics.py` (all metrics defined)
+- `docs/kafka-greenfield-implementation-plan.md` (Section 2.4 observability)
+**Files to create/modify**:
+- `observability/grafana/` (new directory)
+- `observability/grafana/dashboards/kafka-pipeline-overview.json`
+- `observability/grafana/dashboards/consumer-health.json`
+- `observability/grafana/dashboards/download-performance.json`
+- `observability/grafana/dashboards/dlq-monitoring.json`
+- `observability/grafana/README.md` (dashboard documentation)
+**Dependencies**: WP-208 (metrics implemented)
+**Deliverable**: Production-ready Grafana dashboards for pipeline monitoring
+**Review checklist**:
+- [ ] **Pipeline Overview Dashboard**:
+  - Total throughput (events/sec, downloads/sec)
+  - End-to-end latency (p50, p95, p99)
+  - Error rates by category
+  - Circuit breaker states
+  - Consumer lag by topic/partition
+- [ ] **Consumer Health Dashboard**:
+  - Consumer group lag (per topic/partition)
+  - Partition assignments
+  - Offset progress
+  - Rebalance events
+  - Connection status
+- [ ] **Download Performance Dashboard**:
+  - Download success/failure rates
+  - Download latency distribution
+  - Concurrent downloads gauge
+  - OneLake upload performance
+  - File size distribution
+- [ ] **DLQ Monitoring Dashboard**:
+  - DLQ message count (gauge)
+  - DLQ message rate (counter)
+  - Error distribution by category
+  - Replay operations
+  - DLQ age (oldest message timestamp)
+- [ ] All dashboards use consistent time range selectors
+- [ ] Variable filters: environment, consumer_group, topic
+- [ ] Panel descriptions and documentation
+- [ ] Export dashboards as JSON for version control
+
+---
+
+### WP-409: Alerting Configuration
+
+**Objective**: Configure Prometheus alerting rules for critical metrics
+**Size**: Small
+**Files to read**:
+- `src/kafka_pipeline/metrics.py` (metrics to alert on)
+- `observability/grafana/dashboards/` (from WP-408)
+- `docs/kafka-greenfield-implementation-plan.md` (Section 2.4.5 alerting requirements)
+**Files to create/modify**:
+- `observability/prometheus/` (new directory)
+- `observability/prometheus/alerts/kafka-pipeline.yml` (Prometheus alert rules)
+- `observability/prometheus/alerts/README.md` (alert documentation)
+**Dependencies**: WP-408
+**Deliverable**: Prometheus alert rules for critical pipeline conditions
+**Review checklist**:
+- [ ] **Consumer Lag Alert**: lag > 10,000 messages for 5 minutes
+- [ ] **DLQ Growth Alert**: DLQ messages increasing rapidly (rate > 10/min)
+- [ ] **Error Rate Alert**: error rate > 1% for 5 minutes
+- [ ] **Circuit Breaker Open Alert**: circuit breaker open for > 2 minutes
+- [ ] **Consumer Disconnected Alert**: consumer connection down
+- [ ] **Download Failure Rate Alert**: download failures > 5% for 5 minutes
+- [ ] **Delta Write Failure Alert**: Delta writes failing
+- [ ] **High Latency Alert**: p95 latency > 10 seconds for 5 minutes
+- [ ] Alert severity levels (critical, warning, info)
+- [ ] Alert descriptions with context and remediation hints
+- [ ] Runbook links in alert annotations
+- [ ] Alert routing configuration (placeholder for Teams integration)
+
+---
+
+### WP-410: Runbook Documentation
+
+**Objective**: Create operational runbooks for common scenarios and troubleshooting
+**Size**: Medium
+**Files to read**:
+- `observability/prometheus/alerts/kafka-pipeline.yml` (from WP-409)
+- `src/kafka_pipeline/dlq/cli.py` (DLQ operations)
+- `docs/kafka-greenfield-implementation-plan.md` (architecture and design decisions)
+**Files to create/modify**:
+- `docs/runbooks/` (new directory)
+- `docs/runbooks/README.md` (runbook index)
+- `docs/runbooks/consumer-lag.md`
+- `docs/runbooks/dlq-management.md`
+- `docs/runbooks/circuit-breaker-open.md`
+- `docs/runbooks/deployment-procedures.md`
+- `docs/runbooks/incident-response.md`
+- `docs/runbooks/scaling-operations.md`
+**Dependencies**: WP-409
+**Deliverable**: Complete operational runbooks for production support
+**Review checklist**:
+- [ ] **Consumer Lag Runbook**:
+  - Symptoms and detection
+  - Root cause analysis steps
+  - Remediation: scale consumers, check for slow processing
+  - Prevention: capacity planning
+- [ ] **DLQ Management Runbook**:
+  - DLQ message inspection workflow
+  - Replay procedures with CLI commands
+  - Common failure patterns and resolutions
+  - Escalation criteria
+- [ ] **Circuit Breaker Open Runbook**:
+  - Symptoms and impacts
+  - Diagnostic steps (check broker health, network, auth)
+  - Recovery procedures
+  - Prevention: proper timeout tuning
+- [ ] **Deployment Procedures**:
+  - Pre-deployment checklist
+  - Rolling deployment steps
+  - Rollback procedures
+  - Post-deployment validation
+- [ ] **Incident Response**:
+  - Severity classification
+  - Escalation paths
+  - Communication templates
+  - Post-incident review process
+- [ ] **Scaling Operations**:
+  - When to scale (metrics thresholds)
+  - How to add/remove consumers
+  - Partition rebalancing
+  - Capacity planning guidelines
+- [ ] All runbooks include:
+  - Clear step-by-step procedures
+  - CLI commands with examples
+  - Expected outputs
+  - Troubleshooting decision trees
+  - Links to relevant dashboards and alerts
+
+</details>
+
+---
+
+## Future Phases (Not Yet Detailed)
 
 ### Phase 5: Migration
 - WP-501: Retry queue migration job
