@@ -24,6 +24,8 @@ if "TEST_MODE" not in os.environ:
     os.environ["TEST_MODE"] = "true"
 if "AUDIT_LOG_PATH" not in os.environ:
     os.environ["AUDIT_LOG_PATH"] = "/tmp/test_audit.log"
+if "ALLOWED_ATTACHMENT_DOMAINS" not in os.environ:
+    os.environ["ALLOWED_ATTACHMENT_DOMAINS"] = "example.com"
 
 # NOTE: Worker imports are done lazily inside fixtures to ensure
 # environment variables are set before module initialization happens
@@ -60,13 +62,17 @@ class MockOneLakeClient:
         self.is_open = False
         return False
 
-    async def upload_file(self, blob_path: str, local_path: Path) -> None:
+    async def upload_file(self, relative_path: str, local_path: Path, overwrite: bool = True) -> str:
         """
         Mock file upload - reads local file and stores in memory.
 
         Args:
-            blob_path: Destination path in OneLake
+            relative_path: Destination path in OneLake
             local_path: Path to local file to upload
+            overwrite: Whether to overwrite existing file (default: True)
+
+        Returns:
+            str: The relative path where the file was uploaded
 
         Raises:
             FileNotFoundError: If local file doesn't exist
@@ -78,8 +84,10 @@ class MockOneLakeClient:
         content = local_path.read_bytes()
 
         # Store in memory
-        self.uploaded_files[blob_path] = content
+        self.uploaded_files[relative_path] = content
         self.upload_count += 1
+
+        return relative_path
 
     async def exists(self, blob_path: str) -> bool:
         """Check if file exists in mock storage."""
@@ -127,9 +135,15 @@ class MockDeltaEventsWriter:
         Mock event write - stores in memory with deduplication.
 
         Args:
-            event: Event dictionary to write
+            event: Event dictionary or Pydantic model to write
         """
-        trace_id = event.get("trace_id")
+        # Handle both dict and Pydantic model
+        if hasattr(event, "model_dump"):
+            event_dict = event.model_dump(mode="json")
+            trace_id = event.trace_id
+        else:
+            event_dict = event
+            trace_id = event.get("trace_id")
 
         # Simulate deduplication
         if trace_id in self._seen_trace_ids:
@@ -137,7 +151,7 @@ class MockDeltaEventsWriter:
             return  # Skip duplicate
 
         self._seen_trace_ids.add(trace_id)
-        self.written_events.append(event)
+        self.written_events.append(event_dict)
         self.write_count += 1
 
     def get_events_by_trace_id(self, trace_id: str) -> List[Dict]:
@@ -173,16 +187,27 @@ class MockDeltaInventoryWriter:
         # Track unique keys for merge simulation: (trace_id, attachment_url)
         self._record_keys = {}
 
-    async def write_batch(self, records: List[Dict]) -> None:
+    async def write_results(self, results: List) -> bool:
         """
         Mock batch write with merge-based idempotency.
 
         Args:
-            records: List of inventory records to write
+            results: List of DownloadResultMessage objects to write
+
+        Returns:
+            bool: True if write succeeded
         """
-        for record in records:
-            trace_id = record.get("trace_id")
-            attachment_url = record.get("attachment_url")
+        for result in results:
+            # Handle both Pydantic models and dicts
+            if hasattr(result, "model_dump"):
+                record = result.model_dump(mode="json")
+                trace_id = result.trace_id
+                attachment_url = result.attachment_url
+            else:
+                record = result
+                trace_id = result.get("trace_id")
+                attachment_url = result.get("attachment_url")
+
             key = (trace_id, attachment_url)
 
             # Simulate merge behavior: update if exists, insert if new
@@ -197,6 +222,7 @@ class MockDeltaInventoryWriter:
                 self.inventory_records.append(record)
 
         self.write_count += 1
+        return True
 
     def get_records_by_trace_id(self, trace_id: str) -> List[Dict]:
         """Get all inventory records with given trace_id."""
