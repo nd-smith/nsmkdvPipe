@@ -1082,6 +1082,8 @@ Phase 4 work packages are now available (WP-401 to WP-410). Recommended implemen
 
 ### WP-404: E2E DLQ Flow Test
 
+**Status**: ✅ Complete (commit: ee5dcce)
+
 **Objective**: Test permanent failure → DLQ → manual replay flow
 **Size**: Medium
 **Files to read**:
@@ -1095,16 +1097,16 @@ Phase 4 work packages are now available (WP-401 to WP-410). Recommended implemen
 **Dependencies**: WP-401
 **Deliverable**: Passing E2E test validating DLQ routing and replay
 **Review checklist**:
-- [ ] Test simulates permanent failure (404, invalid URL, file type validation)
-- [ ] Validates message routed directly to DLQ (no retry)
-- [ ] Validates FailedDownloadMessage contains original_task
-- [ ] Validates error context preserved (final_error, error_category)
-- [ ] Test simulates retry exhaustion scenario
-- [ ] Validates DLQ CLI can list messages
-- [ ] Validates DLQ CLI can view message details
-- [ ] Validates DLQ CLI replay sends message to pending topic
-- [ ] Validates replayed message has retry_count reset to 0
-- [ ] Validates audit log entries for DLQ operations
+- [x] Test simulates permanent failure (404, invalid URL, file type validation)
+- [x] Validates message routed directly to DLQ (no retry)
+- [x] Validates FailedDownloadMessage contains original_task
+- [x] Validates error context preserved (final_error, error_category)
+- [x] Test simulates retry exhaustion scenario
+- [x] Validates DLQ CLI can list messages
+- [x] Validates DLQ CLI can view message details
+- [x] Validates DLQ CLI replay sends message to pending topic
+- [x] Validates replayed message has retry_count reset to 0
+- [x] Validates audit log entries for DLQ operations
 
 ---
 
