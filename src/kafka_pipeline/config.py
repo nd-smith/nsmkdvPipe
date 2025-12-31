@@ -50,6 +50,10 @@ class KafkaConfig:
     # Storage configuration
     onelake_base_path: str = ""  # abfss:// path to OneLake files directory
 
+    # Download concurrency settings (FR-2.6)
+    download_concurrency: int = 10  # Max concurrent downloads (default: 10, range: 1-50)
+    download_batch_size: int = 20  # Messages to fetch per batch
+
     @classmethod
     def from_env(cls) -> "KafkaConfig":
         """Load configuration from environment variables.
@@ -70,6 +74,8 @@ class KafkaConfig:
             RETRY_DELAYS: 300,600,1200,2400 (default, comma-separated seconds)
             MAX_RETRIES: 4 (default)
             ONELAKE_BASE_PATH: OneLake abfss:// path (required for upload)
+            DOWNLOAD_CONCURRENCY: 10 (default, max concurrent downloads, range 1-50)
+            DOWNLOAD_BATCH_SIZE: 20 (default, messages to fetch per batch)
 
         Raises:
             ValueError: If required environment variables are missing
@@ -113,6 +119,13 @@ class KafkaConfig:
 
             # Storage configuration
             onelake_base_path=os.getenv("ONELAKE_BASE_PATH", ""),
+
+            # Download concurrency settings
+            download_concurrency=min(
+                50,  # Max allowed
+                max(1, int(os.getenv("DOWNLOAD_CONCURRENCY", "10"))),  # Min 1
+            ),
+            download_batch_size=max(1, int(os.getenv("DOWNLOAD_BATCH_SIZE", "20"))),
         )
 
     def get_retry_topic(self, attempt: int) -> str:

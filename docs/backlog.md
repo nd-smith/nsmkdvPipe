@@ -20,6 +20,8 @@
 ### Ready
 <!-- Tasks ready to be picked up -->
 
+(none)
+
 Phase 4 work packages are now available (WP-401 to WP-410). Recommended implementation order:
 
 **Testing Track** (can run in parallel):
@@ -103,6 +105,7 @@ Phase 4 work packages are now available (WP-401 to WP-410). Recommended implemen
 - [x] **WP-408**: Grafana Dashboards (commit: 7b4152b)
 - [x] **WP-409**: Alerting Configuration (commit: c7baee5)
 - [x] **WP-410**: Runbook Documentation (commit: 093b1c0)
+- [x] **WP-313**: Download Worker - Concurrent Processing (commit: 7e7a824)
 
 ---
 
@@ -976,6 +979,56 @@ Phase 4 work packages are now available (WP-401 to WP-410). Recommended implemen
 - [ ] Integration test: replay from DLQ → pending topic
 - [ ] Integration test: manual ack after resolve
 - [ ] CLI tests with mock consumer/producer
+
+---
+
+### WP-313: Download Worker - Concurrent Processing
+
+**Objective**: Add concurrent download/upload processing to meet FR-2.6 (P0 requirement)
+**Size**: Medium
+**Priority**: P0 - Critical gap identified during production readiness review
+**Files to read**:
+- `src/kafka_pipeline/workers/download_worker.py` (current sequential implementation)
+- `src/verisk_pipeline/xact/stages/xact_download.py` (old pipeline concurrency pattern)
+- `src/verisk_pipeline/storage/upload_service.py` (old pipeline upload concurrency)
+- `docs/kafka-greenfield-implementation-plan.md` (FR-2.6, NFR-1.3)
+**Files to create/modify**:
+- `src/kafka_pipeline/workers/download_worker.py` (add concurrency)
+- `src/kafka_pipeline/config.py` (add DOWNLOAD_CONCURRENCY setting)
+- `src/kafka_pipeline/consumer.py` (batch message fetching if needed)
+- `tests/kafka_pipeline/workers/test_download_worker.py` (concurrency tests)
+- `tests/kafka_pipeline/performance/test_throughput.py` (validate concurrency)
+**Dependencies**: WP-307 (Download Worker complete)
+**Deliverable**: Download worker processing multiple messages concurrently with configurable parallelism
+
+**Background**:
+The old pipeline uses `asyncio.Semaphore` + `asyncio.gather()` to process downloads concurrently (default: 10 parallel). The new Kafka pipeline processes messages sequentially, which is a significant performance regression.
+
+**Implementation Approach**:
+1. **Batch message fetching**: Modify consumer to fetch batches of messages
+2. **Semaphore-controlled concurrency**: Limit concurrent downloads (default: 10, max: 50)
+3. **Connection pooling**: Reuse `aiohttp.TCPConnector` across concurrent downloads
+4. **Concurrent uploads**: Upload to OneLake in parallel with semaphore control
+5. **Result batching**: Batch result messages for efficient Kafka production
+
+**Configuration**:
+```python
+# Environment variables
+DOWNLOAD_CONCURRENCY=10  # Default: 10, Range: 1-50
+DOWNLOAD_BATCH_SIZE=20   # Messages to fetch per batch
+```
+
+**Review checklist**:
+- [ ] Semaphore limits concurrent downloads (configurable via DOWNLOAD_CONCURRENCY)
+- [ ] HTTP connection pooling with `aiohttp.TCPConnector(limit=N, limit_per_host=N)`
+- [ ] `asyncio.gather()` processes batch concurrently
+- [ ] Exception handling converts failures to result objects (not crash)
+- [ ] Metrics: `kafka_downloads_concurrent` gauge showing active downloads
+- [ ] Performance test validates 10+ concurrent downloads
+- [ ] Memory usage acceptable under concurrent load
+- [ ] Graceful shutdown waits for in-flight downloads
+- [ ] Unit tests with mocked concurrent downloads
+- [ ] Integration test validates throughput improvement
 
 </details>
 

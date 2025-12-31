@@ -119,6 +119,19 @@ consumer_assigned_partitions = Gauge(
     ["consumer_group"],
 )
 
+# Download concurrency metrics (WP-313)
+downloads_concurrent = Gauge(
+    "kafka_downloads_concurrent",
+    "Number of downloads currently in progress",
+    ["worker"],
+)
+
+downloads_batch_size = Gauge(
+    "kafka_downloads_batch_size",
+    "Size of the current download batch being processed",
+    ["worker"],
+)
+
 # Delta Lake write metrics
 delta_writes_total = Counter(
     "delta_writes_total",
@@ -296,6 +309,28 @@ def record_delta_write(table: str, event_count: int, success: bool = True) -> No
         delta_events_written_total.labels(table=table).inc(event_count)
 
 
+def update_downloads_concurrent(worker: str, count: int) -> None:
+    """
+    Update the number of concurrent downloads in progress.
+
+    Args:
+        worker: Worker identifier (e.g., "download_worker")
+        count: Number of downloads currently in progress
+    """
+    downloads_concurrent.labels(worker=worker).set(count)
+
+
+def update_downloads_batch_size(worker: str, size: int) -> None:
+    """
+    Update the current download batch size.
+
+    Args:
+        worker: Worker identifier (e.g., "download_worker")
+        size: Number of messages in the current batch
+    """
+    downloads_batch_size.labels(worker=worker).set(size)
+
+
 __all__ = [
     # Metrics
     "messages_produced_total",
@@ -312,6 +347,8 @@ __all__ = [
     "circuit_breaker_failures",
     "kafka_connection_status",
     "consumer_assigned_partitions",
+    "downloads_concurrent",
+    "downloads_batch_size",
     "delta_writes_total",
     "delta_events_written_total",
     "delta_write_duration_seconds",
@@ -326,5 +363,7 @@ __all__ = [
     "record_circuit_breaker_failure",
     "update_connection_status",
     "update_assigned_partitions",
+    "update_downloads_concurrent",
+    "update_downloads_batch_size",
     "record_delta_write",
 ]
