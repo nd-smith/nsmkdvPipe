@@ -106,7 +106,7 @@ async def test_peak_load_2x_throughput(
                 producer = AIOKafkaProducer(
                     bootstrap_servers=test_kafka_config.bootstrap_servers,
                     value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-                    compression_type="lz4",
+                    compression_type=None,  # lz4 disabled due to Python 3.13 compatibility
                     linger_ms=1,  # Minimal batching for high throughput
                     batch_size=65536,  # Larger batches
                 )
@@ -259,7 +259,7 @@ async def test_sustained_load_4_hours(
                 producer = AIOKafkaProducer(
                     bootstrap_servers=test_kafka_config.bootstrap_servers,
                     value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-                    compression_type="lz4",
+                    compression_type=None,  # lz4 disabled due to Python 3.13 compatibility
                     linger_ms=5,
                     batch_size=32768,
                 )
@@ -434,7 +434,7 @@ async def test_resource_limits_under_load(
                 producer = AIOKafkaProducer(
                     bootstrap_servers=test_kafka_config.bootstrap_servers,
                     value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-                    compression_type="lz4",
+                    compression_type=None,  # lz4 disabled due to Python 3.13 compatibility
                 )
                 await producer.start()
 

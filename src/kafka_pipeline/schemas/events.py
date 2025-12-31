@@ -69,6 +69,10 @@ class EventMessage(BaseModel):
         default=None,
         description="Optional list of attachment URLs"
     )
+    metadata: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Optional metadata for additional context"
+    )
 
     @field_validator('trace_id', 'event_type', 'event_subtype', 'source_system')
     @classmethod

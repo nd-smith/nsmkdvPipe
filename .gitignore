@@ -36,6 +36,9 @@ ENV/
 *.swo
 *~
 .DS_Store
+.serena
+claudedocs
+
 
 # Logs
 logs/

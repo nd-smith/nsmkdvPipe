@@ -11,6 +11,9 @@ class TestKafkaConfig:
 
     def test_from_env_minimal_required(self, monkeypatch):
         """Test loading with only required environment variables."""
+        # Clear any env vars set by other fixtures to test true defaults
+        monkeypatch.delenv("KAFKA_SECURITY_PROTOCOL", raising=False)
+        monkeypatch.delenv("KAFKA_SASL_MECHANISM", raising=False)
         monkeypatch.setenv("KAFKA_BOOTSTRAP_SERVERS", "kafka1:9093,kafka2:9093")
 
         config = KafkaConfig.from_env()

@@ -95,7 +95,7 @@ async def test_memory_usage_under_load(
                 producer = AIOKafkaProducer(
                     bootstrap_servers=test_kafka_config.bootstrap_servers,
                     value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-                    compression_type="lz4",
+                    compression_type=None,  # lz4 disabled due to Python 3.13 compatibility
                 )
                 await producer.start()
 
@@ -339,7 +339,7 @@ async def test_consumer_lag_recovery(
         producer = AIOKafkaProducer(
             bootstrap_servers=test_kafka_config.bootstrap_servers,
             value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-            compression_type="lz4",
+            compression_type=None,  # lz4 disabled due to Python 3.13 compatibility
             linger_ms=10,
         )
         await producer.start()
@@ -476,7 +476,7 @@ async def test_cpu_usage_under_load(
                 producer = AIOKafkaProducer(
                     bootstrap_servers=test_kafka_config.bootstrap_servers,
                     value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-                    compression_type="lz4",
+                    compression_type=None,  # lz4 disabled due to Python 3.13 compatibility
                 )
                 await producer.start()
 

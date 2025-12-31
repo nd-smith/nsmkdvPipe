@@ -111,17 +111,18 @@ class TestDeltaEventsWriter:
         event = EventMessage(
             trace_id="test-trace",
             event_type="xact.assignment.status",
+            event_subtype="documentsReceived",
             source_system="xact",
             timestamp=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
-            # No event_subtype, attachments, payload, or metadata
+            payload={"claim_id": "C123"},
+            # No attachments or metadata (optional fields)
         )
 
         df = delta_writer._events_to_dataframe([event])
 
         assert len(df) == 1
         assert df["trace_id"][0] == "test-trace"
-        assert df["attachments"][0] == []  # Empty list for None
-        assert df["payload"][0] == {}  # Empty dict for None
+        assert df["attachments"][0].to_list() == []  # Empty list for None
         assert df["metadata"][0] == {}  # Empty dict for None
 
     @pytest.mark.asyncio
@@ -148,8 +149,10 @@ class TestDeltaEventsWriter:
             EventMessage(
                 trace_id=f"trace-{i}",
                 event_type="xact.assignment.status",
+                event_subtype="documentsReceived",
                 source_system="xact",
                 timestamp=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
+                payload={"assignment_id": f"A{i}"},
             )
             for i in range(5)
         ]
@@ -199,23 +202,20 @@ class TestDeltaEventsWriter:
 
     @pytest.mark.asyncio
     async def test_write_events_async_execution(self, delta_writer, sample_event):
-        """Test that write operations are truly async (non-blocking)."""
-        # Create a slow mock that would block if not async
-        async def slow_append(df, dedupe):
-            await asyncio.sleep(0.1)
-            return len(df)
+        """Test that write operations use asyncio.to_thread for non-blocking execution."""
+        # Mock the underlying Delta writer
+        delta_writer._delta_writer.append = MagicMock(return_value=1)
 
-        # Patch asyncio.to_thread to actually execute the function
-        with patch("asyncio.to_thread", side_effect=lambda f, *args, **kwargs: slow_append(*args, **kwargs)):
-            delta_writer._delta_writer.append = MagicMock(return_value=1)
+        # Patch asyncio.to_thread to verify it's called
+        async def mock_to_thread_impl(*args, **kwargs):
+            return None
 
-            start = asyncio.get_event_loop().time()
+        with patch("kafka_pipeline.writers.delta_events.asyncio.to_thread", side_effect=mock_to_thread_impl) as mock_to_thread:
             result = await delta_writer.write_event(sample_event)
-            elapsed = asyncio.get_event_loop().time() - start
 
             assert result is True
-            # Should take at least 0.1 seconds due to our mock
-            assert elapsed >= 0.1
+            # Verify to_thread was called (proving async execution)
+            mock_to_thread.assert_called_once()
 
     def test_ingested_at_timestamp(self, delta_writer, sample_event):
         """Test that ingested_at is set to current UTC time."""
@@ -259,8 +259,10 @@ async def test_delta_writer_integration():
         event = EventMessage(
             trace_id="integration-test",
             event_type="xact.assignment.status",
+            event_subtype="documentsReceived",
             source_system="xact",
             timestamp=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
+            payload={"assignment_id": "A12345"},
         )
 
         result = await writer.write_event(event)

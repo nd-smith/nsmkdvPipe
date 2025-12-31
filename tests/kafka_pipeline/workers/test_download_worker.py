@@ -30,6 +30,9 @@ def kafka_config():
         downloads_results_topic="test.downloads.results",
         dlq_topic="test.downloads.dlq",
         consumer_group_prefix="test",
+        onelake_base_path="abfss://test@test.dfs.core.windows.net/Files",
+        security_protocol="PLAINTEXT",  # Use PLAINTEXT for unit tests
+        sasl_mechanism="PLAIN",
     )
 
 
@@ -115,16 +118,26 @@ class TestDownloadWorker:
         """Test worker start and stop lifecycle."""
         worker = DownloadWorker(kafka_config, temp_dir=temp_download_dir)
 
-        # Mock consumer
+        # Mock consumer and producer
         worker.consumer = AsyncMock()
+        worker.producer = AsyncMock()
 
-        # Test start
-        await worker.start()
-        worker.consumer.start.assert_called_once()
+        # Mock OneLakeClient context manager
+        with patch("kafka_pipeline.workers.download_worker.OneLakeClient") as mock_onelake_class:
+            mock_onelake = AsyncMock()
+            mock_onelake.__aenter__ = AsyncMock(return_value=mock_onelake)
+            mock_onelake.__aexit__ = AsyncMock(return_value=None)
+            mock_onelake_class.return_value = mock_onelake
 
-        # Test stop
-        await worker.stop()
-        worker.consumer.stop.assert_called_once()
+            # Test start
+            await worker.start()
+            worker.consumer.start.assert_called_once()
+            worker.producer.start.assert_called_once()
+
+            # Test stop
+            await worker.stop()
+            worker.consumer.stop.assert_called_once()
+            worker.producer.stop.assert_called_once()
 
     async def test_convert_to_download_task(
         self, kafka_config, temp_download_dir, sample_download_task_message
@@ -151,6 +164,12 @@ class TestDownloadWorker:
         """Test successful download task processing."""
         worker = DownloadWorker(kafka_config, temp_dir=temp_download_dir)
 
+        # Mock dependencies that are normally initialized in start()
+        worker.onelake_client = AsyncMock()
+        worker.onelake_client.upload_file = AsyncMock(return_value="claims/C-456/document.pdf")
+        worker.producer = AsyncMock()
+        worker.retry_handler = AsyncMock()
+
         # Mock successful download
         mock_outcome = DownloadOutcome.success_outcome(
             file_path=temp_download_dir / "evt-123" / "document.pdf",
@@ -158,6 +177,10 @@ class TestDownloadWorker:
             content_type="application/pdf",
             status_code=200,
         )
+
+        # Create the temp file so cleanup doesn't fail
+        (temp_download_dir / "evt-123").mkdir(parents=True, exist_ok=True)
+        (temp_download_dir / "evt-123" / "document.pdf").touch()
 
         with patch.object(worker.downloader, "download", new_callable=AsyncMock) as mock_download:
             mock_download.return_value = mock_outcome
@@ -177,6 +200,11 @@ class TestDownloadWorker:
     ):
         """Test failed download task processing."""
         worker = DownloadWorker(kafka_config, temp_dir=temp_download_dir)
+
+        # Mock dependencies that are normally initialized in start()
+        worker.onelake_client = AsyncMock()
+        worker.producer = AsyncMock()
+        worker.retry_handler = AsyncMock()
 
         # Mock failed download
         mock_outcome = DownloadOutcome.download_failure(
@@ -253,6 +281,12 @@ class TestDownloadWorker:
         """Test processing message from retry topic."""
         worker = DownloadWorker(kafka_config, temp_dir=temp_download_dir)
 
+        # Mock dependencies that are normally initialized in start()
+        worker.onelake_client = AsyncMock()
+        worker.onelake_client.upload_file = AsyncMock(return_value="claims/C-456/document.pdf")
+        worker.producer = AsyncMock()
+        worker.retry_handler = AsyncMock()
+
         # Create message from retry topic
         retry_task = sample_download_task_message.model_copy(update={"retry_count": 2})
 
@@ -278,6 +312,10 @@ class TestDownloadWorker:
             status_code=200,
         )
 
+        # Create the temp file so cleanup doesn't fail
+        (temp_download_dir / "evt-123").mkdir(parents=True, exist_ok=True)
+        (temp_download_dir / "evt-123" / "document.pdf").touch()
+
         with patch.object(worker.downloader, "download", new_callable=AsyncMock) as mock_download:
             mock_download.return_value = mock_outcome
 
@@ -293,6 +331,12 @@ class TestDownloadWorker:
         """Test that processing time is measured and logged."""
         worker = DownloadWorker(kafka_config, temp_dir=temp_download_dir)
 
+        # Mock dependencies that are normally initialized in start()
+        worker.onelake_client = AsyncMock()
+        worker.onelake_client.upload_file = AsyncMock(return_value="claims/C-456/document.pdf")
+        worker.producer = AsyncMock()
+        worker.retry_handler = AsyncMock()
+
         # Mock successful download with small delay
         mock_outcome = DownloadOutcome.success_outcome(
             file_path=temp_download_dir / "evt-123" / "document.pdf",
@@ -300,6 +344,10 @@ class TestDownloadWorker:
             content_type="application/pdf",
             status_code=200,
         )
+
+        # Create the temp file so cleanup doesn't fail
+        (temp_download_dir / "evt-123").mkdir(parents=True, exist_ok=True)
+        (temp_download_dir / "evt-123" / "document.pdf").touch()
 
         async def slow_download(task):
             import asyncio

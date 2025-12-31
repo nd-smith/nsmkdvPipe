@@ -140,8 +140,6 @@ class BaseKafkaConsumer:
         consumer_config = {
             "bootstrap_servers": self.config.bootstrap_servers,
             "group_id": self.group_id,
-            "security_protocol": self.config.security_protocol,
-            "sasl_mechanism": self.config.sasl_mechanism,
             "enable_auto_commit": self.config.enable_auto_commit,
             "auto_offset_reset": self.config.auto_offset_reset,
             "max_poll_records": self.config.max_poll_records,
@@ -149,10 +147,19 @@ class BaseKafkaConsumer:
             "session_timeout_ms": self.config.session_timeout_ms,
         }
 
-        # Only add OAuth callback for OAUTHBEARER authentication
-        if self.config.sasl_mechanism == "OAUTHBEARER":
-            oauth_callback = create_kafka_oauth_callback()
-            consumer_config["sasl_oauth_token_provider"] = oauth_callback
+        # Configure security based on protocol
+        if self.config.security_protocol != "PLAINTEXT":
+            consumer_config["security_protocol"] = self.config.security_protocol
+            consumer_config["sasl_mechanism"] = self.config.sasl_mechanism
+
+            # Add authentication based on mechanism
+            if self.config.sasl_mechanism == "OAUTHBEARER":
+                oauth_callback = create_kafka_oauth_callback()
+                consumer_config["sasl_oauth_token_provider"] = oauth_callback
+            elif self.config.sasl_mechanism == "PLAIN":
+                # SASL_PLAIN for Event Hubs or basic auth
+                consumer_config["sasl_plain_username"] = self.config.sasl_plain_username
+                consumer_config["sasl_plain_password"] = self.config.sasl_plain_password
 
         # Create aiokafka consumer
         self._consumer = AIOKafkaConsumer(*self.topics, **consumer_config)

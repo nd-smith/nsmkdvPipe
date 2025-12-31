@@ -200,7 +200,7 @@ async def test_successful_download_flow(
     assert result.status == "success"
     assert result.destination_path == "claims/C-12345/document.pdf"
     assert result.bytes_downloaded == 1024
-    assert result.content_type == "application/pdf"
+    # Note: content_type not tracked in DownloadResultMessage schema
     assert result.error_message is None
     assert result.error_category is None
 

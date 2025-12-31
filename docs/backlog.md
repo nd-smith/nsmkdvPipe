@@ -80,7 +80,7 @@ Phase 4 work packages are now available (WP-401 to WP-410). Recommended implemen
 - [x] **WP-209**: Implement RetryHandler (commit: 7413495)
 - [x] **WP-210**: Implement DelayedRedeliveryScheduler (commit: 9f9c627)
 - [x] **WP-211**: DLQ Handler skeleton (commit: 1cfde74)
-- [x] **WP-212**: Integration tests with Testcontainers (commit: c510372)
+- [x] **WP-212**: Integration tests with Testcontainers (commit: 7abf77f)
 - [x] **WP-301**: Event Ingester Worker - Core Implementation (commit: 178ae86)
 - [x] **WP-302**: Event Ingester - Delta Analytics Integration (commit: 696705b)
 - [x] **WP-303**: Event Ingester - Testing (commit: e6a915a)
@@ -101,7 +101,7 @@ Phase 4 work packages are now available (WP-401 to WP-410). Recommended implemen
 - [x] **WP-406**: Performance Benchmarking (commit: 1cf4c78)
 - [x] **WP-407**: Load Testing and Scaling Validation (commit: 3e0badd)
 - [x] **WP-408**: Grafana Dashboards (commit: 7b4152b)
-- [x] **WP-409**: Alerting Configuration (commit: a32e8f7)
+- [x] **WP-409**: Alerting Configuration (commit: c7baee5)
 - [x] **WP-410**: Runbook Documentation (commit: 093b1c0)
 
 ---

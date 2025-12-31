@@ -1,0 +1,125 @@
+# Local Kafka for development and testing
+# Usage: docker-compose -f docker-compose.kafka.yml up -d
+
+version: '3.8'
+
+services:
+  kafka:
+    image: bitnami/kafka:3.6
+    container_name: kafka-pipeline-local
+    ports:
+      - "9092:9092"
+      - "9094:9094"
+    environment:
+      # KRaft mode (no Zookeeper)
+      - KAFKA_CFG_NODE_ID=0
+      - KAFKA_CFG_PROCESS_ROLES=controller,broker
+      - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=0@kafka:9093
+      - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
+
+      # Listeners
+      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:9094
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092,EXTERNAL://localhost:9094
+      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      - KAFKA_CFG_INTER_BROKER_LISTENER_NAME=PLAINTEXT
+
+      # Topic settings
+      - KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE=true
+      - KAFKA_CFG_NUM_PARTITIONS=6
+      - KAFKA_CFG_DEFAULT_REPLICATION_FACTOR=1
+
+      # Performance tuning for local dev
+      - KAFKA_CFG_LOG_RETENTION_HOURS=24
+      - KAFKA_CFG_LOG_SEGMENT_BYTES=1073741824
+    volumes:
+      - kafka_data:/bitnami/kafka
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics.sh --bootstrap-server localhost:9092 --list"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  kafka-init:
+    image: bitnami/kafka:3.6
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        echo "Creating Kafka topics..."
+
+        # Downloads pending topic (main work queue)
+        kafka-topics.sh --create --if-not-exists \
+          --bootstrap-server kafka:9092 \
+          --topic xact.downloads.pending \
+          --partitions 6 \
+          --replication-factor 1
+
+        # Downloads results topic
+        kafka-topics.sh --create --if-not-exists \
+          --bootstrap-server kafka:9092 \
+          --topic xact.downloads.results \
+          --partitions 6 \
+          --replication-factor 1
+
+        # DLQ topic
+        kafka-topics.sh --create --if-not-exists \
+          --bootstrap-server kafka:9092 \
+          --topic xact.downloads.dlq \
+          --partitions 3 \
+          --replication-factor 1
+
+        # Retry topics (5m, 10m, 20m, 40m delays)
+        kafka-topics.sh --create --if-not-exists \
+          --bootstrap-server kafka:9092 \
+          --topic xact.downloads.pending.retry.5m \
+          --partitions 3 \
+          --replication-factor 1
+
+        kafka-topics.sh --create --if-not-exists \
+          --bootstrap-server kafka:9092 \
+          --topic xact.downloads.pending.retry.10m \
+          --partitions 3 \
+          --replication-factor 1
+
+        kafka-topics.sh --create --if-not-exists \
+          --bootstrap-server kafka:9092 \
+          --topic xact.downloads.pending.retry.20m \
+          --partitions 3 \
+          --replication-factor 1
+
+        kafka-topics.sh --create --if-not-exists \
+          --bootstrap-server kafka:9092 \
+          --topic xact.downloads.pending.retry.40m \
+          --partitions 3 \
+          --replication-factor 1
+
+        # Events topic (for dev mode only)
+        kafka-topics.sh --create --if-not-exists \
+          --bootstrap-server kafka:9092 \
+          --topic xact.events.raw \
+          --partitions 6 \
+          --replication-factor 1
+
+        echo "Topics created successfully:"
+        kafka-topics.sh --list --bootstrap-server kafka:9092
+
+  # Optional: Kafka UI for debugging
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    ports:
+      - "8080:8080"
+    environment:
+      - KAFKA_CLUSTERS_0_NAME=local
+      - KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=kafka:9092
+    depends_on:
+      kafka:
+        condition: service_healthy
+    profiles:
+      - ui  # Only start with: docker-compose -f docker-compose.kafka.yml --profile ui up
+
+volumes:
+  kafka_data:

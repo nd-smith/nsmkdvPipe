@@ -71,7 +71,7 @@ async def test_event_ingestion_throughput(
             producer = AIOKafkaProducer(
                 bootstrap_servers=test_kafka_config.bootstrap_servers,
                 value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-                compression_type="lz4",  # Enable compression for better throughput
+                compression_type=None,  # lz4 disabled due to Python 3.13 compatibility  # Enable compression for better throughput
             )
             await producer.start()
 
@@ -191,7 +191,7 @@ async def test_download_worker_throughput(
                 producer = AIOKafkaProducer(
                     bootstrap_servers=test_kafka_config.bootstrap_servers,
                     value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-                    compression_type="lz4",
+                    compression_type=None,  # lz4 disabled due to Python 3.13 compatibility
                 )
                 await producer.start()
 
@@ -300,7 +300,7 @@ async def test_result_processor_throughput(
             producer = AIOKafkaProducer(
                 bootstrap_servers=test_kafka_config.bootstrap_servers,
                 value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-                compression_type="lz4",
+                compression_type=None,  # lz4 disabled due to Python 3.13 compatibility
             )
             await producer.start()
 
@@ -435,7 +435,7 @@ async def test_sustained_throughput(
                 producer = AIOKafkaProducer(
                     bootstrap_servers=test_kafka_config.bootstrap_servers,
                     value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-                    compression_type="lz4",
+                    compression_type=None,  # lz4 disabled due to Python 3.13 compatibility
                     linger_ms=10,  # Batch for 10ms for better throughput
                 )
                 await producer.start()

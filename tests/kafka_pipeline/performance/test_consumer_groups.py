@@ -94,7 +94,7 @@ async def test_consumer_lag_recovery(
         producer = AIOKafkaProducer(
             bootstrap_servers=test_kafka_config.bootstrap_servers,
             value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-            compression_type="lz4",
+            compression_type=None,  # lz4 disabled due to Python 3.13 compatibility
         )
         await producer.start()
 
@@ -278,7 +278,7 @@ async def test_consumer_group_coordination(
             producer = AIOKafkaProducer(
                 bootstrap_servers=test_kafka_config.bootstrap_servers,
                 value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-                compression_type="lz4",
+                compression_type=None,  # lz4 disabled due to Python 3.13 compatibility
             )
             await producer.start()
 
@@ -400,7 +400,7 @@ async def test_offset_commit_behavior(
         producer = AIOKafkaProducer(
             bootstrap_servers=test_kafka_config.bootstrap_servers,
             value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-            compression_type="lz4",
+            compression_type=None,  # lz4 disabled due to Python 3.13 compatibility
         )
         await producer.start()
 

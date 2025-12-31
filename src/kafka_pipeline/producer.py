@@ -105,18 +105,25 @@ class BaseKafkaProducer:
         # Create aiokafka producer configuration
         producer_config = {
             "bootstrap_servers": self.config.bootstrap_servers,
-            "security_protocol": self.config.security_protocol,
-            "sasl_mechanism": self.config.sasl_mechanism,
             "acks": self.config.acks,
             "value_serializer": lambda v: v,  # We'll handle serialization in send()
         }
 
         # Note: aiokafka handles retries internally - we don't pass explicit retry config
 
-        # Only add OAuth callback for OAUTHBEARER authentication
-        if self.config.sasl_mechanism == "OAUTHBEARER":
-            oauth_callback = create_kafka_oauth_callback()
-            producer_config["sasl_oauth_token_provider"] = oauth_callback
+        # Configure security based on protocol
+        if self.config.security_protocol != "PLAINTEXT":
+            producer_config["security_protocol"] = self.config.security_protocol
+            producer_config["sasl_mechanism"] = self.config.sasl_mechanism
+
+            # Add authentication based on mechanism
+            if self.config.sasl_mechanism == "OAUTHBEARER":
+                oauth_callback = create_kafka_oauth_callback()
+                producer_config["sasl_oauth_token_provider"] = oauth_callback
+            elif self.config.sasl_mechanism == "PLAIN":
+                # SASL_PLAIN for Event Hubs or basic auth
+                producer_config["sasl_plain_username"] = self.config.sasl_plain_username
+                producer_config["sasl_plain_password"] = self.config.sasl_plain_password
 
         # Create aiokafka producer
         self._producer = AIOKafkaProducer(**producer_config)

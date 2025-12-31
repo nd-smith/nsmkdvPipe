@@ -28,6 +28,7 @@ def kafka_config():
         downloads_results_topic="test.downloads.results",
         dlq_topic="test.downloads.dlq",
         consumer_group_prefix="test",
+        onelake_base_path="abfss://test@test.dfs.core.windows.net/Files",
     )
 
 

@@ -28,6 +28,8 @@ if "AUDIT_LOG_PATH" not in os.environ:
     os.environ["AUDIT_LOG_PATH"] = "/tmp/test_audit.log"
 if "ALLOWED_ATTACHMENT_DOMAINS" not in os.environ:
     os.environ["ALLOWED_ATTACHMENT_DOMAINS"] = "example.com,claimxperience.com"
+if "ONELAKE_BASE_PATH" not in os.environ:
+    os.environ["ONELAKE_BASE_PATH"] = "abfss://test@test.dfs.core.windows.net/Files"
 
 from kafka_pipeline.config import KafkaConfig
 

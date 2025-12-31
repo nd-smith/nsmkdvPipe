@@ -18,6 +18,10 @@ class KafkaConfig:
     security_protocol: str = "SASL_SSL"
     sasl_mechanism: str = "OAUTHBEARER"
 
+    # SASL_PLAIN credentials (for Event Hubs or basic auth)
+    sasl_plain_username: str = ""
+    sasl_plain_password: str = ""
+
     # Consumer defaults
     auto_offset_reset: str = "earliest"
     enable_auto_commit: bool = False
@@ -83,6 +87,8 @@ class KafkaConfig:
             bootstrap_servers=bootstrap_servers,
             security_protocol=os.getenv("KAFKA_SECURITY_PROTOCOL", "SASL_SSL"),
             sasl_mechanism=os.getenv("KAFKA_SASL_MECHANISM", "OAUTHBEARER"),
+            sasl_plain_username=os.getenv("KAFKA_SASL_PLAIN_USERNAME", ""),
+            sasl_plain_password=os.getenv("KAFKA_SASL_PLAIN_PASSWORD", ""),
 
             # Consumer defaults
             max_poll_records=int(os.getenv("KAFKA_MAX_POLL_RECORDS", "100")),

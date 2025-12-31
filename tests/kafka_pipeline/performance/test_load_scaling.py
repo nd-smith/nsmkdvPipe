@@ -100,7 +100,7 @@ async def test_horizontal_scaling_1_consumer(
                 producer = AIOKafkaProducer(
                     bootstrap_servers=test_kafka_config.bootstrap_servers,
                     value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-                    compression_type="lz4",
+                    compression_type=None,  # lz4 disabled due to Python 3.13 compatibility
                 )
                 await producer.start()
 
@@ -234,7 +234,7 @@ async def test_horizontal_scaling_3_consumers(
                 producer = AIOKafkaProducer(
                     bootstrap_servers=test_kafka_config.bootstrap_servers,
                     value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-                    compression_type="lz4",
+                    compression_type=None,  # lz4 disabled due to Python 3.13 compatibility
                 )
                 await producer.start()
 
@@ -373,7 +373,7 @@ async def test_consumer_failure_rebalancing(
                 producer = AIOKafkaProducer(
                     bootstrap_servers=test_kafka_config.bootstrap_servers,
                     value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-                    compression_type="lz4",
+                    compression_type=None,  # lz4 disabled due to Python 3.13 compatibility
                 )
                 await producer.start()
 
@@ -558,7 +558,7 @@ async def test_partition_distribution(
             producer = AIOKafkaProducer(
                 bootstrap_servers=test_kafka_config.bootstrap_servers,
                 value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-                compression_type="lz4",
+                compression_type=None,  # lz4 disabled due to Python 3.13 compatibility
             )
             await producer.start()
 
