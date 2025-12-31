@@ -105,7 +105,7 @@ Phase 4 work packages are now available (WP-401 to WP-410). Recommended implemen
 - [x] **WP-408**: Grafana Dashboards (commit: 7b4152b)
 - [x] **WP-409**: Alerting Configuration (commit: c7baee5)
 - [x] **WP-410**: Runbook Documentation (commit: 093b1c0)
-- [x] **WP-313**: Download Worker - Concurrent Processing (commit: 7e7a824)
+- [x] **WP-313**: Download Worker - Concurrent Processing (commit: 5723e40)
 
 ---
 
