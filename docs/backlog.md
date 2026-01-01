@@ -126,10 +126,10 @@ Phase 4 work packages are now available (WP-401 to WP-410). Recommended implemen
 - [x] **WP-410**: Runbook Documentation (commit: 093b1c0)
 - [x] **WP-313**: Download Worker - Concurrent Processing (commit: 5723e40)
 - [x] **WP-416**: Monitoring Web UI for Local Development (commit: 2ff032d)
-- [x] **WP-501**: KQL Client Foundation (commit: 524ae4e)
-- [x] **WP-502**: Deduplication via xact_events (commit: 524ae4e)
-- [x] **WP-503**: KQL Event Poller (commit: 524ae4e)
-- [x] **WP-504**: Configurable Event Source (commit: 524ae4e)
+- [x] **WP-501**: KQL Client Foundation (commit: 19ddac3)
+- [x] **WP-502**: Deduplication via xact_events (commit: 19ddac3)
+- [x] **WP-503**: KQL Event Poller (commit: 19ddac3)
+- [x] **WP-504**: Configurable Event Source (commit: 19ddac3)
 
 ---
 
