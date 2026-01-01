@@ -300,7 +300,7 @@ class UploadWorker:
                 break
             except Exception as e:
                 logger.error(f"Error in consume loop: {e}", exc_info=True)
-                record_processing_error(self.WORKER_NAME, "consume_error")
+                record_processing_error(self.topic, self.CONSUMER_GROUP, "consume_error")
                 await asyncio.sleep(1)  # Brief pause before retry
 
     async def _process_batch(self, messages: List[ConsumerRecord]) -> None:
@@ -322,7 +322,7 @@ class UploadWorker:
         for result in results:
             if isinstance(result, Exception):
                 logger.error(f"Unexpected error in upload: {result}", exc_info=True)
-                record_processing_error(self.WORKER_NAME, "unexpected_error")
+                record_processing_error(self.topic, self.CONSUMER_GROUP, "unexpected_error")
 
         # Commit offsets after batch
         try:
@@ -351,7 +351,9 @@ class UploadWorker:
             async with self._in_flight_lock:
                 self._in_flight_tasks.add(trace_id)
 
-            record_message_consumed(self.topic, "cached_download")
+            record_message_consumed(
+                self.topic, self.CONSUMER_GROUP, len(message.value), success=True
+            )
 
             # Verify cached file exists
             cache_path = Path(cached_message.local_cache_path)
@@ -415,7 +417,7 @@ class UploadWorker:
                 extra={"trace_id": trace_id},
                 exc_info=True,
             )
-            record_processing_error(self.WORKER_NAME, "upload_error")
+            record_processing_error(self.topic, self.CONSUMER_GROUP, "upload_error")
 
             # For upload failures, we produce a failure result
             # The file stays in cache for manual review/retry

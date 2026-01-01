@@ -22,20 +22,6 @@ from kafka_pipeline.schemas.results import DownloadResultMessage
 from kafka_pipeline.workers.upload_worker import UploadWorker, UploadResult
 
 
-# Patch metrics functions at module level for all tests
-@pytest.fixture(autouse=True)
-def mock_metrics():
-    """Mock metrics functions to avoid signature issues."""
-    with patch('kafka_pipeline.workers.upload_worker.record_message_consumed'), \
-         patch('kafka_pipeline.workers.upload_worker.record_processing_error'), \
-         patch('kafka_pipeline.workers.upload_worker.update_connection_status'), \
-         patch('kafka_pipeline.workers.upload_worker.update_assigned_partitions'), \
-         patch('kafka_pipeline.workers.upload_worker.update_consumer_lag'), \
-         patch('kafka_pipeline.workers.upload_worker.update_consumer_offset'), \
-         patch('kafka_pipeline.workers.upload_worker.message_processing_duration_seconds'):
-        yield
-
-
 @pytest.fixture
 def kafka_config():
     """Create test Kafka configuration."""
