@@ -2,14 +2,19 @@
 Download worker for processing download tasks with concurrent processing.
 
 Consumes DownloadTaskMessage from pending and retry topics,
-downloads attachments using AttachmentDownloader, uploads to
-OneLake, and produces result messages.
+downloads attachments using AttachmentDownloader, caches to local
+filesystem, and produces CachedDownloadMessage for upload worker.
 
 This implementation includes:
 - WP-304: Core download processing
-- WP-305: OneLake upload and result production
+- WP-305: Cache file and produce cached message (upload decoupled)
 - WP-306: Error handling
 - WP-313: Concurrent processing (FR-2.6 requirement)
+
+Architecture:
+- Downloads are cached locally before upload (decoupled from upload worker)
+- Upload worker consumes from downloads.cached topic
+- This allows independent scaling of download vs upload workers
 
 Concurrent Processing (WP-313):
 - Fetches batches of messages from Kafka
@@ -21,6 +26,7 @@ Concurrent Processing (WP-313):
 
 import asyncio
 import logging
+import shutil
 import tempfile
 import time
 from dataclasses import dataclass
@@ -40,9 +46,9 @@ from core.types import ErrorCategory
 from kafka_pipeline.config import KafkaConfig
 from kafka_pipeline.producer import BaseKafkaProducer
 from kafka_pipeline.retry.handler import RetryHandler
+from kafka_pipeline.schemas.cached import CachedDownloadMessage
 from kafka_pipeline.schemas.results import DownloadResultMessage
 from kafka_pipeline.schemas.tasks import DownloadTaskMessage
-from kafka_pipeline.storage import OneLakeClient
 from kafka_pipeline.metrics import (
     record_message_consumed,
     record_processing_error,
@@ -77,6 +83,12 @@ class DownloadWorker:
     - downloads.pending (new tasks from event ingester)
     - downloads.retry.* (retried tasks with exponential backoff)
 
+    Architecture:
+    - Downloads files to local cache directory
+    - Produces CachedDownloadMessage to downloads.cached topic
+    - Upload Worker (separate) handles OneLake uploads
+    - This decoupling allows independent scaling of download vs upload
+
     Concurrent Processing (WP-313 - FR-2.6):
     - Fetches batches of messages using Kafka's getmany()
     - Processes downloads concurrently with configurable parallelism
@@ -87,10 +99,9 @@ class DownloadWorker:
     For each task:
     1. Parse DownloadTaskMessage from Kafka
     2. Convert to DownloadTask for AttachmentDownloader
-    3. Download attachment to temporary location (concurrent)
-    4. Upload to OneLake (concurrent)
-    5. Produce result message
-    6. Commit offsets after batch processing
+    3. Download attachment to cache location (concurrent)
+    4. Produce CachedDownloadMessage to cached topic
+    5. Commit offsets after batch processing
 
     Usage:
         config = KafkaConfig.from_env()
@@ -109,19 +120,16 @@ class DownloadWorker:
         Args:
             config: Kafka configuration
             temp_dir: Optional directory for temporary downloads (None = system temp)
-
-        Raises:
-            ValueError: If ONELAKE_BASE_PATH is not configured
         """
         self.config = config
+
+        # Temp dir for in-progress downloads
         self.temp_dir = temp_dir or Path(tempfile.gettempdir()) / "download_worker"
         self.temp_dir.mkdir(parents=True, exist_ok=True)
 
-        # Validate OneLake configuration
-        if not config.onelake_base_path:
-            raise ValueError(
-                "ONELAKE_BASE_PATH environment variable is required for download worker"
-            )
+        # Cache dir for completed downloads awaiting upload
+        self.cache_dir = Path(config.cache_dir)
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
 
         # Build list of topics to consume from (pending + retry topics)
         # Retry topics are dynamically constructed from config using get_retry_topic()
@@ -149,9 +157,6 @@ class DownloadWorker:
         # Create downloader instance (reused across tasks)
         self.downloader = AttachmentDownloader()
 
-        # Create OneLake client (lazy initialized in start())
-        self.onelake_client: Optional[OneLakeClient] = None
-
         # Create retry handler for error routing (lazy initialized in start())
         self.retry_handler: Optional[RetryHandler] = None
 
@@ -161,7 +166,7 @@ class DownloadWorker:
                 "consumer_group": self.CONSUMER_GROUP,
                 "topics": self.topics,
                 "temp_dir": str(self.temp_dir),
-                "onelake_base_path": config.onelake_base_path,
+                "cache_dir": str(self.cache_dir),
                 "download_concurrency": config.download_concurrency,
                 "download_batch_size": config.download_batch_size,
             },
@@ -207,10 +212,6 @@ class DownloadWorker:
 
         # Initialize retry handler (requires producer to be started)
         self.retry_handler = RetryHandler(self.config, self.producer)
-
-        # Initialize OneLake client
-        self.onelake_client = OneLakeClient(self.config.onelake_base_path)
-        await self.onelake_client.__aenter__()
 
         # Create Kafka consumer
         await self._create_consumer()
@@ -320,11 +321,6 @@ class DownloadWorker:
 
         # Stop producer
         await self.producer.stop()
-
-        # Close OneLake client
-        if self.onelake_client is not None:
-            await self.onelake_client.close()
-            self.onelake_client = None
 
         # Clear retry handler reference
         self.retry_handler = None
@@ -669,7 +665,10 @@ class DownloadWorker:
         processing_time_ms: int,
     ) -> None:
         """
-        Handle successful download: upload to OneLake and produce result.
+        Handle successful download: move to cache and produce cached message.
+
+        Moves the downloaded file to the cache directory and produces a
+        CachedDownloadMessage for the Upload Worker to process.
 
         Args:
             task_message: Original task message
@@ -677,8 +676,10 @@ class DownloadWorker:
             processing_time_ms: Total processing time in milliseconds
 
         Raises:
-            Exception: On upload or produce failures
+            Exception: On cache move or produce failures
         """
+        assert outcome.file_path is not None, "File path missing in successful outcome"
+
         logger.info(
             "Download completed successfully",
             extra={
@@ -691,56 +692,62 @@ class DownloadWorker:
             },
         )
 
+        # Move file to cache directory with stable path
+        # Path structure: cache_dir/trace_id/filename
+        cache_subdir = self.cache_dir / task_message.trace_id
+        cache_subdir.mkdir(parents=True, exist_ok=True)
+
+        # Use original filename from destination_path
+        filename = Path(task_message.destination_path).name
+        cache_path = cache_subdir / filename
+
+        # Move file from temp to cache (atomic on same filesystem)
+        await asyncio.to_thread(shutil.move, str(outcome.file_path), str(cache_path))
+
+        logger.info(
+            "Cached file for upload",
+            extra={
+                "trace_id": task_message.trace_id,
+                "cache_path": str(cache_path),
+            },
+        )
+
+        # Clean up empty temp directory
         try:
-            # Upload to OneLake
-            assert self.onelake_client is not None, "OneLake client not initialized"
-            assert outcome.file_path is not None, "File path missing in successful outcome"
+            if outcome.file_path.parent.exists():
+                await asyncio.to_thread(outcome.file_path.parent.rmdir)
+        except OSError:
+            pass  # Directory not empty or already removed
 
-            blob_path = await self.onelake_client.upload_file(
-                relative_path=task_message.destination_path,
-                local_path=outcome.file_path,
-                overwrite=True,
-            )
+        # Produce cached message for upload worker
+        cached_message = CachedDownloadMessage(
+            trace_id=task_message.trace_id,
+            attachment_url=task_message.attachment_url,
+            destination_path=task_message.destination_path,
+            local_cache_path=str(cache_path),
+            bytes_downloaded=outcome.bytes_downloaded or 0,
+            content_type=outcome.content_type,
+            event_type=task_message.event_type,
+            event_subtype=task_message.event_subtype,
+            original_timestamp=task_message.original_timestamp,
+            downloaded_at=datetime.now(timezone.utc),
+            metadata=task_message.metadata,
+        )
 
-            logger.info(
-                "Uploaded file to OneLake",
-                extra={
-                    "trace_id": task_message.trace_id,
-                    "destination_path": task_message.destination_path,
-                    "blob_path": blob_path,
-                },
-            )
+        await self.producer.send(
+            topic=self.config.downloads_cached_topic,
+            key=task_message.trace_id,
+            value=cached_message,
+        )
 
-            # Produce result message
-            result_message = DownloadResultMessage(
-                trace_id=task_message.trace_id,
-                attachment_url=task_message.attachment_url,
-                status="success",
-                destination_path=task_message.destination_path,
-                bytes_downloaded=outcome.bytes_downloaded,
-                error_message=None,
-                error_category=None,
-                processing_time_ms=processing_time_ms,
-                completed_at=datetime.now(timezone.utc),
-            )
-
-            await self.producer.send(
-                topic=self.config.downloads_results_topic,
-                key=task_message.trace_id,
-                value=result_message,
-            )
-
-            logger.info(
-                "Produced success result message",
-                extra={
-                    "trace_id": task_message.trace_id,
-                    "topic": self.config.downloads_results_topic,
-                },
-            )
-
-        finally:
-            # Clean up temporary file
-            await self._cleanup_temp_file(outcome.file_path)
+        logger.info(
+            "Produced cached download message",
+            extra={
+                "trace_id": task_message.trace_id,
+                "topic": self.config.downloads_cached_topic,
+                "cache_path": str(cache_path),
+            },
+        )
 
     async def _handle_failure(
         self,

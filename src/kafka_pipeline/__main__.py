@@ -8,6 +8,7 @@ Usage:
     # Run specific worker
     python -m kafka_pipeline --worker event-ingester
     python -m kafka_pipeline --worker download
+    python -m kafka_pipeline --worker upload
     python -m kafka_pipeline --worker result-processor
 
     # Run with metrics server
@@ -15,6 +16,11 @@ Usage:
 
     # Run in development mode (local Kafka only, no Event Hub)
     python -m kafka_pipeline --dev
+
+Architecture:
+    Download and Upload workers are decoupled for independent scaling:
+    - Download Worker: downloads.pending → local cache → downloads.cached
+    - Upload Worker: downloads.cached → OneLake → downloads.results
 """
 
 import argparse
@@ -58,7 +64,7 @@ Examples:
 
     parser.add_argument(
         "--worker",
-        choices=["event-ingester", "download", "result-processor", "all"],
+        choices=["event-ingester", "download", "upload", "result-processor", "all"],
         default="all",
         help="Which worker(s) to run (default: all)",
     )
@@ -122,7 +128,8 @@ async def run_event_ingester(
 async def run_download_worker(kafka_config):
     """Run the Download Worker.
 
-    Reads download tasks from local Kafka, downloads files, uploads to OneLake.
+    Reads download tasks from local Kafka, downloads files to local cache,
+    and produces CachedDownloadMessage for the upload worker.
     """
     from kafka_pipeline.workers.download_worker import DownloadWorker
 
@@ -132,21 +139,39 @@ async def run_download_worker(kafka_config):
     await worker.start()
 
 
+async def run_upload_worker(kafka_config):
+    """Run the Upload Worker.
+
+    Reads cached downloads from local Kafka, uploads files to OneLake,
+    and produces DownloadResultMessage.
+    """
+    from kafka_pipeline.workers.upload_worker import UploadWorker
+
+    logger.info("Starting Upload worker...")
+
+    worker = UploadWorker(config=kafka_config)
+    await worker.start()
+
+
 async def run_result_processor(kafka_config, enable_delta_writes: bool = True):
     """Run the Result Processor worker.
 
-    Reads download results from local Kafka and writes to Delta Lake inventory.
+    Reads download results from local Kafka and writes to Delta Lake tables:
+    - xact_attachments: successful downloads
+    - xact_attachments_failed: permanent failures (optional)
     """
     from kafka_pipeline.workers.result_processor import ResultProcessor
 
     logger.info("Starting Result Processor worker...")
 
-    # Get inventory table path from environment
+    # Get table paths from environment
     inventory_table_path = os.getenv("DELTA_INVENTORY_TABLE_PATH", "")
+    failed_table_path = os.getenv("DELTA_FAILED_TABLE_PATH", "")
 
     worker = ResultProcessor(
         config=kafka_config,
         inventory_table_path=inventory_table_path if enable_delta_writes else None,
+        failed_table_path=failed_table_path if enable_delta_writes and failed_table_path else None,
         batch_size=100,
         batch_timeout_seconds=5.0,
     )
@@ -171,6 +196,10 @@ async def run_all_workers(
         asyncio.create_task(
             run_download_worker(local_kafka_config),
             name="download-worker",
+        ),
+        asyncio.create_task(
+            run_upload_worker(local_kafka_config),
+            name="upload-worker",
         ),
         asyncio.create_task(
             run_result_processor(local_kafka_config, enable_delta_writes),
@@ -254,6 +283,8 @@ def main():
             )
         elif args.worker == "download":
             loop.run_until_complete(run_download_worker(local_kafka_config))
+        elif args.worker == "upload":
+            loop.run_until_complete(run_upload_worker(local_kafka_config))
         elif args.worker == "result-processor":
             loop.run_until_complete(
                 run_result_processor(local_kafka_config, enable_delta_writes)

@@ -16,6 +16,7 @@ Validates:
 import asyncio
 import json
 import logging
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List
@@ -25,6 +26,27 @@ import pytest
 from aiokafka import AIOKafkaProducer
 
 from kafka_pipeline.config import KafkaConfig
+
+
+class DownloadCounter:
+    """Thread-safe counter for tracking completed downloads."""
+
+    def __init__(self):
+        self._count = 0
+        self._lock = threading.Lock()
+
+    def increment(self):
+        with self._lock:
+            self._count += 1
+
+    @property
+    def count(self):
+        with self._lock:
+            return self._count
+
+    def reset(self):
+        with self._lock:
+            self._count = 0
 
 from tests.kafka_pipeline.integration.helpers import (
     wait_for_condition,
@@ -157,13 +179,11 @@ async def test_horizontal_scaling_1_consumer(
 @pytest.mark.slow
 async def test_horizontal_scaling_3_consumers(
     test_kafka_config: KafkaConfig,
-    mock_onelake_client,
     load_generator: Dict,
     performance_metrics: PerformanceMetrics,
     resource_monitor: ResourceMonitor,
     performance_report_dir: Path,
     tmp_path: Path,
-    monkeypatch,
 ):
     """
     Test scaling to 3 consumers.
@@ -188,11 +208,15 @@ async def test_horizontal_scaling_3_consumers(
     test_file_content = b"PDF content for testing"
     test_file_path.write_bytes(test_file_content)
 
-    # Mock downloads and OneLake client
+    # Counter to track completed downloads
+    download_counter = DownloadCounter()
+
+    # Mock downloads
     with patch("core.download.downloader.AttachmentDownloader.download") as mock_download:
         async def mock_download_impl(task):
             from core.download.models import DownloadOutcome
             await asyncio.sleep(0.001)  # Small delay
+            download_counter.increment()
             return DownloadOutcome.success_outcome(
                 file_path=test_file_path,
                 bytes_downloaded=len(test_file_content),
@@ -201,12 +225,6 @@ async def test_horizontal_scaling_3_consumers(
             )
 
         mock_download.side_effect = mock_download_impl
-
-        # Patch OneLakeClient
-        monkeypatch.setattr(
-            "kafka_pipeline.workers.download_worker.OneLakeClient",
-            lambda *args, **kwargs: mock_onelake_client
-        )
 
         # Create 3 download workers (same consumer group)
         from kafka_pipeline.workers.download_worker import DownloadWorker
@@ -263,12 +281,12 @@ async def test_horizontal_scaling_3_consumers(
 
                     # Wait for completion
                     success = await wait_for_condition(
-                        lambda: mock_onelake_client.upload_count >= event_count,
+                        lambda: download_counter.count >= event_count,
                         timeout_seconds=120.0,
                         description=f"{event_count} downloads with 3 consumers",
                     )
 
-                    assert success, f"Only {mock_onelake_client.upload_count} downloads completed"
+                    assert success, f"Only {download_counter.count} downloads completed"
                     performance_metrics.messages_processed = event_count
 
                 finally:
@@ -296,13 +314,11 @@ async def test_horizontal_scaling_3_consumers(
 @pytest.mark.slow
 async def test_consumer_failure_rebalancing(
     test_kafka_config: KafkaConfig,
-    mock_onelake_client,
     load_generator: Dict,
     performance_metrics: PerformanceMetrics,
     resource_monitor: ResourceMonitor,
     performance_report_dir: Path,
     tmp_path: Path,
-    monkeypatch,
 ):
     """
     Test failure recovery and consumer group rebalancing.
@@ -327,11 +343,15 @@ async def test_consumer_failure_rebalancing(
     test_file_content = b"PDF content for testing"
     test_file_path.write_bytes(test_file_content)
 
+    # Counter to track completed downloads
+    download_counter = DownloadCounter()
+
     # Mock downloads
     with patch("core.download.downloader.AttachmentDownloader.download") as mock_download:
         async def mock_download_impl(task):
             from core.download.models import DownloadOutcome
             await asyncio.sleep(0.001)
+            download_counter.increment()
             return DownloadOutcome.success_outcome(
                 file_path=test_file_path,
                 bytes_downloaded=len(test_file_content),
@@ -340,12 +360,6 @@ async def test_consumer_failure_rebalancing(
             )
 
         mock_download.side_effect = mock_download_impl
-
-        # Patch OneLakeClient
-        monkeypatch.setattr(
-            "kafka_pipeline.workers.download_worker.OneLakeClient",
-            lambda *args, **kwargs: mock_onelake_client
-        )
 
         # Create 3 download workers
         from kafka_pipeline.workers.download_worker import DownloadWorker
@@ -404,7 +418,7 @@ async def test_consumer_failure_rebalancing(
 
                     # Wait for half to process
                     await wait_for_condition(
-                        lambda: mock_onelake_client.upload_count >= half_count // 2,
+                        lambda: download_counter.count >= half_count // 2,
                         timeout_seconds=30.0,
                         description=f"{half_count // 2} downloads before failure",
                     )
@@ -442,13 +456,13 @@ async def test_consumer_failure_rebalancing(
 
                     # Wait for all tasks to complete with remaining consumers
                     success = await wait_for_condition(
-                        lambda: mock_onelake_client.upload_count >= event_count,
+                        lambda: download_counter.count >= event_count,
                         timeout_seconds=120.0,
                         description=f"{event_count} downloads after failure",
                     )
 
                     assert success, (
-                        f"Only {mock_onelake_client.upload_count} downloads completed after failure. "
+                        f"Only {download_counter.count} downloads completed after failure. "
                         f"Expected {event_count}. Consumer group should have rebalanced."
                     )
                     performance_metrics.messages_processed = event_count
@@ -465,12 +479,12 @@ async def test_consumer_failure_rebalancing(
     performance_metrics.finalize()
     report_path = save_performance_report(performance_metrics, performance_report_dir)
 
-    logger.info(f"Failure Recovery - All tasks completed: {mock_onelake_client.upload_count}/{event_count}")
+    logger.info(f"Failure Recovery - All tasks completed: {download_counter.count}/{event_count}")
     logger.info(f"Failure Recovery - Throughput: {performance_metrics.messages_per_second:.2f} msgs/sec")
     logger.info(f"Failure Recovery - Duration: {performance_metrics.duration_seconds:.2f}s")
 
     # Validate no message loss
-    assert mock_onelake_client.upload_count == event_count, "Message loss detected during rebalancing"
+    assert download_counter.count == event_count, "Message loss detected during rebalancing"
 
 
 @pytest.mark.asyncio
@@ -478,10 +492,8 @@ async def test_consumer_failure_rebalancing(
 @pytest.mark.slow
 async def test_partition_distribution(
     test_kafka_config: KafkaConfig,
-    mock_onelake_client,
     load_generator: Dict,
     tmp_path: Path,
-    monkeypatch,
 ):
     """
     Test partition assignment distribution across consumers.
@@ -499,6 +511,9 @@ async def test_partition_distribution(
     # Track which consumers processed messages
     consumer_message_counts = {}
 
+    # Counter to track completed downloads
+    download_counter = DownloadCounter()
+
     # Mock downloads with consumer tracking
     with patch("core.download.downloader.AttachmentDownloader.download") as mock_download:
         async def mock_download_impl(task):
@@ -509,6 +524,7 @@ async def test_partition_distribution(
             consumer_message_counts[consumer_id] = consumer_message_counts.get(consumer_id, 0) + 1
 
             await asyncio.sleep(0.001)
+            download_counter.increment()
             return DownloadOutcome.success_outcome(
                 file_path=test_file_path,
                 bytes_downloaded=len(test_file_content),
@@ -517,12 +533,6 @@ async def test_partition_distribution(
             )
 
         mock_download.side_effect = mock_download_impl
-
-        # Patch OneLakeClient
-        monkeypatch.setattr(
-            "kafka_pipeline.workers.download_worker.OneLakeClient",
-            lambda *args, **kwargs: mock_onelake_client
-        )
 
         # Create 6 download workers for partition distribution test
         from kafka_pipeline.workers.download_worker import DownloadWorker
@@ -587,12 +597,12 @@ async def test_partition_distribution(
 
                 # Wait for completion
                 success = await wait_for_condition(
-                    lambda: mock_onelake_client.upload_count >= event_count,
+                    lambda: download_counter.count >= event_count,
                     timeout_seconds=120.0,
                     description=f"{event_count} downloads for partition distribution",
                 )
 
-                assert success, f"Only {mock_onelake_client.upload_count} downloads completed"
+                assert success, f"Only {download_counter.count} downloads completed"
 
             finally:
                 await producer.stop()
@@ -603,7 +613,7 @@ async def test_partition_distribution(
                 await stop_worker_gracefully(worker, task)
 
     # Validate partition distribution
-    logger.info(f"Partition distribution - Total processed: {mock_onelake_client.upload_count}")
+    logger.info(f"Partition distribution - Total processed: {download_counter.count}")
     logger.info(f"Partition distribution - Consumer count: {worker_count}")
 
     # With 12 partitions and 6 consumers, each consumer should get 2 partitions
@@ -614,4 +624,4 @@ async def test_partition_distribution(
     # Note: consumer_message_counts tracking is simplified
     # In real deployment, we'd query Kafka consumer group metadata
     logger.info("Test validates all messages were processed successfully")
-    assert mock_onelake_client.upload_count == event_count
+    assert download_counter.count == event_count

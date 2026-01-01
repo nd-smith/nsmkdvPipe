@@ -1,16 +1,16 @@
 """
 Result processor worker for batching download results.
 
-Consumes from downloads.results topic and batches successful results
-for efficient Delta table writes. Filters out failures (transient and permanent)
-as those are handled separately by retry/DLQ infrastructure.
+Consumes from downloads.results topic and batches results
+for efficient Delta table writes.
 
 Features:
 - Size-based batching (default: 100 records)
 - Timeout-based batching (default: 5 seconds)
 - Thread-safe batch accumulation
 - Graceful shutdown with pending batch flush
-- Only processes successful downloads
+- Writes successful downloads to xact_attachments table
+- Writes permanent failures to xact_attachments_failed table (optional)
 """
 
 import asyncio
@@ -24,25 +24,31 @@ from aiokafka.structs import ConsumerRecord
 from kafka_pipeline.config import KafkaConfig
 from kafka_pipeline.consumer import BaseKafkaConsumer
 from kafka_pipeline.schemas.results import DownloadResultMessage
-from kafka_pipeline.writers.delta_inventory import DeltaInventoryWriter
+from kafka_pipeline.writers.delta_inventory import (
+    DeltaInventoryWriter,
+    DeltaFailedAttachmentsWriter,
+)
 
 logger = logging.getLogger(__name__)
 
 
 class ResultProcessor:
     """
-    Consumes download results and batches for Delta inventory writes.
+    Consumes download results and batches for Delta table writes.
 
     The result processor is the final stage of the pipeline:
     1. Consumes from downloads.results topic
-    2. Filters for successful downloads only
+    2. Routes results by status:
+       - success → xact_attachments table
+       - failed_permanent → xact_attachments_failed table (if configured)
+       - failed_transient → skipped (still retrying)
     3. Batches results by size or timeout
-    4. Flushes batches for inventory writes (Delta integration in WP-309)
+    4. Flushes batches to Delta tables
 
     Batching Strategy:
     - Size flush: When batch reaches BATCH_SIZE (default: 100)
     - Timeout flush: When BATCH_TIMEOUT_SECONDS elapsed (default: 5s)
-    - Shutdown flush: Pending batch flushed on graceful shutdown
+    - Shutdown flush: Pending batches flushed on graceful shutdown
 
     Thread Safety:
     - Uses asyncio.Lock for batch accumulation
@@ -50,7 +56,11 @@ class ResultProcessor:
 
     Usage:
         >>> config = KafkaConfig.from_env()
-        >>> processor = ResultProcessor(config)
+        >>> processor = ResultProcessor(
+        ...     config,
+        ...     inventory_table_path="abfss://.../xact_attachments",
+        ...     failed_table_path="abfss://.../xact_attachments_failed",
+        ... )
         >>> await processor.start()
         >>> # Processor runs until stopped
         >>> await processor.stop()
@@ -64,6 +74,7 @@ class ResultProcessor:
         self,
         config: KafkaConfig,
         inventory_table_path: str,
+        failed_table_path: Optional[str] = None,
         batch_size: Optional[int] = None,
         batch_timeout_seconds: Optional[float] = None,
     ):
@@ -73,6 +84,8 @@ class ResultProcessor:
         Args:
             config: Kafka configuration
             inventory_table_path: Full abfss:// path to xact_attachments Delta table
+            failed_table_path: Optional path to xact_attachments_failed Delta table.
+                               If provided, permanent failures will be written here.
             batch_size: Optional custom batch size (default: 100)
             batch_timeout_seconds: Optional custom timeout (default: 5.0)
         """
@@ -80,11 +93,15 @@ class ResultProcessor:
         self.batch_size = batch_size or self.BATCH_SIZE
         self.batch_timeout_seconds = batch_timeout_seconds or self.BATCH_TIMEOUT_SECONDS
 
-        # Delta inventory writer
+        # Delta writers
         self._inventory_writer = DeltaInventoryWriter(table_path=inventory_table_path)
+        self._failed_writer: Optional[DeltaFailedAttachmentsWriter] = None
+        if failed_table_path:
+            self._failed_writer = DeltaFailedAttachmentsWriter(table_path=failed_table_path)
 
-        # Batching state
+        # Batching state - separate batches for success and failed
         self._batch: List[DownloadResultMessage] = []
+        self._failed_batch: List[DownloadResultMessage] = []
         self._batch_lock = asyncio.Lock()
         self._last_flush = time.monotonic()
 
@@ -107,6 +124,8 @@ class ResultProcessor:
                 "batch_timeout_seconds": self.batch_timeout_seconds,
                 "results_topic": config.downloads_results_topic,
                 "inventory_table_path": inventory_table_path,
+                "failed_table_path": failed_table_path,
+                "failed_tracking_enabled": failed_table_path is not None,
             },
         )
 
@@ -169,14 +188,20 @@ class ResultProcessor:
                 except asyncio.CancelledError:
                     pass
 
-            # Flush any pending batch
+            # Flush any pending batches
             async with self._batch_lock:
                 if self._batch:
                     logger.info(
-                        "Flushing pending batch on shutdown",
+                        "Flushing pending success batch on shutdown",
                         extra={"batch_size": len(self._batch)},
                     )
                     await self._flush_batch()
+                if self._failed_batch:
+                    logger.info(
+                        "Flushing pending failed batch on shutdown",
+                        extra={"batch_size": len(self._failed_batch)},
+                    )
+                    await self._flush_failed_batch()
 
             # Stop consumer
             await self._consumer.stop()
@@ -195,7 +220,11 @@ class ResultProcessor:
         """
         Handle a single result message.
 
-        Filters for successful downloads and adds to batch.
+        Routes results by status:
+        - success → inventory batch
+        - failed_permanent → failed batch (if tracking enabled)
+        - failed_transient → skip (still retrying)
+
         Triggers flush if size or timeout threshold reached.
 
         Args:
@@ -220,36 +249,51 @@ class ResultProcessor:
             )
             raise
 
-        # Filter: only process successful downloads
-        if result.status != "success":
+        # Route by status
+        if result.status == "success":
+            # Add to success batch
+            async with self._batch_lock:
+                self._batch.append(result)
+
+                # Check if flush needed (size-based)
+                if len(self._batch) >= self.batch_size:
+                    logger.debug(
+                        "Success batch size threshold reached, flushing",
+                        extra={"batch_size": len(self._batch)},
+                    )
+                    await self._flush_batch()
+
+        elif result.status == "failed_permanent" and self._failed_writer:
+            # Add to failed batch (only if tracking enabled)
+            async with self._batch_lock:
+                self._failed_batch.append(result)
+
+                # Check if flush needed (size-based)
+                if len(self._failed_batch) >= self.batch_size:
+                    logger.debug(
+                        "Failed batch size threshold reached, flushing",
+                        extra={"batch_size": len(self._failed_batch)},
+                    )
+                    await self._flush_failed_batch()
+
+        else:
+            # Skip transient failures (still retrying) or permanent without writer
             logger.debug(
-                "Skipping non-success result",
+                "Skipping result",
                 extra={
                     "trace_id": result.trace_id,
                     "status": result.status,
+                    "reason": "transient" if result.status == "failed_transient" else "no_failed_writer",
                     "attachment_url": result.attachment_url[:100],  # truncate for logging
                 },
             )
-            return
-
-        # Add to batch with thread-safe accumulation
-        async with self._batch_lock:
-            self._batch.append(result)
-
-            # Check if flush needed (size-based)
-            if len(self._batch) >= self.batch_size:
-                logger.debug(
-                    "Batch size threshold reached, flushing",
-                    extra={"batch_size": len(self._batch)},
-                )
-                await self._flush_batch()
 
     async def _periodic_flush(self) -> None:
         """
         Background task for timeout-based batch flushing.
 
         Runs continuously while processor is active.
-        Flushes batch when timeout threshold exceeded.
+        Flushes batches when timeout threshold exceeded.
         """
         logger.debug("Starting periodic flush task")
 
@@ -260,19 +304,30 @@ class ResultProcessor:
 
                 # Check if timeout threshold exceeded
                 async with self._batch_lock:
-                    if not self._batch:
-                        continue
-
                     elapsed = time.monotonic() - self._last_flush
+
                     if elapsed >= self.batch_timeout_seconds:
-                        logger.debug(
-                            "Batch timeout threshold reached, flushing",
-                            extra={
-                                "batch_size": len(self._batch),
-                                "elapsed_seconds": elapsed,
-                            },
-                        )
-                        await self._flush_batch()
+                        # Flush success batch if not empty
+                        if self._batch:
+                            logger.debug(
+                                "Success batch timeout threshold reached, flushing",
+                                extra={
+                                    "batch_size": len(self._batch),
+                                    "elapsed_seconds": elapsed,
+                                },
+                            )
+                            await self._flush_batch()
+
+                        # Flush failed batch if not empty
+                        if self._failed_batch:
+                            logger.debug(
+                                "Failed batch timeout threshold reached, flushing",
+                                extra={
+                                    "batch_size": len(self._failed_batch),
+                                    "elapsed_seconds": elapsed,
+                                },
+                            )
+                            await self._flush_failed_batch()
 
         except asyncio.CancelledError:
             logger.debug("Periodic flush task cancelled")
@@ -319,6 +374,47 @@ class ResultProcessor:
         if not success:
             logger.error(
                 "Failed to write batch to Delta inventory",
+                extra={
+                    "batch_size": batch_size,
+                    "first_trace_id": batch[0].trace_id,
+                    "last_trace_id": batch[-1].trace_id,
+                },
+            )
+
+    async def _flush_failed_batch(self) -> None:
+        """
+        Flush current failed batch (internal, assumes lock held).
+
+        Converts failed batch to records and writes to Delta.
+        Resets failed batch and updates flush timestamp.
+
+        Note: This method assumes the caller holds self._batch_lock
+        """
+        if not self._failed_batch or not self._failed_writer:
+            return
+
+        # Snapshot current batch and reset
+        batch = self._failed_batch
+        self._failed_batch = []
+        self._last_flush = time.monotonic()
+
+        batch_size = len(batch)
+        logger.info(
+            "Flushing failed attachments batch",
+            extra={
+                "batch_size": batch_size,
+                "first_trace_id": batch[0].trace_id,
+                "last_trace_id": batch[-1].trace_id,
+            },
+        )
+
+        # Write to Delta failed attachments table
+        # Uses asyncio.to_thread internally for non-blocking I/O
+        success = await self._failed_writer.write_results(batch)
+
+        if not success:
+            logger.error(
+                "Failed to write batch to Delta failed attachments table",
                 extra={
                     "batch_size": batch_size,
                     "first_trace_id": batch[0].trace_id,

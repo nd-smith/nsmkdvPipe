@@ -507,6 +507,8 @@ class TestDownloadWorkerSuccessPath:
     @pytest.mark.asyncio
     async def test_successful_download_no_retry_handler(self, config, sample_task, consumer_record):
         """Test that successful downloads don't call retry handler."""
+        from kafka_pipeline.schemas.cached import CachedDownloadMessage
+
         worker = DownloadWorker(config)
         setup_worker_for_testing(worker)
 
@@ -514,8 +516,6 @@ class TestDownloadWorkerSuccessPath:
         worker.downloader = AsyncMock()
         worker.producer = AsyncMock()
         worker.producer.send = AsyncMock()
-        worker.onelake_client = AsyncMock()
-        worker.onelake_client.upload_file = AsyncMock(return_value="uploaded/path.pdf")
         worker.retry_handler = AsyncMock()
 
         # Simulate successful download - create temp dir for cleanup
@@ -546,13 +546,13 @@ class TestDownloadWorkerSuccessPath:
         # Verify retry handler was NOT called
         worker.retry_handler.handle_failure.assert_not_called()
 
-        # Verify success result was produced
+        # Verify cached message was produced (download worker now produces to cached topic)
         assert worker.producer.send.call_count == 1
         result_call = worker.producer.send.call_args
-        result_message = result_call[1]["value"]
-        assert result_message.status == "success"
-        assert result_message.error_message is None
-        assert result_message.bytes_downloaded == 1024
+        cached_message = result_call[1]["value"]
+        assert isinstance(cached_message, CachedDownloadMessage)
+        assert cached_message.bytes_downloaded == 1024
+        assert cached_message.trace_id == sample_task.trace_id
 
 
 class TestBatchResultHandling:

@@ -50,6 +50,23 @@ def mock_inventory_writer():
 
 
 @pytest.fixture
+def failed_table_path():
+    """Create test failed attachments table path."""
+    return "abfss://test@storage.dfs.core.windows.net/xact_attachments_failed"
+
+
+@pytest.fixture
+def mock_failed_writer():
+    """Create mock DeltaFailedAttachmentsWriter."""
+    with patch("kafka_pipeline.workers.result_processor.DeltaFailedAttachmentsWriter") as mock:
+        # Mock instance returned when DeltaFailedAttachmentsWriter() is called
+        mock_instance = AsyncMock()
+        mock_instance.write_results = AsyncMock(return_value=True)
+        mock.return_value = mock_instance
+        yield mock_instance
+
+
+@pytest.fixture
 def sample_success_result():
     """Create sample successful DownloadResultMessage."""
     return DownloadResultMessage(
@@ -546,3 +563,181 @@ class TestResultProcessor:
 
         # Processor should still be marked as not running
         assert not processor._running
+
+    async def test_initialization_with_failed_table_path(
+        self, kafka_config, inventory_table_path, failed_table_path,
+        mock_inventory_writer, mock_failed_writer
+    ):
+        """Test that failed writer is initialized when failed_table_path is provided."""
+        processor = ResultProcessor(
+            kafka_config, inventory_table_path, failed_table_path=failed_table_path
+        )
+
+        # Both writers should be initialized
+        assert processor._inventory_writer is not None
+        assert processor._failed_writer is not None
+
+    async def test_failed_permanent_result_with_writer(
+        self, kafka_config, inventory_table_path, failed_table_path,
+        mock_inventory_writer, mock_failed_writer, sample_failed_permanent_result
+    ):
+        """Test that failed_permanent results are added to failed batch when writer is configured."""
+        processor = ResultProcessor(
+            kafka_config, inventory_table_path, failed_table_path=failed_table_path
+        )
+        record = create_consumer_record(sample_failed_permanent_result)
+
+        await processor._handle_result(record)
+
+        # Should be in failed batch, not success batch
+        assert len(processor._batch) == 0
+        assert len(processor._failed_batch) == 1
+        assert processor._failed_batch[0].trace_id == sample_failed_permanent_result.trace_id
+
+    async def test_failed_batch_size_flush(
+        self, kafka_config, inventory_table_path, failed_table_path,
+        mock_inventory_writer, mock_failed_writer
+    ):
+        """Test that failed batch flushes when size threshold reached."""
+        processor = ResultProcessor(
+            kafka_config, inventory_table_path, failed_table_path=failed_table_path, batch_size=3
+        )
+
+        # Add failed results up to batch size
+        for i in range(3):
+            result = DownloadResultMessage(
+                trace_id=f"evt-fail-{i}",
+                attachment_url=f"https://storage.example.com/invalid{i}.pdf",
+                status="failed_permanent",
+                destination_path=None,
+                bytes_downloaded=None,
+                error_message="File type not allowed",
+                error_category="permanent",
+                processing_time_ms=50,
+                completed_at=datetime.now(timezone.utc),
+            )
+            record = create_consumer_record(result, offset=i)
+            await processor._handle_result(record)
+
+        # Batch should be empty after automatic flush
+        assert len(processor._failed_batch) == 0
+
+        # Verify failed writer was called
+        mock_failed_writer.write_results.assert_called_once()
+
+    async def test_failed_writer_called_on_flush(
+        self, kafka_config, inventory_table_path, failed_table_path,
+        mock_inventory_writer, mock_failed_writer
+    ):
+        """Test that failed writer is called when failed batch is flushed."""
+        processor = ResultProcessor(
+            kafka_config, inventory_table_path, failed_table_path=failed_table_path, batch_size=2
+        )
+
+        # Add 2 failed results to trigger flush
+        for i in range(2):
+            result = DownloadResultMessage(
+                trace_id=f"evt-fail-{i}",
+                attachment_url=f"https://storage.example.com/invalid{i}.pdf",
+                status="failed_permanent",
+                destination_path=None,
+                bytes_downloaded=None,
+                error_message=f"Error {i}",
+                error_category="permanent",
+                processing_time_ms=50,
+                completed_at=datetime.now(timezone.utc),
+            )
+            record = create_consumer_record(result, offset=i)
+            await processor._handle_result(record)
+
+        # Verify failed writer was called
+        mock_failed_writer.write_results.assert_called_once()
+
+        # Verify batch was passed to writer
+        call_args = mock_failed_writer.write_results.call_args[0][0]
+        assert len(call_args) == 2
+        assert call_args[0].trace_id == "evt-fail-0"
+        assert call_args[1].trace_id == "evt-fail-1"
+
+    async def test_graceful_shutdown_flushes_failed_batch(
+        self, kafka_config, inventory_table_path, failed_table_path,
+        mock_inventory_writer, mock_failed_writer
+    ):
+        """Test that graceful shutdown flushes pending failed batch."""
+        processor = ResultProcessor(
+            kafka_config, inventory_table_path, failed_table_path=failed_table_path, batch_size=100
+        )
+
+        # Add a failed result but don't reach batch size
+        result = DownloadResultMessage(
+            trace_id="evt-fail-shutdown",
+            attachment_url="https://storage.example.com/invalid.pdf",
+            status="failed_permanent",
+            destination_path=None,
+            bytes_downloaded=None,
+            error_message="File type not allowed",
+            error_category="permanent",
+            processing_time_ms=50,
+            completed_at=datetime.now(timezone.utc),
+        )
+        record = create_consumer_record(result)
+        await processor._handle_result(record)
+
+        # Verify failed batch has one item
+        assert len(processor._failed_batch) == 1
+
+        # Mock consumer for stop
+        processor._consumer = AsyncMock()
+        processor._running = True
+
+        # Stop processor (should flush failed batch)
+        await processor.stop()
+
+        # Verify failed writer was called
+        mock_failed_writer.write_results.assert_called_once()
+
+        # Verify batch was passed to writer
+        call_args = mock_failed_writer.write_results.call_args[0][0]
+        assert len(call_args) == 1
+        assert call_args[0].trace_id == "evt-fail-shutdown"
+
+    async def test_separate_batches_for_success_and_failed(
+        self, kafka_config, inventory_table_path, failed_table_path,
+        mock_inventory_writer, mock_failed_writer
+    ):
+        """Test that success and failed results use separate batches."""
+        processor = ResultProcessor(
+            kafka_config, inventory_table_path, failed_table_path=failed_table_path, batch_size=100
+        )
+
+        # Add success result
+        success_result = DownloadResultMessage(
+            trace_id="evt-success",
+            attachment_url="https://storage.example.com/file.pdf",
+            status="success",
+            destination_path="claims/C-123/file.pdf",
+            bytes_downloaded=1024,
+            processing_time_ms=100,
+            completed_at=datetime.now(timezone.utc),
+        )
+        await processor._handle_result(create_consumer_record(success_result, offset=0))
+
+        # Add failed result
+        failed_result = DownloadResultMessage(
+            trace_id="evt-failed",
+            attachment_url="https://storage.example.com/invalid.pdf",
+            status="failed_permanent",
+            destination_path=None,
+            bytes_downloaded=None,
+            error_message="File type not allowed",
+            error_category="permanent",
+            processing_time_ms=50,
+            completed_at=datetime.now(timezone.utc),
+        )
+        await processor._handle_result(create_consumer_record(failed_result, offset=1))
+
+        # Verify separate batches
+        assert len(processor._batch) == 1
+        assert processor._batch[0].trace_id == "evt-success"
+        assert len(processor._failed_batch) == 1
+        assert processor._failed_batch[0].trace_id == "evt-failed"

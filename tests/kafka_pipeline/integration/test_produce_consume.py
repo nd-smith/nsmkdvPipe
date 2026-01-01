@@ -420,8 +420,9 @@ async def test_consumer_manual_offset_commit(
 
     # Wait longer for consumer group to rebalance and Kafka state to settle
     # This is necessary because Kafka needs time to recognize the consumer is gone
-    # and release the partition assignment
-    await asyncio.sleep(3)
+    # and release the partition assignment. Session timeout + heartbeat + rebalance
+    # can take significant time in testcontainers environments.
+    await asyncio.sleep(5)
 
     # Second consumer attempt (should reprocess because offset wasn't committed)
     consumer2 = await kafka_consumer_factory(

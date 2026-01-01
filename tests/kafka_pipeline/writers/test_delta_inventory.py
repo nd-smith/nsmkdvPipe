@@ -17,7 +17,10 @@ import polars as pl
 import pytest
 
 from kafka_pipeline.schemas.results import DownloadResultMessage
-from kafka_pipeline.writers.delta_inventory import DeltaInventoryWriter
+from kafka_pipeline.writers.delta_inventory import (
+    DeltaInventoryWriter,
+    DeltaFailedAttachmentsWriter,
+)
 
 
 @pytest.fixture
@@ -313,4 +316,210 @@ async def test_delta_writer_integration():
         mock_delta_writer_class.assert_called_once_with(
             table_path="abfss://test@onelake/lakehouse/xact_attachments",
             z_order_columns=["trace_id", "downloaded_at"],
+        )
+
+
+# =============================================================================
+# DeltaFailedAttachmentsWriter Tests
+# =============================================================================
+
+
+@pytest.fixture
+def sample_failed_result():
+    """Create a sample failed DownloadResultMessage for testing."""
+    return DownloadResultMessage(
+        trace_id="test-trace-failed-123",
+        attachment_url="https://example.com/missing.pdf",
+        destination_path=None,
+        status="failed_permanent",
+        bytes_downloaded=None,
+        error_message="File not found: 404 response",
+        error_category="permanent",
+        completed_at=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
+        processing_time_ms=500,
+    )
+
+
+@pytest.fixture
+def failed_writer():
+    """Create a DeltaFailedAttachmentsWriter with mocked Delta backend."""
+    with patch("kafka_pipeline.writers.delta_inventory.DeltaTableWriter"):
+        writer = DeltaFailedAttachmentsWriter(
+            table_path="abfss://test@onelake/lakehouse/xact_attachments_failed",
+        )
+        yield writer
+
+
+class TestDeltaFailedAttachmentsWriter:
+    """Test suite for DeltaFailedAttachmentsWriter."""
+
+    def test_initialization(self, failed_writer):
+        """Test writer initialization."""
+        assert failed_writer.table_path == "abfss://test@onelake/lakehouse/xact_attachments_failed"
+        assert failed_writer._delta_writer is not None
+
+    def test_results_to_dataframe_single_result(self, failed_writer, sample_failed_result):
+        """Test converting a single failed result to DataFrame."""
+        df = failed_writer._results_to_dataframe([sample_failed_result])
+
+        # Check DataFrame shape
+        assert len(df) == 1
+
+        # Check schema
+        assert "trace_id" in df.columns
+        assert "attachment_url" in df.columns
+        assert "error_message" in df.columns
+        assert "error_category" in df.columns
+        assert "failed_at" in df.columns
+        assert "processing_time_ms" in df.columns
+        assert "created_at" in df.columns
+        assert "created_date" in df.columns
+
+        # Check data types
+        assert df.schema["trace_id"] == pl.Utf8
+        assert df.schema["attachment_url"] == pl.Utf8
+        assert df.schema["error_message"] == pl.Utf8
+        assert df.schema["error_category"] == pl.Utf8
+        assert df.schema["failed_at"] == pl.Datetime(time_zone="UTC")
+        assert df.schema["processing_time_ms"] == pl.Int64
+        assert df.schema["created_at"] == pl.Datetime(time_zone="UTC")
+        assert df.schema["created_date"] == pl.Date
+
+        # Check values
+        assert df["trace_id"][0] == "test-trace-failed-123"
+        assert df["attachment_url"][0] == "https://example.com/missing.pdf"
+        assert df["error_message"][0] == "File not found: 404 response"
+        assert df["error_category"][0] == "permanent"
+        assert df["processing_time_ms"][0] == 500
+
+    def test_results_to_dataframe_multiple_results(self, failed_writer):
+        """Test converting multiple failed results to DataFrame."""
+        results = [
+            DownloadResultMessage(
+                trace_id=f"trace-failed-{i}",
+                attachment_url=f"https://example.com/missing{i}.pdf",
+                destination_path=None,
+                status="failed_permanent",
+                bytes_downloaded=None,
+                error_message=f"Error {i}",
+                error_category="permanent",
+                completed_at=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
+                processing_time_ms=100 * i,
+            )
+            for i in range(3)
+        ]
+
+        df = failed_writer._results_to_dataframe(results)
+
+        assert len(df) == 3
+        assert df["trace_id"].to_list() == ["trace-failed-0", "trace-failed-1", "trace-failed-2"]
+        assert df["error_message"].to_list() == ["Error 0", "Error 1", "Error 2"]
+
+    def test_results_to_dataframe_null_error_handling(self, failed_writer):
+        """Test that null error_message and error_category are handled."""
+        result = DownloadResultMessage(
+            trace_id="trace-null-error",
+            attachment_url="https://example.com/null.pdf",
+            destination_path=None,
+            status="failed_permanent",
+            bytes_downloaded=None,
+            error_message=None,  # Null
+            error_category=None,  # Null
+            completed_at=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
+            processing_time_ms=100,
+        )
+
+        df = failed_writer._results_to_dataframe([result])
+
+        # Should have default values for null fields
+        assert df["error_message"][0] == "Unknown error"
+        assert df["error_category"][0] == "unknown"
+
+    @pytest.mark.asyncio
+    async def test_write_result_success(self, failed_writer, sample_failed_result):
+        """Test successful single failed result write."""
+        with patch("asyncio.to_thread", side_effect=lambda f, *args, **kwargs: f(*args, **kwargs)):
+            failed_writer._delta_writer.merge = MagicMock(return_value=1)
+
+            result = await failed_writer.write_result(sample_failed_result)
+
+            assert result is True
+            failed_writer._delta_writer.merge.assert_called_once()
+
+            # Verify DataFrame was created correctly
+            call_args = failed_writer._delta_writer.merge.call_args
+            df = call_args[0][0]
+            assert len(df) == 1
+            assert df["trace_id"][0] == "test-trace-failed-123"
+            assert df["error_message"][0] == "File not found: 404 response"
+
+            # Verify merge keys
+            assert call_args[1]["merge_keys"] == ["trace_id", "attachment_url"]
+
+    @pytest.mark.asyncio
+    async def test_write_results_empty_list(self, failed_writer):
+        """Test writing empty result list returns True."""
+        result = await failed_writer.write_results([])
+
+        assert result is True
+        failed_writer._delta_writer.merge.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_write_result_failure(self, failed_writer, sample_failed_result):
+        """Test write failure handling."""
+        failed_writer._delta_writer.merge = MagicMock(
+            side_effect=Exception("Delta merge failed")
+        )
+
+        result = await failed_writer.write_result(sample_failed_result)
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_write_results_preserve_columns(self, failed_writer, sample_failed_result):
+        """Test that created_at is preserved during merge updates."""
+        failed_writer._delta_writer.merge = MagicMock(return_value=1)
+
+        await failed_writer.write_result(sample_failed_result)
+
+        call_args = failed_writer._delta_writer.merge.call_args
+        preserve_columns = call_args[1]["preserve_columns"]
+        assert preserve_columns == ["created_at"]
+
+
+@pytest.mark.asyncio
+async def test_failed_writer_integration():
+    """Integration test for DeltaFailedAttachmentsWriter."""
+    with patch(
+        "kafka_pipeline.writers.delta_inventory.DeltaTableWriter"
+    ) as mock_delta_writer_class:
+        mock_writer_instance = MagicMock()
+        mock_writer_instance.merge = MagicMock(return_value=1)
+        mock_delta_writer_class.return_value = mock_writer_instance
+
+        writer = DeltaFailedAttachmentsWriter(
+            table_path="abfss://test@onelake/lakehouse/xact_attachments_failed",
+        )
+
+        result = DownloadResultMessage(
+            trace_id="integration-failed-test",
+            attachment_url="https://example.com/integration-fail.pdf",
+            destination_path=None,
+            status="failed_permanent",
+            bytes_downloaded=None,
+            error_message="Integration test error",
+            error_category="permanent",
+            completed_at=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
+            processing_time_ms=150,
+        )
+
+        write_result = await writer.write_result(result)
+
+        assert write_result is True
+        mock_writer_instance.merge.assert_called_once()
+
+        # Verify DeltaTableWriter was initialized with correct params
+        mock_delta_writer_class.assert_called_once_with(
+            table_path="abfss://test@onelake/lakehouse/xact_attachments_failed",
+            z_order_columns=["trace_id", "failed_at"],
         )

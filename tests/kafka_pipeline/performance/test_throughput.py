@@ -316,13 +316,11 @@ async def test_result_processor_throughput(
                         result = DownloadResultMessage(
                             trace_id=event.trace_id,
                             attachment_url=attachment_url,
-                            blob_path=f"downloads/{event.trace_id}/{attachment_url.split('/')[-1]}",
+                            destination_path=f"downloads/{event.trace_id}/{attachment_url.split('/')[-1]}",
                             status="success",
                             bytes_downloaded=1024,
-                            download_timestamp=datetime.now(timezone.utc),
-                            status_code=200,
-                            content_type="application/pdf",
-                            metadata=event.payload,
+                            processing_time_ms=100,
+                            completed_at=datetime.now(timezone.utc),
                         )
                         await producer.send(
                             test_kafka_config.downloads_results_topic,

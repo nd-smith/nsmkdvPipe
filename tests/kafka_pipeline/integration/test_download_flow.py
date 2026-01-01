@@ -2,16 +2,17 @@
 Integration tests for Download Worker end-to-end flow.
 
 Tests the complete download pipeline from consuming download tasks
-to uploading to OneLake and producing result messages.
+to caching files locally and producing CachedDownloadMessage.
 
 These tests use Testcontainers to run a real Kafka instance and verify:
-- Pending → download → upload → result flow
+- Pending → download → cache → cached message flow
 - Transient failure → retry topic routing
 - Permanent failure → DLQ routing
 - Retry exhaustion → DLQ routing
 - Error handling and recovery
 
-Note: OneLake client is mocked for all tests to avoid Azure credential requirements.
+Note: DownloadWorker no longer uploads to OneLake directly.
+It caches files locally and produces CachedDownloadMessage for UploadWorker.
 """
 
 import asyncio
@@ -32,19 +33,6 @@ from kafka_pipeline.producer import BaseKafkaProducer
 from kafka_pipeline.schemas.results import DownloadResultMessage, FailedDownloadMessage
 from kafka_pipeline.schemas.tasks import DownloadTaskMessage
 from kafka_pipeline.workers.download_worker import DownloadWorker
-
-
-# Module-level patch for OneLakeClient to avoid Azure credential requirements
-@pytest.fixture(autouse=True)
-def mock_onelake_module():
-    """Mock OneLakeClient for all tests in this module."""
-    mock_client = AsyncMock()
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=None)
-    mock_client.upload_file = AsyncMock(return_value="uploaded/path.pdf")
-
-    with patch("kafka_pipeline.workers.download_worker.OneLakeClient", return_value=mock_client):
-        yield mock_client
 
 
 @pytest.fixture
@@ -99,19 +87,20 @@ async def test_successful_download_flow(
     sample_download_task: DownloadTaskMessage,
     unique_topic_prefix: str,
     tmp_path: Path,
-    mock_onelake_module: AsyncMock,
 ):
     """
-    Test complete successful download flow: pending → download → upload → result.
+    Test complete successful download flow: pending → download → cache → cached message.
 
     Verifies:
     - Download task is consumed from pending topic
     - Attachment is downloaded successfully
-    - File is uploaded to OneLake
-    - Success result is produced to results topic
+    - File is cached locally
+    - CachedDownloadMessage is produced to cached topic
     """
+    from kafka_pipeline.schemas.cached import CachedDownloadMessage
+
     pending_topic = kafka_config_with_downloads.downloads_pending_topic
-    results_topic = kafka_config_with_downloads.downloads_results_topic
+    cached_topic = kafka_config_with_downloads.downloads_cached_topic
 
     # Send download task to pending topic
     await kafka_producer.send(
@@ -121,20 +110,20 @@ async def test_successful_download_flow(
         headers={"source": "test"},
     )
 
-    # Collect result messages
-    result_messages: List[DownloadResultMessage] = []
+    # Collect cached messages
+    cached_messages: List[CachedDownloadMessage] = []
 
-    async def result_collector(record: ConsumerRecord):
-        result = DownloadResultMessage.model_validate_json(record.value)
-        result_messages.append(result)
+    async def cached_collector(record: ConsumerRecord):
+        cached = CachedDownloadMessage.model_validate_json(record.value)
+        cached_messages.append(cached)
 
-    # Start consumer for results topic
-    result_consumer = await kafka_consumer_factory(
-        topics=[results_topic],
-        group_id=f"{unique_topic_prefix}.result-collector",
-        message_handler=result_collector,
+    # Start consumer for cached topic
+    cached_consumer = await kafka_consumer_factory(
+        topics=[cached_topic],
+        group_id=f"{unique_topic_prefix}.cached-collector",
+        message_handler=cached_collector,
     )
-    result_consumer_task = asyncio.create_task(result_consumer.start())
+    cached_consumer_task = asyncio.create_task(cached_consumer.start())
 
     # Create download worker
     worker = DownloadWorker(
@@ -160,49 +149,40 @@ async def test_successful_download_flow(
     with patch.object(worker.downloader, "download", new_callable=AsyncMock) as mock_download:
         mock_download.return_value = successful_outcome
 
-        # Reset upload mock for this test
-        mock_onelake_module.upload_file.reset_mock()
-        mock_onelake_module.upload_file.return_value = "claims/C-12345/document.pdf"
-
         # Start worker in background
         worker_task = asyncio.create_task(worker.start())
 
-        # Wait for result message to be produced
+        # Wait for cached message to be produced
         for _ in range(100):  # 10 seconds max
-            if len(result_messages) >= 1:
+            if len(cached_messages) >= 1:
                 break
             await asyncio.sleep(0.1)
 
         # Stop worker and consumer
         await worker.stop()
-        await result_consumer.stop()
+        await cached_consumer.stop()
 
         # Cancel background tasks
         worker_task.cancel()
-        result_consumer_task.cancel()
+        cached_consumer_task.cancel()
         try:
-            await asyncio.gather(worker_task, result_consumer_task)
+            await asyncio.gather(worker_task, cached_consumer_task)
         except asyncio.CancelledError:
             pass
 
         # Verify download was called
         mock_download.assert_called_once()
 
-        # Verify upload was called
-        mock_onelake_module.upload_file.assert_called_once()
+    # Verify cached message
+    assert len(cached_messages) == 1, "Should produce one cached message"
 
-    # Verify result message
-    assert len(result_messages) == 1, "Should produce one result message"
-
-    result = result_messages[0]
-    assert result.trace_id == sample_download_task.trace_id
-    assert result.attachment_url == sample_download_task.attachment_url
-    assert result.status == "success"
-    assert result.destination_path == "claims/C-12345/document.pdf"
-    assert result.bytes_downloaded == 1024
-    # Note: content_type not tracked in DownloadResultMessage schema
-    assert result.error_message is None
-    assert result.error_category is None
+    cached = cached_messages[0]
+    assert cached.trace_id == sample_download_task.trace_id
+    assert cached.attachment_url == sample_download_task.attachment_url
+    assert cached.destination_path == sample_download_task.destination_path
+    assert cached.bytes_downloaded == 1024
+    assert cached.content_type == "application/pdf"
+    assert cached.local_cache_path is not None
 
 
 @pytest.mark.asyncio

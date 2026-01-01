@@ -461,17 +461,14 @@ async def event_ingester_worker(
 @pytest.fixture
 async def download_worker(
     test_kafka_config: KafkaConfig,
-    mock_onelake_client: MockOneLakeClient,
-    monkeypatch,
     tmp_path: Path,
 ) -> AsyncGenerator:
-    """Provide download worker with mocked OneLake client."""
-    from kafka_pipeline.workers.download_worker import DownloadWorker
+    """Provide download worker for testing.
 
-    monkeypatch.setattr(
-        "kafka_pipeline.workers.download_worker.OneLakeClient",
-        lambda *args, **kwargs: mock_onelake_client
-    )
+    Note: DownloadWorker no longer uses OneLakeClient directly.
+    It caches files locally and produces CachedDownloadMessage for upload worker.
+    """
+    from kafka_pipeline.workers.download_worker import DownloadWorker
 
     worker = DownloadWorker(
         config=test_kafka_config,

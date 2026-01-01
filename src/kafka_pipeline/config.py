@@ -37,6 +37,7 @@ class KafkaConfig:
     # Topics
     events_topic: str = "xact.events.raw"
     downloads_pending_topic: str = "xact.downloads.pending"
+    downloads_cached_topic: str = "xact.downloads.cached"
     downloads_results_topic: str = "xact.downloads.results"
     dlq_topic: str = "xact.downloads.dlq"
 
@@ -54,6 +55,13 @@ class KafkaConfig:
     download_concurrency: int = 10  # Max concurrent downloads (default: 10, range: 1-50)
     download_batch_size: int = 20  # Messages to fetch per batch
 
+    # Upload concurrency settings
+    upload_concurrency: int = 10  # Max concurrent uploads (default: 10, range: 1-50)
+    upload_batch_size: int = 20  # Messages to fetch per batch
+
+    # Cache directory for downloaded files awaiting upload
+    cache_dir: str = "/tmp/kafka_pipeline_cache"
+
     @classmethod
     def from_env(cls) -> "KafkaConfig":
         """Load configuration from environment variables.
@@ -66,6 +74,7 @@ class KafkaConfig:
             KAFKA_SASL_MECHANISM: OAUTHBEARER (default)
             KAFKA_EVENTS_TOPIC: xact.events.raw (default)
             KAFKA_DOWNLOADS_PENDING_TOPIC: xact.downloads.pending (default)
+            KAFKA_DOWNLOADS_CACHED_TOPIC: xact.downloads.cached (default)
             KAFKA_DOWNLOADS_RESULTS_TOPIC: xact.downloads.results (default)
             KAFKA_DLQ_TOPIC: xact.downloads.dlq (default)
             KAFKA_CONSUMER_GROUP_PREFIX: xact (default)
@@ -76,6 +85,9 @@ class KafkaConfig:
             ONELAKE_BASE_PATH: OneLake abfss:// path (required for upload)
             DOWNLOAD_CONCURRENCY: 10 (default, max concurrent downloads, range 1-50)
             DOWNLOAD_BATCH_SIZE: 20 (default, messages to fetch per batch)
+            UPLOAD_CONCURRENCY: 10 (default, max concurrent uploads, range 1-50)
+            UPLOAD_BATCH_SIZE: 20 (default, messages to fetch per batch)
+            CACHE_DIR: /tmp/kafka_pipeline_cache (default, local cache for downloads)
 
         Raises:
             ValueError: If required environment variables are missing
@@ -105,6 +117,9 @@ class KafkaConfig:
             downloads_pending_topic=os.getenv(
                 "KAFKA_DOWNLOADS_PENDING_TOPIC", "xact.downloads.pending"
             ),
+            downloads_cached_topic=os.getenv(
+                "KAFKA_DOWNLOADS_CACHED_TOPIC", "xact.downloads.cached"
+            ),
             downloads_results_topic=os.getenv(
                 "KAFKA_DOWNLOADS_RESULTS_TOPIC", "xact.downloads.results"
             ),
@@ -120,12 +135,22 @@ class KafkaConfig:
             # Storage configuration
             onelake_base_path=os.getenv("ONELAKE_BASE_PATH", ""),
 
+            # Cache directory
+            cache_dir=os.getenv("CACHE_DIR", "/tmp/kafka_pipeline_cache"),
+
             # Download concurrency settings
             download_concurrency=min(
                 50,  # Max allowed
                 max(1, int(os.getenv("DOWNLOAD_CONCURRENCY", "10"))),  # Min 1
             ),
             download_batch_size=max(1, int(os.getenv("DOWNLOAD_BATCH_SIZE", "20"))),
+
+            # Upload concurrency settings
+            upload_concurrency=min(
+                50,  # Max allowed
+                max(1, int(os.getenv("UPLOAD_CONCURRENCY", "10"))),  # Min 1
+            ),
+            upload_batch_size=max(1, int(os.getenv("UPLOAD_BATCH_SIZE", "20"))),
         )
 
     def get_retry_topic(self, attempt: int) -> str:

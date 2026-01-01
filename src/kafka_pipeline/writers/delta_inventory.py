@@ -190,4 +190,174 @@ class DeltaInventoryWriter:
         return df
 
 
-__all__ = ["DeltaInventoryWriter"]
+class DeltaFailedAttachmentsWriter:
+    """
+    Writer for xact_attachments_failed Delta table.
+
+    Records permanent download failures for tracking and potential replay.
+
+    Features:
+    - Merge on (trace_id, attachment_url) for idempotency
+    - Non-blocking writes using asyncio.to_thread
+    - Captures error details for debugging and replay decisions
+
+    Usage:
+        >>> writer = DeltaFailedAttachmentsWriter(table_path="abfss://.../xact_attachments_failed")
+        >>> await writer.write_results([failed_result1, failed_result2])
+    """
+
+    def __init__(self, table_path: str):
+        """
+        Initialize Delta failed attachments writer.
+
+        Args:
+            table_path: Full abfss:// path to xact_attachments_failed Delta table
+        """
+        self.table_path = table_path
+
+        # Initialize underlying Delta writer with merge support
+        self._delta_writer = DeltaTableWriter(
+            table_path=table_path,
+            z_order_columns=["trace_id", "failed_at"],
+        )
+
+        logger.info(
+            "Initialized DeltaFailedAttachmentsWriter",
+            extra={"table_path": table_path},
+        )
+
+    async def write_result(self, result: DownloadResultMessage) -> bool:
+        """
+        Write a single failed result to Delta table (non-blocking).
+
+        Args:
+            result: DownloadResultMessage with failed_permanent status
+
+        Returns:
+            True if write succeeded, False otherwise
+        """
+        return await self.write_results([result])
+
+    async def write_results(self, results: List[DownloadResultMessage]) -> bool:
+        """
+        Write multiple failed results to Delta table (non-blocking).
+
+        Converts DownloadResultMessage objects to DataFrame and merges into Delta.
+        Uses asyncio.to_thread to avoid blocking the event loop.
+
+        Merge strategy:
+        - Match on (trace_id, attachment_url) for idempotency
+        - UPDATE existing rows with new data (e.g., if replayed and failed again)
+        - INSERT new rows that don't match
+
+        Args:
+            results: List of DownloadResultMessage objects to write
+
+        Returns:
+            True if write succeeded, False otherwise
+        """
+        if not results:
+            return True
+
+        batch_size = len(results)
+        start_time = time.monotonic()
+
+        try:
+            # Convert results to DataFrame
+            df = self._results_to_dataframe(results)
+
+            # Perform merge in thread pool to avoid blocking
+            # Merge on (trace_id, attachment_url) for idempotency
+            rows_affected = await asyncio.to_thread(
+                self._delta_writer.merge,
+                df,
+                merge_keys=["trace_id", "attachment_url"],
+                preserve_columns=["created_at"],
+            )
+
+            # Calculate latency metric
+            latency_ms = (time.monotonic() - start_time) * 1000
+
+            logger.info(
+                "Successfully wrote failed results to Delta",
+                extra={
+                    "batch_size": batch_size,
+                    "rows_affected": rows_affected,
+                    "latency_ms": round(latency_ms, 2),
+                    "table_path": self.table_path,
+                },
+            )
+            return True
+
+        except Exception as e:
+            latency_ms = (time.monotonic() - start_time) * 1000
+
+            logger.error(
+                "Failed to write failed results to Delta",
+                extra={
+                    "batch_size": batch_size,
+                    "latency_ms": round(latency_ms, 2),
+                    "table_path": self.table_path,
+                    "error": str(e),
+                },
+                exc_info=True,
+            )
+            return False
+
+    def _results_to_dataframe(self, results: List[DownloadResultMessage]) -> pl.DataFrame:
+        """
+        Convert failed DownloadResultMessage objects to Polars DataFrame.
+
+        Schema for xact_attachments_failed table:
+        - trace_id: str
+        - attachment_url: str
+        - error_message: str
+        - error_category: str
+        - failed_at: datetime (completed_at from result)
+        - processing_time_ms: int
+        - created_at: datetime (current UTC time)
+        - created_date: date (current UTC date, for partitioning)
+
+        Args:
+            results: List of DownloadResultMessage objects
+
+        Returns:
+            Polars DataFrame with xact_attachments_failed schema
+        """
+        # Current time for created_at
+        now = datetime.now(timezone.utc)
+
+        # Convert to list of dicts matching table schema
+        rows = []
+        for result in results:
+            row = {
+                "trace_id": result.trace_id,
+                "attachment_url": result.attachment_url,
+                "error_message": result.error_message or "Unknown error",
+                "error_category": result.error_category or "unknown",
+                "failed_at": result.completed_at,
+                "processing_time_ms": result.processing_time_ms,
+                "created_at": now,
+                "created_date": now.date(),
+            }
+            rows.append(row)
+
+        # Create DataFrame with explicit schema
+        df = pl.DataFrame(
+            rows,
+            schema={
+                "trace_id": pl.Utf8,
+                "attachment_url": pl.Utf8,
+                "error_message": pl.Utf8,
+                "error_category": pl.Utf8,
+                "failed_at": pl.Datetime(time_zone="UTC"),
+                "processing_time_ms": pl.Int64,
+                "created_at": pl.Datetime(time_zone="UTC"),
+                "created_date": pl.Date,
+            },
+        )
+
+        return df
+
+
+__all__ = ["DeltaInventoryWriter", "DeltaFailedAttachmentsWriter"]

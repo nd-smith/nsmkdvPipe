@@ -188,10 +188,8 @@ async def test_consumer_lag_recovery(
 @pytest.mark.performance
 async def test_consumer_group_coordination(
     test_kafka_config: KafkaConfig,
-    mock_onelake_client,
     load_generator: Dict,
     tmp_path: Path,
-    monkeypatch,
 ):
     """
     Test consumer group coordination and partition assignment.
@@ -243,12 +241,6 @@ async def test_consumer_group_coordination(
             )
 
         mock_download.side_effect = mock_download_impl
-
-        # Patch OneLakeClient
-        monkeypatch.setattr(
-            "kafka_pipeline.workers.download_worker.OneLakeClient",
-            lambda *args, **kwargs: mock_onelake_client
-        )
 
         # Create multiple consumers in same group
         from kafka_pipeline.workers.download_worker import DownloadWorker
@@ -508,7 +500,9 @@ async def test_backpressure_scheduler_pause(
 
     # For now, validate that the config and topic structure support this behavior
     assert test_kafka_config.downloads_pending_topic, "Pending topic configured"
-    assert test_kafka_config.downloads_retry_topic, "Retry topic configured"
+    assert test_kafka_config.retry_delays, "Retry delays configured"
+    # Retry topics are generated dynamically via get_retry_topic()
+    assert test_kafka_config.get_retry_topic(0), "First retry topic can be generated"
 
     logger.info("Backpressure test: Scheduler pause behavior requires running scheduler instance")
     logger.info("Test validates configuration supports lag-based backpressure")

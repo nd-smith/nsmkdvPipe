@@ -168,6 +168,7 @@ class PipelineConfig:
     enable_delta_writes: bool = True
     events_table_path: str = ""
     inventory_table_path: str = ""
+    failed_table_path: str = ""  # Optional: for tracking permanent failures
 
     @classmethod
     def from_env(cls) -> "PipelineConfig":
@@ -178,6 +179,7 @@ class PipelineConfig:
             enable_delta_writes=os.getenv("ENABLE_DELTA_WRITES", "true").lower() == "true",
             events_table_path=os.getenv("DELTA_EVENTS_TABLE_PATH", ""),
             inventory_table_path=os.getenv("DELTA_INVENTORY_TABLE_PATH", ""),
+            failed_table_path=os.getenv("DELTA_FAILED_TABLE_PATH", ""),
         )
 
 

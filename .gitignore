@@ -69,9 +69,11 @@ secrets/
 # Testing
 .pytest_cache/
 .coverage
+coverage.json
 htmlcov/
 .tox/
 .hypothesis/
+debug/
 
 # Jupyter
 .ipynb_checkpoints

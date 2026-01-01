@@ -57,6 +57,13 @@ services:
           --partitions 6 \
           --replication-factor 1
 
+        # Downloads cached topic (between download and upload workers)
+        kafka-topics.sh --create --if-not-exists \
+          --bootstrap-server kafka:9092 \
+          --topic xact.downloads.cached \
+          --partitions 6 \
+          --replication-factor 1
+
         # Downloads results topic
         kafka-topics.sh --create --if-not-exists \
           --bootstrap-server kafka:9092 \
