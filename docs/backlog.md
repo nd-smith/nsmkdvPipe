@@ -130,7 +130,7 @@ Phase 4 work packages are now available (WP-401 to WP-410). Recommended implemen
 - [x] **WP-502**: Deduplication via xact_events (commit: 19ddac3)
 - [x] **WP-503**: KQL Event Poller (commit: 19ddac3)
 - [x] **WP-504**: Configurable Event Source (commit: 19ddac3)
-- [x] **WP-314**: Upload Worker - Unit Tests (commit: a2b02a8)
+- [x] **WP-314**: Upload Worker - Unit Tests (commit: ea68146)
 
 ---
 
