@@ -20,7 +20,9 @@
 ### Ready
 <!-- Tasks ready to be picked up -->
 
-(none)
+**Decoupled Download/Upload Architecture Tests:**
+1. WP-314: Upload Worker - Unit Tests
+2. WP-315: Download Worker - Cache Behavior Tests (updated for decoupled architecture)
 
 Phase 4 work packages are now available (WP-401 to WP-410). Recommended implementation order:
 
@@ -106,6 +108,7 @@ Phase 4 work packages are now available (WP-401 to WP-410). Recommended implemen
 - [x] **WP-409**: Alerting Configuration (commit: c7baee5)
 - [x] **WP-410**: Runbook Documentation (commit: 093b1c0)
 - [x] **WP-313**: Download Worker - Concurrent Processing (commit: 5723e40)
+- [x] **WP-416**: Monitoring Web UI for Local Development (commit: 2ff032d)
 
 ---
 
@@ -1035,6 +1038,80 @@ DOWNLOAD_BATCH_SIZE=20   # Messages to fetch per batch
 ---
 
 <details open>
+<summary><strong>Decoupled Download/Upload Architecture (WP-314 to WP-315)</strong></summary>
+
+## Architecture Change Overview
+
+The download worker has been refactored to decouple downloading from uploading:
+
+- **Download Worker**: Downloads files to local cache, produces `CachedDownloadMessage` to `downloads.cached` topic
+- **Upload Worker** (new): Consumes from `downloads.cached`, uploads to OneLake, produces `DownloadResultMessage`
+
+This allows:
+- Independent scaling of download vs upload workers
+- Downloads not blocked by slow OneLake uploads
+- Cache acts as buffer if OneLake has temporary issues
+
+---
+
+### WP-314: Upload Worker - Unit Tests
+
+**Objective**: Add comprehensive unit tests for the new Upload Worker
+**Size**: Medium
+**Files to read**:
+- `src/kafka_pipeline/workers/upload_worker.py` (implementation)
+- `src/kafka_pipeline/schemas/cached.py` (CachedDownloadMessage schema)
+- `tests/kafka_pipeline/workers/test_download_worker.py` (testing patterns)
+**Files to create/modify**:
+- `tests/kafka_pipeline/workers/test_upload_worker.py` (new test file)
+- `tests/kafka_pipeline/schemas/test_cached.py` (schema tests)
+**Dependencies**: None (implementation complete)
+**Deliverable**: Unit tests covering:
+- CachedDownloadMessage serialization/deserialization
+- Upload success flow (consume → upload → produce result → cleanup)
+- Upload failure handling (produce failure result, keep cache file)
+- Concurrent upload processing
+- Graceful shutdown with in-flight uploads
+- Cache file cleanup after successful upload
+
+**Review checklist**:
+- [ ] Schema validation tests for CachedDownloadMessage
+- [ ] Mock OneLakeClient for upload tests
+- [ ] Test concurrent uploads with semaphore
+- [ ] Test failure produces DownloadResultMessage with status="failed_permanent"
+- [ ] Test cache file deleted on success, kept on failure
+- [ ] Test graceful shutdown waits for in-flight uploads
+
+---
+
+### WP-315: Download Worker - Cache Behavior Tests
+
+**Objective**: Update Download Worker tests for new caching behavior
+**Size**: Small
+**Files to read**:
+- `src/kafka_pipeline/workers/download_worker.py` (updated implementation)
+- `tests/kafka_pipeline/workers/test_download_worker.py` (existing tests)
+**Files to create/modify**:
+- `tests/kafka_pipeline/workers/test_download_worker.py` (update existing tests)
+**Dependencies**: WP-314 (for test patterns)
+**Deliverable**: Updated tests covering:
+- File moved to cache directory (not deleted)
+- CachedDownloadMessage produced to downloads.cached topic
+- No OneLake upload in download worker
+- Cache directory structure (cache_dir/trace_id/filename)
+
+**Review checklist**:
+- [ ] Remove/update tests that expect OneLake upload
+- [ ] Add tests for cache file creation
+- [ ] Add tests for CachedDownloadMessage production
+- [ ] Verify temp file cleanup (empty dirs removed)
+- [ ] Update integration tests for new flow
+
+</details>
+
+---
+
+<details open>
 <summary><strong>Phase 4: Integration (WP-401 to WP-410)</strong></summary>
 
 ## Phase 4 Overview
@@ -1387,6 +1464,69 @@ DOWNLOAD_BATCH_SIZE=20   # Messages to fetch per batch
   - Expected outputs
   - Troubleshooting decision trees
   - Links to relevant dashboards and alerts
+
+</details>
+
+---
+
+<details open>
+<summary><strong>Development Tools (WP-416)</strong></summary>
+
+### WP-416: Monitoring Web UI for Local Development
+
+**Objective**: Create a simple web dashboard for monitoring Kafka pipeline during local development
+**Size**: Small
+**Status**: ✅ Complete
+
+**Files created**:
+- `src/kafka_pipeline/monitoring.py` - Standalone monitoring server (~350 lines)
+
+**Features implemented**:
+- HTTP server (aiohttp) on port 8080 (configurable)
+- Parses existing Prometheus metrics from pipeline's `:8000/metrics` endpoint
+- Dark-themed Bootstrap dashboard with manual refresh
+- **Topic Stats**: Consumed/produced counts, lag, partitions per topic
+- **Worker Status**: Connection status, circuit breaker state, in-flight tasks, errors
+- **JSON API**: `/api/stats` endpoint for programmatic access
+
+**Usage**:
+```bash
+# Start monitoring dashboard (with pipeline running on :8000)
+python -m kafka_pipeline.monitoring
+
+# Custom port
+python -m kafka_pipeline.monitoring --port 9090
+
+# Custom metrics endpoint
+python -m kafka_pipeline.monitoring --metrics-url http://localhost:9000/metrics
+```
+
+**Architecture**:
+```
+Pipeline Workers ──► Prometheus Metrics (:8000/metrics)
+                              │
+                              ▼
+                     Monitoring UI Server (:8080)
+                              │
+                     ┌────────┴────────┐
+                     │                 │
+              Parse Metrics    Topic Config
+              (prometheus)     (KafkaConfig)
+                     │                 │
+                     └────────┬────────┘
+                              ▼
+                      HTML Dashboard
+```
+
+**Review checklist**:
+- [x] Standalone server (doesn't affect workers)
+- [x] Parses Prometheus text format metrics
+- [x] Displays topic stats (lag, message counts, partitions)
+- [x] Displays worker status (connected, circuit breaker, errors)
+- [x] Bootstrap CSS from CDN for styling
+- [x] Manual refresh via button click
+- [x] JSON API for programmatic access
+- [x] CLI with --port and --metrics-url options
 
 </details>
 
