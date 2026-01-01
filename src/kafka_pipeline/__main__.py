@@ -14,11 +14,17 @@ Usage:
     # Run with metrics server
     python -m kafka_pipeline --metrics-port 8000
 
-    # Run in development mode (local Kafka only, no Event Hub)
+    # Run in development mode (local Kafka only, no Event Hub/Eventhouse)
     python -m kafka_pipeline --dev
+
+Event Source Configuration:
+    Set EVENT_SOURCE environment variable:
+    - eventhub (default): Use Azure Event Hub via Kafka protocol
+    - eventhouse: Poll Microsoft Fabric Eventhouse
 
 Architecture:
     Download and Upload workers are decoupled for independent scaling:
+    - Event Source: Event Hub or Eventhouse → downloads.pending
     - Download Worker: downloads.pending → local cache → downloads.cached
     - Upload Worker: downloads.cached → OneLake → downloads.results
 """
@@ -125,6 +131,51 @@ async def run_event_ingester(
     await worker.start()
 
 
+async def run_eventhouse_poller(pipeline_config):
+    """Run the Eventhouse Poller.
+
+    Polls Microsoft Fabric Eventhouse for events and produces download tasks to local Kafka.
+    Uses KQL queries with deduplication against xact_events Delta table.
+    """
+    from kafka_pipeline.eventhouse.dedup import DedupConfig
+    from kafka_pipeline.eventhouse.kql_client import EventhouseConfig
+    from kafka_pipeline.eventhouse.poller import KQLEventPoller, PollerConfig
+
+    logger.info("Starting Eventhouse Poller...")
+
+    eventhouse_source = pipeline_config.eventhouse
+    if not eventhouse_source:
+        raise ValueError("Eventhouse configuration required for EVENT_SOURCE=eventhouse")
+
+    # Build Eventhouse config
+    eventhouse_config = EventhouseConfig(
+        cluster_url=eventhouse_source.cluster_url,
+        database=eventhouse_source.database,
+        query_timeout_seconds=eventhouse_source.query_timeout_seconds,
+    )
+
+    # Build deduplication config
+    dedup_config = DedupConfig(
+        xact_events_table_path=eventhouse_source.xact_events_table_path,
+        xact_events_window_hours=eventhouse_source.xact_events_window_hours,
+        eventhouse_query_window_hours=eventhouse_source.eventhouse_query_window_hours,
+        overlap_minutes=eventhouse_source.overlap_minutes,
+    )
+
+    # Build poller config
+    poller_config = PollerConfig(
+        eventhouse=eventhouse_config,
+        kafka=pipeline_config.local_kafka.to_kafka_config(),
+        dedup=dedup_config,
+        poll_interval_seconds=eventhouse_source.poll_interval_seconds,
+        batch_size=eventhouse_source.batch_size,
+        source_table=eventhouse_source.source_table,
+    )
+
+    async with KQLEventPoller(poller_config) as poller:
+        await poller.run()
+
+
 async def run_download_worker(kafka_config):
     """Run the Download Worker.
 
@@ -180,19 +231,37 @@ async def run_result_processor(kafka_config, enable_delta_writes: bool = True):
 
 
 async def run_all_workers(
-    eventhub_config,
-    local_kafka_config,
+    pipeline_config,
     enable_delta_writes: bool = True,
 ):
-    """Run all pipeline workers concurrently."""
+    """Run all pipeline workers concurrently.
+
+    Uses the configured event source (Event Hub or Eventhouse) for ingestion.
+    """
+    from kafka_pipeline.pipeline_config import EventSourceType
+
     logger.info("Starting all pipeline workers...")
+
+    local_kafka_config = pipeline_config.local_kafka.to_kafka_config()
+
+    # Create event source task based on configuration
+    if pipeline_config.event_source == EventSourceType.EVENTHOUSE:
+        event_source_task = asyncio.create_task(
+            run_eventhouse_poller(pipeline_config),
+            name="eventhouse-poller",
+        )
+        logger.info("Using Eventhouse as event source")
+    else:
+        eventhub_config = pipeline_config.eventhub.to_kafka_config()
+        event_source_task = asyncio.create_task(
+            run_event_ingester(eventhub_config, local_kafka_config, enable_delta_writes),
+            name="event-ingester",
+        )
+        logger.info("Using Event Hub as event source")
 
     # Create tasks for all workers
     tasks = [
-        asyncio.create_task(
-            run_event_ingester(eventhub_config, local_kafka_config, enable_delta_writes),
-            name="event-ingester",
-        ),
+        event_source_task,
         asyncio.create_task(
             run_download_worker(local_kafka_config),
             name="download-worker",
@@ -245,26 +314,41 @@ def main():
     if args.dev:
         # Development mode: use local Kafka for everything
         logger.info("Running in DEVELOPMENT mode (local Kafka only)")
-        from kafka_pipeline.pipeline_config import LocalKafkaConfig
+        from kafka_pipeline.pipeline_config import (
+            EventSourceType,
+            LocalKafkaConfig,
+            PipelineConfig,
+        )
 
         local_config = LocalKafkaConfig.from_env()
         kafka_config = local_config.to_kafka_config()
 
-        # In dev mode, event ingester reads from local Kafka too
+        # In dev mode, create a minimal PipelineConfig
+        pipeline_config = PipelineConfig(
+            event_source=EventSourceType.EVENTHUB,
+            local_kafka=local_config,
+        )
+
+        # For backwards compatibility with single-worker modes
         eventhub_config = kafka_config
         local_kafka_config = kafka_config
     else:
-        # Production mode: Event Hub + local Kafka
-        logger.info("Running in PRODUCTION mode (Event Hub + local Kafka)")
-        from kafka_pipeline.pipeline_config import get_pipeline_config
+        # Production mode: Event Hub or Eventhouse + local Kafka
+        from kafka_pipeline.pipeline_config import EventSourceType, get_pipeline_config
 
         try:
-            config = get_pipeline_config()
-            eventhub_config = config.eventhub.to_kafka_config()
-            local_kafka_config = config.local_kafka.to_kafka_config()
+            pipeline_config = get_pipeline_config()
+            local_kafka_config = pipeline_config.local_kafka.to_kafka_config()
+
+            if pipeline_config.event_source == EventSourceType.EVENTHOUSE:
+                logger.info("Running in PRODUCTION mode (Eventhouse + local Kafka)")
+                eventhub_config = None  # Not used for Eventhouse mode
+            else:
+                logger.info("Running in PRODUCTION mode (Event Hub + local Kafka)")
+                eventhub_config = pipeline_config.eventhub.to_kafka_config()
         except ValueError as e:
             logger.error(f"Configuration error: {e}")
-            logger.error("Use --dev flag for local development without Event Hub")
+            logger.error("Use --dev flag for local development without Event Hub/Eventhouse")
             sys.exit(1)
 
     enable_delta_writes = not args.no_delta
@@ -278,9 +362,13 @@ def main():
 
     try:
         if args.worker == "event-ingester":
-            loop.run_until_complete(
-                run_event_ingester(eventhub_config, local_kafka_config, enable_delta_writes)
-            )
+            # Event ingester uses Event Hub or Eventhouse based on config
+            if pipeline_config.event_source == EventSourceType.EVENTHOUSE:
+                loop.run_until_complete(run_eventhouse_poller(pipeline_config))
+            else:
+                loop.run_until_complete(
+                    run_event_ingester(eventhub_config, local_kafka_config, enable_delta_writes)
+                )
         elif args.worker == "download":
             loop.run_until_complete(run_download_worker(local_kafka_config))
         elif args.worker == "upload":
@@ -291,7 +379,7 @@ def main():
             )
         else:  # all
             loop.run_until_complete(
-                run_all_workers(eventhub_config, local_kafka_config, enable_delta_writes)
+                run_all_workers(pipeline_config, enable_delta_writes)
             )
     except KeyboardInterrupt:
         logger.info("Keyboard interrupt received, shutting down...")

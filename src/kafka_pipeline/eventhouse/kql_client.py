@@ -1,0 +1,456 @@
+"""
+KQL Client for querying Microsoft Fabric Eventhouse.
+
+Provides async interface for executing KQL queries against Eventhouse
+with connection pooling, retry logic, and proper error classification.
+"""
+
+import asyncio
+import logging
+import os
+import time
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Any, Optional
+
+from azure.identity import DefaultAzureCredential
+from azure.kusto.data import KustoClient, KustoConnectionStringBuilder
+from azure.kusto.data.exceptions import KustoServiceError
+from azure.kusto.data.helpers import dataframe_from_result_table
+
+from core.auth.credentials import get_default_provider
+from core.errors.classifiers import StorageErrorClassifier
+from core.errors.exceptions import KustoError, KustoQueryError
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class EventhouseConfig:
+    """Configuration for connecting to Eventhouse.
+
+    Load from environment using EventhouseConfig.from_env().
+    """
+
+    # Connection
+    cluster_url: str  # e.g., "https://your-cluster.kusto.fabric.microsoft.com"
+    database: str  # e.g., "your-database"
+
+    # Query defaults
+    query_timeout_seconds: int = 120  # Default query timeout
+    max_retries: int = 3  # Max retry attempts for transient failures
+    retry_base_delay_seconds: float = 1.0  # Base delay between retries
+    retry_max_delay_seconds: float = 30.0  # Max delay between retries
+
+    # Connection pooling
+    max_connections: int = 10  # Connection pool size
+
+    @classmethod
+    def from_env(cls) -> "EventhouseConfig":
+        """Load configuration from environment variables.
+
+        Required environment variables:
+            EVENTHOUSE_CLUSTER_URL: Kusto cluster URL
+            EVENTHOUSE_DATABASE: Database name
+
+        Optional environment variables (with defaults):
+            EVENTHOUSE_QUERY_TIMEOUT: Query timeout in seconds (default: 120)
+            EVENTHOUSE_MAX_RETRIES: Max retry attempts (default: 3)
+            EVENTHOUSE_RETRY_BASE_DELAY: Base retry delay in seconds (default: 1.0)
+            EVENTHOUSE_RETRY_MAX_DELAY: Max retry delay in seconds (default: 30.0)
+            EVENTHOUSE_MAX_CONNECTIONS: Connection pool size (default: 10)
+
+        Raises:
+            ValueError: If required environment variables are missing
+        """
+        cluster_url = os.getenv("EVENTHOUSE_CLUSTER_URL")
+        if not cluster_url:
+            raise ValueError(
+                "EVENTHOUSE_CLUSTER_URL environment variable is required"
+            )
+
+        database = os.getenv("EVENTHOUSE_DATABASE")
+        if not database:
+            raise ValueError("EVENTHOUSE_DATABASE environment variable is required")
+
+        return cls(
+            cluster_url=cluster_url,
+            database=database,
+            query_timeout_seconds=int(os.getenv("EVENTHOUSE_QUERY_TIMEOUT", "120")),
+            max_retries=int(os.getenv("EVENTHOUSE_MAX_RETRIES", "3")),
+            retry_base_delay_seconds=float(
+                os.getenv("EVENTHOUSE_RETRY_BASE_DELAY", "1.0")
+            ),
+            retry_max_delay_seconds=float(
+                os.getenv("EVENTHOUSE_RETRY_MAX_DELAY", "30.0")
+            ),
+            max_connections=int(os.getenv("EVENTHOUSE_MAX_CONNECTIONS", "10")),
+        )
+
+
+@dataclass
+class KQLQueryResult:
+    """Result of a KQL query execution."""
+
+    # Result data as list of dicts (each dict is a row)
+    rows: list[dict[str, Any]] = field(default_factory=list)
+
+    # Query metadata
+    query_duration_ms: float = 0.0
+    row_count: int = 0
+    is_partial: bool = False
+
+    # For debugging/logging
+    query_text: str = ""
+
+    @property
+    def is_empty(self) -> bool:
+        """Check if query returned no results."""
+        return self.row_count == 0
+
+
+class KQLClient:
+    """
+    Async client for querying Microsoft Fabric Eventhouse.
+
+    Uses DefaultAzureCredential for authentication, which supports:
+    - Managed Identity (in production)
+    - Azure CLI credentials (local development)
+    - Service Principal (via environment variables)
+
+    Example:
+        config = EventhouseConfig.from_env()
+        async with KQLClient(config) as client:
+            result = await client.execute_query(
+                "Events | where ingestion_time() > ago(1h) | take 100"
+            )
+            for row in result.rows:
+                print(row)
+    """
+
+    def __init__(self, config: EventhouseConfig):
+        """Initialize KQL client with configuration.
+
+        Args:
+            config: Eventhouse configuration
+        """
+        self.config = config
+        self._client: Optional[KustoClient] = None
+        self._credential: Optional[DefaultAzureCredential] = None
+        self._lock = asyncio.Lock()
+
+    async def __aenter__(self) -> "KQLClient":
+        """Async context manager entry."""
+        await self.connect()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Async context manager exit."""
+        await self.close()
+
+    async def connect(self) -> None:
+        """Establish connection to Eventhouse.
+
+        Uses DefaultAzureCredential for authentication.
+        """
+        async with self._lock:
+            if self._client is not None:
+                return  # Already connected
+
+            logger.info(
+                "Connecting to Eventhouse",
+                extra={
+                    "cluster_url": self.config.cluster_url,
+                    "database": self.config.database,
+                },
+            )
+
+            try:
+                # Use DefaultAzureCredential for authentication
+                self._credential = DefaultAzureCredential()
+
+                # Build connection string with token credential
+                kcsb = KustoConnectionStringBuilder.with_azure_token_credential(
+                    self.config.cluster_url,
+                    self._credential,
+                )
+
+                # Create client (sync client, will execute in thread pool)
+                self._client = KustoClient(kcsb)
+
+                logger.info(
+                    "Connected to Eventhouse",
+                    extra={
+                        "cluster_url": self.config.cluster_url,
+                        "database": self.config.database,
+                    },
+                )
+
+            except Exception as e:
+                logger.error(
+                    "Failed to connect to Eventhouse: %s",
+                    str(e)[:200],
+                    extra={
+                        "cluster_url": self.config.cluster_url,
+                        "database": self.config.database,
+                        "error": str(e)[:200],
+                    },
+                )
+                raise StorageErrorClassifier.classify_kusto_error(
+                    e, {"operation": "connect"}
+                ) from e
+
+    async def close(self) -> None:
+        """Close connection and cleanup resources."""
+        async with self._lock:
+            if self._client is not None:
+                try:
+                    # KustoClient.close() is sync
+                    self._client.close()
+                except Exception as e:
+                    logger.warning(
+                        "Error closing Kusto client: %s",
+                        str(e)[:100],
+                    )
+                finally:
+                    self._client = None
+                    self._credential = None
+
+                logger.debug("Eventhouse connection closed")
+
+    async def execute_query(
+        self,
+        query: str,
+        database: Optional[str] = None,
+        timeout_seconds: Optional[int] = None,
+    ) -> KQLQueryResult:
+        """Execute a KQL query with retry logic.
+
+        Args:
+            query: KQL query string
+            database: Database to query (defaults to config.database)
+            timeout_seconds: Query timeout (defaults to config.query_timeout_seconds)
+
+        Returns:
+            KQLQueryResult with rows and metadata
+
+        Raises:
+            KustoQueryError: For query syntax/semantic errors
+            KustoError: For other Kusto errors
+        """
+        if self._client is None:
+            await self.connect()
+
+        db = database or self.config.database
+        timeout = timeout_seconds or self.config.query_timeout_seconds
+
+        # Execute with retry
+        last_error: Optional[Exception] = None
+
+        for attempt in range(self.config.max_retries):
+            try:
+                result = await self._execute_query_impl(query, db, timeout)
+
+                # Log success after retries
+                if attempt > 0:
+                    logger.info(
+                        "Query succeeded after %d retries",
+                        attempt,
+                        extra={
+                            "attempt": attempt + 1,
+                            "query_length": len(query),
+                        },
+                    )
+
+                return result
+
+            except KustoQueryError:
+                # Query errors are not retryable (syntax/semantic errors)
+                raise
+
+            except Exception as e:
+                last_error = e
+                classified = StorageErrorClassifier.classify_kusto_error(
+                    e, {"operation": "execute_query", "attempt": attempt + 1}
+                )
+
+                # Check if error is retryable
+                if not classified.is_retryable:
+                    raise classified from e
+
+                # Check if we have more retries
+                if attempt + 1 >= self.config.max_retries:
+                    logger.error(
+                        "Max retries exhausted for query",
+                        extra={
+                            "attempt": attempt + 1,
+                            "max_retries": self.config.max_retries,
+                            "error": str(e)[:200],
+                        },
+                    )
+                    raise classified from e
+
+                # Calculate retry delay with exponential backoff
+                delay = min(
+                    self.config.retry_base_delay_seconds * (2**attempt),
+                    self.config.retry_max_delay_seconds,
+                )
+
+                logger.warning(
+                    "Retrying query after error",
+                    extra={
+                        "attempt": attempt + 1,
+                        "max_retries": self.config.max_retries,
+                        "delay_seconds": delay,
+                        "error": str(e)[:200],
+                    },
+                )
+
+                await asyncio.sleep(delay)
+
+        # Should not reach here, but just in case
+        if last_error:
+            raise StorageErrorClassifier.classify_kusto_error(
+                last_error, {"operation": "execute_query"}
+            ) from last_error
+
+        raise KustoError("Unknown error during query execution")
+
+    async def _execute_query_impl(
+        self,
+        query: str,
+        database: str,
+        timeout_seconds: int,
+    ) -> KQLQueryResult:
+        """Execute query implementation (runs in thread pool).
+
+        Args:
+            query: KQL query string
+            database: Database name
+            timeout_seconds: Query timeout
+
+        Returns:
+            KQLQueryResult
+        """
+        start_time = time.perf_counter()
+
+        try:
+            # Execute in thread pool since KustoClient is sync
+            response = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: self._client.execute(database, query),
+            )
+
+            query_duration_ms = (time.perf_counter() - start_time) * 1000
+
+            # Get primary results table
+            if not response.primary_results:
+                return KQLQueryResult(
+                    rows=[],
+                    query_duration_ms=query_duration_ms,
+                    row_count=0,
+                    is_partial=False,
+                    query_text=query,
+                )
+
+            primary_table = response.primary_results[0]
+
+            # Convert to list of dicts
+            rows = []
+            column_names = [col.column_name for col in primary_table.columns]
+
+            for row in primary_table:
+                row_dict = {}
+                for i, col_name in enumerate(column_names):
+                    value = row[i]
+                    # Handle datetime serialization
+                    if isinstance(value, datetime):
+                        row_dict[col_name] = value.isoformat()
+                    else:
+                        row_dict[col_name] = value
+                rows.append(row_dict)
+
+            result = KQLQueryResult(
+                rows=rows,
+                query_duration_ms=query_duration_ms,
+                row_count=len(rows),
+                is_partial=False,
+                query_text=query,
+            )
+
+            logger.debug(
+                "Query executed successfully",
+                extra={
+                    "database": database,
+                    "query_length": len(query),
+                    "row_count": result.row_count,
+                    "duration_ms": round(query_duration_ms, 2),
+                },
+            )
+
+            return result
+
+        except KustoServiceError as e:
+            query_duration_ms = (time.perf_counter() - start_time) * 1000
+
+            logger.error(
+                "KQL query failed",
+                extra={
+                    "database": database,
+                    "query_length": len(query),
+                    "duration_ms": round(query_duration_ms, 2),
+                    "error": str(e)[:200],
+                },
+            )
+
+            # Check if it's a query error (syntax/semantic)
+            error_str = str(e).lower()
+            if "semantic error" in error_str or "syntax error" in error_str:
+                raise KustoQueryError(
+                    f"KQL query error: {e}",
+                    cause=e,
+                    context={"database": database, "query_length": len(query)},
+                ) from e
+
+            raise
+
+        except Exception as e:
+            query_duration_ms = (time.perf_counter() - start_time) * 1000
+
+            logger.error(
+                "Query execution failed",
+                extra={
+                    "database": database,
+                    "query_length": len(query),
+                    "duration_ms": round(query_duration_ms, 2),
+                    "error": str(e)[:200],
+                },
+            )
+
+            raise
+
+    async def health_check(self) -> bool:
+        """Check if connection is healthy.
+
+        Returns:
+            True if connection is healthy, False otherwise
+        """
+        try:
+            # Simple query to verify connection
+            result = await self.execute_query(
+                "print 1",
+                timeout_seconds=10,
+            )
+            return result.row_count == 1
+
+        except Exception as e:
+            logger.warning(
+                "Eventhouse health check failed: %s",
+                str(e)[:100],
+            )
+            return False
+
+    @property
+    def is_connected(self) -> bool:
+        """Check if client is connected."""
+        return self._client is not None

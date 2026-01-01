@@ -24,6 +24,23 @@
 1. WP-314: Upload Worker - Unit Tests
 2. WP-315: Download Worker - Cache Behavior Tests (updated for decoupled architecture)
 
+**Phase 5: Eventhouse Integration** (WP-501 to WP-507) - NEW
+
+Enables polling from Microsoft Fabric Eventhouse (KQL tables) as event source.
+Recommended implementation order:
+
+1. ~~**WP-501**: KQL Client Foundation (azure-kusto-data SDK integration)~~ ✅ Complete
+2. ~~**WP-502**: Deduplication via xact_events (Polars + anti-join in KQL)~~ ✅ Complete
+3. ~~**WP-503**: KQL Event Poller (poll Eventhouse → produce to Kafka)~~ ✅ Complete
+4. ~~**WP-504**: Configurable Event Source (EVENT_SOURCE=eventhub|eventhouse)~~ ✅ Complete
+5. **WP-505**: Multi-Pipeline Support (xact, claimx with independent configs)
+6. **WP-506**: Eventhouse Integration Testing
+7. **WP-507**: Eventhouse Observability (metrics, alerts, dashboard)
+
+See Phase 5 details below for full work package specifications.
+
+---
+
 Phase 4 work packages are now available (WP-401 to WP-410). Recommended implementation order:
 
 **Testing Track** (can run in parallel):
@@ -109,6 +126,10 @@ Phase 4 work packages are now available (WP-401 to WP-410). Recommended implemen
 - [x] **WP-410**: Runbook Documentation (commit: 093b1c0)
 - [x] **WP-313**: Download Worker - Concurrent Processing (commit: 5723e40)
 - [x] **WP-416**: Monitoring Web UI for Local Development (commit: 2ff032d)
+- [x] **WP-501**: KQL Client Foundation (commit: 524ae4e)
+- [x] **WP-502**: Deduplication via xact_events (commit: 524ae4e)
+- [x] **WP-503**: KQL Event Poller (commit: 524ae4e)
+- [x] **WP-504**: Configurable Event Source (commit: 524ae4e)
 
 ---
 
@@ -1532,12 +1553,458 @@ Pipeline Workers ──► Prometheus Metrics (:8000/metrics)
 
 ---
 
-## Future Phases (Not Yet Detailed)
+## Future Phases
 
-### Phase 5: Migration
-- WP-501: Retry queue migration job
-- WP-502: Parallel run validation
-- WP-503: Cutover procedure
+<details open>
+<summary><strong>Phase 5: Eventhouse Integration (WP-501 to WP-507)</strong></summary>
+
+## Phase 5 Overview
+
+**Goal**: Add support for polling events from Microsoft Fabric Eventhouse (KQL tables) as an alternative to Event Hub, while keeping Event Hub as a configurable option.
+
+**Background**:
+- Current implementation consumes events directly from Azure Event Hub via Kafka protocol
+- Production environment uses Microsoft Fabric Eventhouse (a KQL/Kusto database)
+- Eventhouse is a database, not a message broker - requires polling, not streaming
+- This matches the pattern used by the Verisk pipeline
+
+**Architecture Change**:
+```
+CURRENT (Event Hub):
+  Event Hub ──(Kafka protocol)──► EventIngesterWorker ──► downloads.pending
+
+NEW (Eventhouse option):
+  Source System ──► Eventhouse (KQL table) ──(polling)──► KQLEventPoller ──► downloads.pending
+                                                              │
+                                                    Checkpoint table/file
+                                                    (tracks last processed)
+```
+
+**Key Design Decisions**:
+1. Keep Event Hub consumer as configurable option (already built)
+2. Add KQL poller as alternative source
+3. Use watermark/checkpoint to track processing position
+4. Support multiple pipelines (xact, claimx) with different source tables
+
+**Volume Estimates**:
+- xact: 150-200k messages/day (concentrated in business hours)
+- claimx: 20-30k messages/day
+- Peak: ~20-25k messages/hour, ~400/minute sustained
+
+---
+
+### WP-501: KQL Client Foundation
+
+**Objective**: Create reusable KQL client for querying Fabric Eventhouse
+**Size**: Medium
+**Files to read**:
+- `src/core/auth/credentials.py` (Azure credential handling)
+- azure-kusto-data SDK documentation
+- Microsoft Fabric Eventhouse documentation
+**Files to create/modify**:
+- `src/kafka_pipeline/eventhouse/__init__.py`
+- `src/kafka_pipeline/eventhouse/kql_client.py`
+- `tests/kafka_pipeline/eventhouse/test_kql_client.py`
+- `pyproject.toml` (add azure-kusto-data dependency)
+**Dependencies**: None
+**Deliverable**: `KQLClient` class that can execute queries against Eventhouse
+**Review checklist**:
+- [ ] Uses azure-kusto-data SDK
+- [ ] Authenticates via DefaultAzureCredential (consistent with OneLake auth)
+- [ ] Connection pooling and reuse
+- [ ] Query timeout configuration
+- [ ] Error classification (transient vs permanent)
+- [ ] Retry logic for transient failures
+- [ ] Logging with query timing
+
+**Research needed**:
+- Eventhouse cluster URL format in Fabric
+- Authentication flow for Fabric Eventhouse
+- Query result pagination for large result sets
+
+---
+
+### WP-502: Deduplication via xact_events
+
+**Objective**: Use existing xact_events Delta table as the "processed" tracker
+**Size**: Medium
+**Files to read**:
+- `src/kafka_pipeline/eventhouse/kql_client.py` (from WP-501)
+- `src/kafka_pipeline/writers/delta_events.py` (existing Delta writer)
+**Files to create/modify**:
+- `src/kafka_pipeline/eventhouse/dedup.py`
+- `tests/kafka_pipeline/eventhouse/test_dedup.py`
+**Dependencies**: WP-501
+**Deliverable**: Efficient deduplication using xact_events as tracking table
+
+**Architecture**:
+```
+Eventhouse (10M+ rows) ──► Time-bounded query ──► Anti-join in KQL ──► New events only
+                                                        ▲
+                                                        │
+                          xact_events Delta ──► Recent trace_ids (batch)
+```
+
+**Critical: Query Performance**
+
+Previous Verisk experience showed slow queries when filtering happened AFTER full table scan.
+The query MUST push all filtering into KQL:
+
+```kql
+// CORRECT: Filter early, anti-join in KQL
+let processed = dynamic(["trace_id_1", "trace_id_2", ...]);  // passed from xact_events
+Events
+| where ingestion_time() > ago(1h)           // TIME FILTER FIRST - limits scan
+| where ingestion_time() > datetime({last_poll_time})  // incremental
+| where trace_id !in (processed)             // anti-join IN KQL, not Python
+| order by ingestion_time() asc
+| take 1000
+
+// WRONG: Full scan then filter
+Events                                        // Scans 10M+ rows
+| where trace_id !in (processed)             // Filtering happens AFTER full read
+```
+
+**Implementation approach**:
+1. Query xact_events for trace_ids from last N hours (small set)
+2. Pass trace_id list INTO the KQL query as `dynamic([...])`
+3. Let KQL engine do the anti-join (not Python)
+4. Use narrow time window (ingestion_time filter FIRST)
+
+**Polars for xact_events reads** (already used throughout codebase):
+```python
+import polars as pl
+from datetime import datetime, timedelta
+
+def get_recent_trace_ids(table_path: str, hours: int = 24) -> list[str]:
+    """
+    Get trace_ids from xact_events within time window.
+    Uses lazy scan with predicate pushdown - only reads relevant parquet files.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+
+    return (
+        pl.scan_delta(table_path)
+        .filter(pl.col("ingested_at") > cutoff)  # Pushes down to Delta
+        .select("trace_id")                       # Only reads one column
+        .collect()
+        ["trace_id"]
+        .to_list()
+    )
+
+# Expected: ~200k trace_ids for 24h window at peak volume
+# Performance: <1 second (predicate pushdown + column pruning)
+```
+
+**Review checklist**:
+- [ ] Uses Polars `scan_delta()` for lazy evaluation
+- [ ] Time filter via `pl.col("ingested_at")` pushes down to Delta
+- [ ] Only selects `trace_id` column (column pruning)
+- [ ] Time filter is FIRST clause in KQL query (limits scan)
+- [ ] Anti-join happens in KQL via `!in` operator
+- [ ] trace_ids passed as `dynamic([...])` parameter
+- [ ] Query window is narrow (default: 1 hour, configurable)
+- [ ] Overlap window handles edge cases (poll last 5 min even if processed)
+- [ ] xact_events query is also time-bounded (last 24-48h)
+- [ ] Batch size limits prevent huge `dynamic([...])` lists (chunk if >50k)
+- [ ] Query execution time logged and monitored
+- [ ] Unit tests verify query structure (not just results)
+
+---
+
+### WP-503: KQL Event Poller
+
+**Objective**: Create poller that queries Eventhouse and produces to Kafka
+**Size**: Large
+**Files to read**:
+- `src/kafka_pipeline/eventhouse/kql_client.py` (from WP-501)
+- `src/kafka_pipeline/eventhouse/dedup.py` (from WP-502)
+- `src/kafka_pipeline/workers/event_ingester.py` (existing worker pattern)
+- `src/kafka_pipeline/schemas/events.py` (EventMessage schema)
+**Files to create/modify**:
+- `src/kafka_pipeline/eventhouse/poller.py`
+- `tests/kafka_pipeline/eventhouse/test_poller.py`
+**Dependencies**: WP-501, WP-502
+**Deliverable**: `KQLEventPoller` that polls Eventhouse and produces EventMessages
+
+**Poll cycle**:
+```python
+async def poll_cycle():
+    # 1. Get recently processed trace_ids from xact_events (time-bounded)
+    processed_ids = await get_recent_trace_ids(hours=24)
+
+    # 2. Query Eventhouse with anti-join IN KQL (not Python)
+    new_events = await kql_client.query("""
+        let processed = dynamic({processed_ids});
+        Events
+        | where ingestion_time() > ago(1h)
+        | where trace_id !in (processed)
+        | take 1000
+    """)
+
+    # 3. Produce to Kafka (downloads.pending via existing EventIngester logic)
+    for event in new_events:
+        await producer.send(event)
+
+    # 4. xact_events updated by downstream EventIngester (already happens)
+```
+
+**Review checklist**:
+- [ ] Configurable poll interval (default: 30s)
+- [ ] Configurable batch size (default: 1000)
+- [ ] Uses WP-502 dedup logic (anti-join in KQL)
+- [ ] Time window for xact_events query (avoid scanning full Delta table)
+- [ ] Handles schema mapping from KQL result to EventMessage
+- [ ] Produces to local Kafka downloads.pending topic
+- [ ] Reuses existing attachment processing logic from EventIngester
+- [ ] Graceful shutdown (finish current batch)
+- [ ] Metrics: poll_count, events_fetched, poll_duration, query_time_ms
+- [ ] Backpressure: pause polling if downstream Kafka lag is high
+- [ ] Alert if poll returns 0 events for extended period (data flow issue)
+
+---
+
+### WP-504: Configurable Event Source
+
+**Objective**: Make event source configurable between Event Hub and Eventhouse
+**Size**: Medium
+**Files to read**:
+- `src/kafka_pipeline/workers/event_ingester.py`
+- `src/kafka_pipeline/eventhouse/poller.py` (from WP-503)
+- `src/kafka_pipeline/pipeline_config.py`
+- `src/kafka_pipeline/__main__.py`
+**Files to create/modify**:
+- `src/kafka_pipeline/pipeline_config.py` (add source config)
+- `src/kafka_pipeline/__main__.py` (start correct source)
+- `src/kafka_pipeline/workers/event_ingester.py` (refactor if needed)
+- `tests/kafka_pipeline/test_source_config.py`
+**Dependencies**: WP-503
+**Deliverable**: Configuration-driven event source selection
+**Review checklist**:
+- [ ] Environment variable: `EVENT_SOURCE=eventhub|eventhouse`
+- [ ] Eventhouse config: cluster URL, database, table name
+- [ ] Event Hub config unchanged (backward compatible)
+- [ ] Factory function creates correct source based on config
+- [ ] Both sources produce identical EventMessage format
+- [ ] Documentation updated with new config options
+- [ ] Default: eventhub (backward compatible)
+
+**Configuration example**:
+```bash
+# Option A: Event Hub (existing)
+EVENT_SOURCE=eventhub
+EVENTHUB_BOOTSTRAP_SERVERS=...
+EVENTHUB_CONNECTION_STRING=...
+
+# Option B: Eventhouse (new)
+EVENT_SOURCE=eventhouse
+EVENTHOUSE_CLUSTER_URL=https://your-cluster.kusto.fabric.microsoft.com
+EVENTHOUSE_DATABASE=your-database
+EVENTHOUSE_TABLE=Events
+EVENTHOUSE_POLL_INTERVAL=30
+```
+
+---
+
+### WP-505: Multi-Pipeline Support
+
+**Objective**: Support multiple pipelines (xact, claimx) with different source configurations
+**Size**: Medium
+**Files to read**:
+- `src/kafka_pipeline/pipeline_config.py` (from WP-504)
+- `src/kafka_pipeline/eventhouse/poller.py` (from WP-503)
+**Files to create/modify**:
+- `src/kafka_pipeline/pipeline_config.py` (multi-pipeline config)
+- `src/kafka_pipeline/__main__.py` (pipeline selection)
+- `tests/kafka_pipeline/test_multi_pipeline.py`
+**Dependencies**: WP-504
+**Deliverable**: Support for running xact and claimx pipelines with independent configurations
+**Review checklist**:
+- [ ] CLI flag: `--pipeline xact` or `--pipeline claimx`
+- [ ] Each pipeline has its own:
+  - Source table in Eventhouse
+  - Checkpoint (independent processing)
+  - Consumer group prefix
+  - Topic prefix (optional)
+- [ ] Can run both pipelines simultaneously (separate processes)
+- [ ] Shared Kafka infrastructure (same local broker)
+- [ ] Documentation for multi-pipeline deployment
+
+**Configuration structure**:
+```python
+pipelines:
+  xact:
+    source_table: XactEvents
+    checkpoint_name: xact-checkpoint
+    topic_prefix: xact
+  claimx:
+    source_table: ClaimXEvents
+    checkpoint_name: claimx-checkpoint
+    topic_prefix: claimx
+```
+
+---
+
+### WP-506: Eventhouse Integration Testing
+
+**Objective**: Integration tests for Eventhouse polling flow
+**Size**: Medium
+**Files to read**:
+- `src/kafka_pipeline/eventhouse/` (all modules)
+- `tests/kafka_pipeline/integration/conftest.py`
+**Files to create/modify**:
+- `tests/kafka_pipeline/eventhouse/integration/test_e2e_polling.py`
+- `tests/kafka_pipeline/eventhouse/integration/conftest.py`
+**Dependencies**: WP-504
+**Deliverable**: Integration tests validating Eventhouse → Kafka flow
+**Review checklist**:
+- [ ] Mock Eventhouse for unit tests (no external dependency)
+- [ ] Integration test with real Eventhouse (optional, requires credentials)
+- [ ] Test: poll → produce → checkpoint update
+- [ ] Test: resume from checkpoint after restart
+- [ ] Test: handle empty result set (no new events)
+- [ ] Test: handle query timeout/error
+- [ ] Test: backpressure when Kafka lag is high
+- [ ] Performance test: polling throughput
+
+---
+
+### WP-507: Eventhouse Observability
+
+**Objective**: Add metrics, alerts, and dashboard for Eventhouse polling
+**Size**: Medium
+**Files to read**:
+- `src/kafka_pipeline/metrics.py` (existing metrics)
+- `src/kafka_pipeline/eventhouse/poller.py` (from WP-503)
+- `observability/prometheus/alerts/kafka-pipeline.yml`
+- `observability/grafana/dashboards/`
+**Files to create/modify**:
+- `src/kafka_pipeline/metrics.py` (add Eventhouse metrics)
+- `observability/prometheus/alerts/eventhouse.yml` (new alert rules)
+- `observability/grafana/dashboards/eventhouse-polling.json` (new dashboard)
+- `docs/runbooks/eventhouse-polling.md` (new runbook)
+**Dependencies**: WP-503, WP-506
+**Deliverable**: Full observability for Eventhouse polling
+
+**New metrics to add:**
+```python
+# Eventhouse polling metrics
+eventhouse_polls_total = Counter(
+    "eventhouse_polls_total",
+    "Total number of poll cycles executed",
+    ["pipeline", "status"],  # status: success, error
+)
+
+eventhouse_events_fetched_total = Counter(
+    "eventhouse_events_fetched_total",
+    "Total events fetched from Eventhouse",
+    ["pipeline"],
+)
+
+eventhouse_poll_duration_seconds = Histogram(
+    "eventhouse_poll_duration_seconds",
+    "Time spent in complete poll cycle",
+    ["pipeline"],
+    buckets=(0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0),
+)
+
+eventhouse_kql_query_duration_seconds = Histogram(
+    "eventhouse_kql_query_duration_seconds",
+    "Time spent executing KQL query",
+    ["pipeline"],
+    buckets=(0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0),
+)
+
+eventhouse_dedup_query_duration_seconds = Histogram(
+    "eventhouse_dedup_query_duration_seconds",
+    "Time spent querying xact_events for deduplication",
+    ["pipeline"],
+    buckets=(0.1, 0.5, 1.0, 2.5, 5.0, 10.0),
+)
+
+eventhouse_dedup_trace_ids_count = Gauge(
+    "eventhouse_dedup_trace_ids_count",
+    "Number of trace_ids in current dedup set",
+    ["pipeline"],
+)
+
+eventhouse_connection_status = Gauge(
+    "eventhouse_connection_status",
+    "Eventhouse connection status (1=connected, 0=disconnected)",
+    ["pipeline"],
+)
+
+eventhouse_poll_errors_total = Counter(
+    "eventhouse_poll_errors_total",
+    "Total number of poll errors by type",
+    ["pipeline", "error_type"],  # error_type: kql_timeout, connection, auth, dedup
+)
+```
+
+**New alerts:**
+```yaml
+# eventhouse.yml
+- alert: EventhouseNoEventsFetched
+  expr: increase(eventhouse_events_fetched_total[15m]) == 0
+  for: 15m
+  labels:
+    severity: warning
+  annotations:
+    summary: "No events fetched from Eventhouse for 15 minutes"
+    runbook_url: docs/runbooks/eventhouse-polling.md
+
+- alert: EventhouseKQLQuerySlow
+  expr: histogram_quantile(0.95, eventhouse_kql_query_duration_seconds) > 30
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: "KQL query p95 latency exceeds 30 seconds"
+
+- alert: EventhouseDedupQuerySlow
+  expr: histogram_quantile(0.95, eventhouse_dedup_query_duration_seconds) > 5
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Dedup query p95 latency exceeds 5 seconds"
+
+- alert: EventhouseConnectionFailed
+  expr: eventhouse_connection_status == 0
+  for: 2m
+  labels:
+    severity: critical
+  annotations:
+    summary: "Eventhouse connection lost"
+
+- alert: EventhousePollErrors
+  expr: increase(eventhouse_poll_errors_total[5m]) > 5
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Multiple Eventhouse poll errors detected"
+```
+
+**Review checklist**:
+- [ ] All new metrics added to metrics.py
+- [ ] Helper functions for recording Eventhouse metrics
+- [ ] Grafana dashboard shows poll rate, latency, events fetched
+- [ ] Grafana dashboard shows KQL and dedup query performance
+- [ ] Grafana dashboard shows connection status
+- [ ] Alert rules for no events, slow queries, connection failures
+- [ ] Runbook for Eventhouse polling issues
+- [ ] Monitoring.py web UI updated to show Eventhouse stats (if polling source)
+- [ ] Metrics labeled by pipeline (xact, claimx) for multi-pipeline support
+
+</details>
+
+---
+
+### Phase 6: Migration (Not Yet Detailed)
+- WP-601: Parallel run validation (Event Hub vs Eventhouse)
+- WP-602: Cutover procedure
+- WP-603: Decommission Event Hub consumer (optional)
 
 ---
 

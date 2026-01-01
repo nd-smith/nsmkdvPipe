@@ -2,20 +2,32 @@
 Pipeline configuration for hybrid Event Hub + Local Kafka setup.
 
 Architecture:
-    - Event Hub (Azure): Source of truth for raw events
+    - Event Source (Event Hub or Eventhouse): Source of raw events
     - Local Kafka: Internal pipeline communication between workers
 
 Workers:
-    - EventIngesterWorker: Reads from Event Hub, writes to Local Kafka
+    - EventIngesterWorker (Event Hub mode): Reads from Event Hub, writes to Local Kafka
+    - KQLEventPoller (Eventhouse mode): Polls Eventhouse, writes to Local Kafka
     - DownloadWorker: Reads/writes Local Kafka only
     - ResultProcessor: Reads from Local Kafka only
+
+Event Source Configuration:
+    Set EVENT_SOURCE=eventhub (default) or EVENT_SOURCE=eventhouse
 """
 
 import os
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import List, Optional
 
 from kafka_pipeline.config import KafkaConfig
+
+
+class EventSourceType(str, Enum):
+    """Type of event source for the pipeline."""
+
+    EVENTHUB = "eventhub"
+    EVENTHOUSE = "eventhouse"
 
 
 @dataclass
@@ -155,14 +167,91 @@ class LocalKafkaConfig:
 
 
 @dataclass
+class EventhouseSourceConfig:
+    """Configuration for Eventhouse as event source.
+
+    Used when EVENT_SOURCE=eventhouse.
+    """
+
+    cluster_url: str
+    database: str
+    source_table: str = "Events"
+
+    # Polling configuration
+    poll_interval_seconds: int = 30
+    batch_size: int = 1000
+
+    # Query configuration
+    query_timeout_seconds: int = 120
+
+    # Deduplication configuration
+    xact_events_table_path: str = ""
+    xact_events_window_hours: int = 24
+    eventhouse_query_window_hours: int = 1
+    overlap_minutes: int = 5
+
+    @classmethod
+    def from_env(cls) -> "EventhouseSourceConfig":
+        """Load Eventhouse configuration from environment variables.
+
+        Required:
+            EVENTHOUSE_CLUSTER_URL: Kusto cluster URL
+            EVENTHOUSE_DATABASE: Database name
+
+        Optional:
+            EVENTHOUSE_SOURCE_TABLE: Table name (default: Events)
+            POLL_INTERVAL_SECONDS: Poll interval (default: 30)
+            POLL_BATCH_SIZE: Max events per poll (default: 1000)
+            EVENTHOUSE_QUERY_TIMEOUT: Query timeout (default: 120)
+            XACT_EVENTS_TABLE_PATH: Path to xact_events Delta table
+            DEDUP_XACT_EVENTS_WINDOW_HOURS: Hours to look back (default: 24)
+            DEDUP_EVENTHOUSE_WINDOW_HOURS: Hours to query (default: 1)
+            DEDUP_OVERLAP_MINUTES: Overlap window (default: 5)
+        """
+        cluster_url = os.getenv("EVENTHOUSE_CLUSTER_URL")
+        database = os.getenv("EVENTHOUSE_DATABASE")
+
+        if not cluster_url:
+            raise ValueError("EVENTHOUSE_CLUSTER_URL is required when EVENT_SOURCE=eventhouse")
+        if not database:
+            raise ValueError("EVENTHOUSE_DATABASE is required when EVENT_SOURCE=eventhouse")
+
+        return cls(
+            cluster_url=cluster_url,
+            database=database,
+            source_table=os.getenv("EVENTHOUSE_SOURCE_TABLE", "Events"),
+            poll_interval_seconds=int(os.getenv("POLL_INTERVAL_SECONDS", "30")),
+            batch_size=int(os.getenv("POLL_BATCH_SIZE", "1000")),
+            query_timeout_seconds=int(os.getenv("EVENTHOUSE_QUERY_TIMEOUT", "120")),
+            xact_events_table_path=os.getenv("XACT_EVENTS_TABLE_PATH", ""),
+            xact_events_window_hours=int(
+                os.getenv("DEDUP_XACT_EVENTS_WINDOW_HOURS", "24")
+            ),
+            eventhouse_query_window_hours=int(
+                os.getenv("DEDUP_EVENTHOUSE_WINDOW_HOURS", "1")
+            ),
+            overlap_minutes=int(os.getenv("DEDUP_OVERLAP_MINUTES", "5")),
+        )
+
+
+@dataclass
 class PipelineConfig:
     """Complete pipeline configuration.
 
-    Combines Event Hub (source) and Local Kafka (internal) configurations.
+    Combines event source (Event Hub or Eventhouse) and Local Kafka configurations.
     """
 
-    eventhub: EventHubConfig
-    local_kafka: LocalKafkaConfig
+    # Event source type (eventhub or eventhouse)
+    event_source: EventSourceType
+
+    # Event Hub config (only populated if event_source == eventhub)
+    eventhub: Optional[EventHubConfig] = None
+
+    # Eventhouse config (only populated if event_source == eventhouse)
+    eventhouse: Optional[EventhouseSourceConfig] = None
+
+    # Local Kafka for internal pipeline communication
+    local_kafka: LocalKafkaConfig = field(default_factory=LocalKafkaConfig)
 
     # Delta Lake configuration
     enable_delta_writes: bool = True
@@ -172,15 +261,55 @@ class PipelineConfig:
 
     @classmethod
     def from_env(cls) -> "PipelineConfig":
-        """Load complete pipeline configuration from environment."""
+        """Load complete pipeline configuration from environment.
+
+        The EVENT_SOURCE environment variable determines which source is used:
+        - eventhub (default): Use Azure Event Hub via Kafka protocol
+        - eventhouse: Poll Microsoft Fabric Eventhouse
+
+        Required environment variables depend on the source:
+        - eventhub: EVENTHUB_BOOTSTRAP_SERVERS, EVENTHUB_CONNECTION_STRING
+        - eventhouse: EVENTHOUSE_CLUSTER_URL, EVENTHOUSE_DATABASE
+        """
+        source_str = os.getenv("EVENT_SOURCE", "eventhub").lower()
+
+        try:
+            event_source = EventSourceType(source_str)
+        except ValueError:
+            raise ValueError(
+                f"Invalid EVENT_SOURCE '{source_str}'. Must be 'eventhub' or 'eventhouse'"
+            )
+
+        local_kafka = LocalKafkaConfig.from_env()
+
+        eventhub_config = None
+        eventhouse_config = None
+
+        if event_source == EventSourceType.EVENTHUB:
+            eventhub_config = EventHubConfig.from_env()
+        else:
+            eventhouse_config = EventhouseSourceConfig.from_env()
+
         return cls(
-            eventhub=EventHubConfig.from_env(),
-            local_kafka=LocalKafkaConfig.from_env(),
+            event_source=event_source,
+            eventhub=eventhub_config,
+            eventhouse=eventhouse_config,
+            local_kafka=local_kafka,
             enable_delta_writes=os.getenv("ENABLE_DELTA_WRITES", "true").lower() == "true",
             events_table_path=os.getenv("DELTA_EVENTS_TABLE_PATH", ""),
             inventory_table_path=os.getenv("DELTA_INVENTORY_TABLE_PATH", ""),
             failed_table_path=os.getenv("DELTA_FAILED_TABLE_PATH", ""),
         )
+
+    @property
+    def is_eventhub_source(self) -> bool:
+        """Check if using Event Hub as source."""
+        return self.event_source == EventSourceType.EVENTHUB
+
+    @property
+    def is_eventhouse_source(self) -> bool:
+        """Check if using Eventhouse as source."""
+        return self.event_source == EventSourceType.EVENTHOUSE
 
 
 def get_pipeline_config() -> PipelineConfig:
@@ -189,3 +318,12 @@ def get_pipeline_config() -> PipelineConfig:
     This is the main entry point for loading configuration.
     """
     return PipelineConfig.from_env()
+
+
+def get_event_source_type() -> EventSourceType:
+    """Get the configured event source type.
+
+    Quick check without loading full config.
+    """
+    source_str = os.getenv("EVENT_SOURCE", "eventhub").lower()
+    return EventSourceType(source_str)
