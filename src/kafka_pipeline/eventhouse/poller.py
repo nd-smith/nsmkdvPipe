@@ -521,6 +521,12 @@ class KQLEventPoller:
         """
         Convert a KQL result row to EventMessage.
 
+        Handles the Eventhouse schema where:
+        - type: "verisk.claims.property.xn.documentsReceived" (full event type)
+        - traceId: UUID trace identifier
+        - utcDateTime: Event timestamp
+        - data: JSON object containing payload and nested attachments
+
         Args:
             row: Dictionary from KQL result
 
@@ -529,8 +535,52 @@ class KQLEventPoller:
         """
         mapping = self.config.column_mapping
 
+        # Extract trace_id (supports both traceId and trace_id column names)
+        trace_id = row.get(mapping.get("trace_id", "traceId"), "")
+        if not trace_id:
+            trace_id = row.get("traceId", row.get("trace_id", ""))
+
+        # Extract and parse the full event type
+        # e.g., "verisk.claims.property.xn.documentsReceived"
+        full_type = row.get(mapping.get("event_type", "type"), "")
+        if not full_type:
+            full_type = row.get("type", "")
+
+        # Parse event_type and event_subtype from full type string
+        # verisk.claims.property.xn.status.reassigned ->
+        #   event_type = "verisk.claims.property.xn"
+        #   event_subtype = "status.reassigned" or "reassigned"
+        if full_type and "." in full_type:
+            parts = full_type.split(".")
+            # Find the "xn" boundary to split type/subtype
+            if "xn" in parts:
+                xn_idx = parts.index("xn")
+                event_type = ".".join(parts[:xn_idx + 1])  # verisk.claims.property.xn
+                event_subtype = ".".join(parts[xn_idx + 1:])  # status.reassigned or documentsReceived
+            else:
+                # Fallback: last segment is subtype
+                event_type = ".".join(parts[:-1])
+                event_subtype = parts[-1]
+        else:
+            event_type = full_type
+            event_subtype = full_type
+
+        # Extract source_system (derive from type or use default)
+        source_system = row.get(mapping.get("source_system", "source_system"), "")
+        if not source_system:
+            # Derive from event type (e.g., "xn" from "verisk.claims.property.xn")
+            if "xn" in full_type.lower():
+                source_system = "xn"
+            elif "claimx" in full_type.lower():
+                source_system = "claimx"
+            else:
+                source_system = "verisk"
+
         # Extract and parse timestamp
-        timestamp_val = row.get(mapping["timestamp"])
+        timestamp_val = row.get(mapping.get("timestamp", "utcDateTime"))
+        if not timestamp_val:
+            timestamp_val = row.get("utcDateTime", row.get("timestamp"))
+
         if isinstance(timestamp_val, str):
             timestamp = datetime.fromisoformat(timestamp_val.replace("Z", "+00:00"))
         elif isinstance(timestamp_val, datetime):
@@ -538,27 +588,13 @@ class KQLEventPoller:
         else:
             timestamp = datetime.now(timezone.utc)
 
-        # Extract attachments (could be string or list)
-        attachments_val = row.get(mapping.get("attachments", "attachments"))
-        if isinstance(attachments_val, str):
-            # Try to parse as JSON array
-            import json
+        # Extract payload (the 'data' field)
+        payload_val = row.get(mapping.get("payload", "data"), {})
+        if not payload_val:
+            payload_val = row.get("data", {})
 
-            try:
-                attachments = json.loads(attachments_val)
-            except json.JSONDecodeError:
-                # Single URL as string
-                attachments = [attachments_val] if attachments_val else None
-        elif isinstance(attachments_val, list):
-            attachments = attachments_val
-        else:
-            attachments = None
-
-        # Extract payload (could be string or dict)
-        payload_val = row.get(mapping.get("payload", "payload"), {})
         if isinstance(payload_val, str):
             import json
-
             try:
                 payload = json.loads(payload_val)
             except json.JSONDecodeError:
@@ -568,12 +604,32 @@ class KQLEventPoller:
         else:
             payload = {}
 
+        # Extract attachments - NESTED inside data.attachments
+        attachments = None
+
+        # First check if attachments is a top-level column
+        attachments_col = mapping.get("attachments", "attachments")
+        attachments_val = row.get(attachments_col)
+
+        # If not found at top level, look inside payload/data
+        if attachments_val is None and isinstance(payload, dict):
+            attachments_val = payload.get("attachments")
+
+        if isinstance(attachments_val, str):
+            import json
+            try:
+                attachments = json.loads(attachments_val)
+            except json.JSONDecodeError:
+                attachments = [attachments_val] if attachments_val else None
+        elif isinstance(attachments_val, list):
+            attachments = attachments_val if attachments_val else None
+
         return EventMessage(
-            trace_id=row.get(mapping["trace_id"], ""),
-            event_type=row.get(mapping["event_type"], ""),
-            event_subtype=row.get(mapping["event_subtype"], ""),
+            trace_id=trace_id,
+            event_type=event_type,
+            event_subtype=event_subtype,
             timestamp=timestamp,
-            source_system=row.get(mapping["source_system"], ""),
+            source_system=source_system,
             payload=payload,
             attachments=attachments,
         )

@@ -41,6 +41,10 @@ class DedupConfig:
     # If more than this, chunk into multiple queries
     max_trace_ids_per_query: int = 50_000
 
+    # Column name for trace_id in Eventhouse (may differ from Delta table)
+    # Default is "traceId" to match common Eventhouse schema
+    eventhouse_trace_id_column: str = "traceId"
+
 
 class EventhouseDeduplicator:
     """
@@ -163,7 +167,7 @@ class EventhouseDeduplicator:
             batch_index: Batch index for logging (when chunking)
 
         Returns:
-            KQL filter clause: "trace_id !in dynamic(['id1', 'id2', ...])"
+            KQL filter clause: "traceId !in dynamic(['id1', 'id2', ...])"
             or empty string if no trace_ids
         """
         if not trace_ids:
@@ -175,7 +179,9 @@ class EventhouseDeduplicator:
         # Build dynamic array
         id_list = ", ".join(f"'{tid}'" for tid in escaped_ids)
 
-        filter_clause = f"trace_id !in (dynamic([{id_list}]))"
+        # Use configurable column name (default: traceId for Eventhouse schema)
+        column_name = self.config.eventhouse_trace_id_column
+        filter_clause = f"{column_name} !in (dynamic([{id_list}]))"
 
         logger.debug(
             "Built KQL anti-join filter",
@@ -183,6 +189,7 @@ class EventhouseDeduplicator:
                 "trace_id_count": len(trace_ids),
                 "batch_index": batch_index,
                 "filter_length": len(filter_clause),
+                "column_name": column_name,
             },
         )
 
