@@ -695,6 +695,16 @@ class DeltaTableWriter(LoggedClass):
         cutoff_date = cutoff.date()
         today = datetime.now(timezone.utc).date()
 
+        self._log(
+            logging.DEBUG,
+            "Getting recent IDs for deduplication",
+            dedupe_column=self.dedupe_column,
+            partition_column=self.partition_column,
+            cutoff_date=str(cutoff_date),
+            today=str(today),
+            dedupe_window_hours=self.dedupe_window_hours,
+        )
+
         opts = get_storage_options()
         lf = pl.scan_delta(self.table_path, storage_options=opts)
 
@@ -706,15 +716,27 @@ class DeltaTableWriter(LoggedClass):
         # Then apply row-level timestamp filter
         timestamp_filter = pl.col(self.timestamp_column) > cutoff
 
+        # CRITICAL: Use .unique() on LazyFrame BEFORE collecting to deduplicate
+        # at the storage layer. Without this, we load all rows then convert to set,
+        # which is extremely slow for tables with millions of rows.
         df = (
             lf.filter(partition_filter)
             .filter(timestamp_filter)
             .select(self.dedupe_column)
+            .unique()
             .collect(streaming=True)
         )
 
         if df is None or df.is_empty():
+            self._log(logging.DEBUG, "No recent IDs found for deduplication")
             return set()
+
+        id_count = len(df)
+        self._log(
+            logging.DEBUG,
+            "Retrieved unique IDs for deduplication",
+            id_count=id_count,
+        )
 
         return set(df[self.dedupe_column].to_list())
 
