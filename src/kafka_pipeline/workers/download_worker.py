@@ -733,6 +733,9 @@ class DownloadWorker:
             content_type=outcome.content_type,
             event_type=task_message.event_type,
             event_subtype=task_message.event_subtype,
+            status_subtype=task_message.status_subtype,
+            file_type=task_message.file_type,
+            assignment_id=task_message.assignment_id,
             original_timestamp=task_message.original_timestamp,
             downloaded_at=datetime.now(timezone.utc),
             metadata=task_message.metadata,
@@ -844,22 +847,25 @@ class DownloadWorker:
             # Don't re-raise - we'll still produce result message
 
         # Determine status for result message
+        # Schema allows: completed, failed, failed_permanent
         if error_category == ErrorCategory.PERMANENT:
             status = "failed_permanent"
         else:
-            status = "failed_transient"
+            status = "failed"  # Transient failures are just "failed"
 
         # Produce result message for observability
         result_message = DownloadResultMessage(
             trace_id=task_message.trace_id,
             attachment_url=task_message.attachment_url,
+            blob_path=task_message.blob_path,
+            status_subtype=task_message.status_subtype,
+            file_type=task_message.file_type,
+            assignment_id=task_message.assignment_id,
             status=status,
-            destination_path=None,
-            bytes_downloaded=None,
+            bytes_downloaded=0,
             error_message=outcome.error_message,
-            error_category=error_category.value,
-            processing_time_ms=processing_time_ms,
-            completed_at=datetime.now(timezone.utc),
+            retry_count=task_message.retry_count,
+            created_at=datetime.now(timezone.utc),
         )
 
         await self.producer.send(

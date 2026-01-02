@@ -428,13 +428,13 @@ class UploadWorker:
             result_message = DownloadResultMessage(
                 trace_id=trace_id,
                 attachment_url=cached_message.attachment_url,
-                status="success",
-                destination_path=cached_message.destination_path,
+                blob_path=cached_message.destination_path,
+                status_subtype=cached_message.status_subtype,
+                file_type=cached_message.file_type,
+                assignment_id=cached_message.assignment_id,
+                status="completed",
                 bytes_downloaded=cached_message.bytes_downloaded,
-                error_message=None,
-                error_category=None,
-                processing_time_ms=processing_time_ms,
-                completed_at=datetime.now(timezone.utc),
+                created_at=datetime.now(timezone.utc),
             )
 
             await self.producer.send(
@@ -465,17 +465,21 @@ class UploadWorker:
             # For upload failures, we produce a failure result
             # The file stays in cache for manual review/retry
             try:
-                cached_message = CachedDownloadMessage.model_validate_json(message.value)
+                # Re-parse message in case it wasn't parsed yet
+                if 'cached_message' not in locals() or cached_message is None:
+                    cached_message = CachedDownloadMessage.model_validate_json(message.value)
+
                 result_message = DownloadResultMessage(
                     trace_id=cached_message.trace_id,
                     attachment_url=cached_message.attachment_url,
+                    blob_path=cached_message.destination_path,
+                    status_subtype=cached_message.status_subtype,
+                    file_type=cached_message.file_type,
+                    assignment_id=cached_message.assignment_id,
                     status="failed_permanent",
-                    destination_path=None,
-                    bytes_downloaded=None,
+                    bytes_downloaded=0,
                     error_message=str(e)[:500],
-                    error_category="upload_error",
-                    processing_time_ms=processing_time_ms,
-                    completed_at=datetime.now(timezone.utc),
+                    created_at=datetime.now(timezone.utc),
                 )
 
                 await self.producer.send(
