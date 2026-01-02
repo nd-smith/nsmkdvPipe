@@ -647,7 +647,16 @@ class DeltaTableWriter(LoggedClass):
         if not self.dedupe_column:
             return df
 
-        existing_ids = self._get_recent_ids()
+        try:
+            existing_ids = self._get_recent_ids()
+        except Exception as e:
+            self._log_exception(
+                e,
+                "Could not get recent IDs for deduplication",
+                level=logging.WARNING,
+            )
+            return df
+
         if not existing_ids:
             return df
 
@@ -664,40 +673,32 @@ class DeltaTableWriter(LoggedClass):
 
         return df
 
+    @with_retry(config=DELTA_RETRY_CONFIG, on_auth_error=_on_auth_error)
     def _get_recent_ids(self) -> Set[str]:
         """Get dedupe column values from recent window using lazy scan."""
         if not self.dedupe_column:
             return set()
 
-        try:
-            if not self._reader.exists():
-                return set()
-
-            cutoff = datetime.now(timezone.utc) - timedelta(
-                hours=self.dedupe_window_hours
-            )
-
-            # Use lazy scan with predicate pushdown - only reads relevant parquet files
-            opts = get_storage_options()
-            df = (
-                pl.scan_delta(self.table_path, storage_options=opts)
-                .filter(pl.col(self.timestamp_column) > cutoff)
-                .select(self.dedupe_column)
-                .collect()
-            )
-
-            if df is None or df.is_empty():
-                return set()
-
-            return set(df[self.dedupe_column].to_list())
-
-        except Exception as e:
-            self._log_exception(
-                e,
-                "Could not get recent IDs for deduplication",
-                level=logging.WARNING,
-            )
+        if not self._reader.exists():
             return set()
+
+        cutoff = datetime.now(timezone.utc) - timedelta(
+            hours=self.dedupe_window_hours
+        )
+
+        # Use lazy scan with predicate pushdown - only reads relevant parquet files
+        opts = get_storage_options()
+        df = (
+            pl.scan_delta(self.table_path, storage_options=opts)
+            .filter(pl.col(self.timestamp_column) > cutoff)
+            .select(self.dedupe_column)
+            .collect()
+        )
+
+        if df is None or df.is_empty():
+            return set()
+
+        return set(df[self.dedupe_column].to_list())
 
     @logged_operation(level=logging.INFO)
     @with_retry(config=DELTA_RETRY_CONFIG, on_auth_error=_on_auth_error)
