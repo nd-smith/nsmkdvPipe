@@ -109,6 +109,7 @@ class LocalKafkaConfig:
     sasl_mechanism: str = ""  # Not used for PLAINTEXT
 
     # Topics for internal pipeline
+    events_topic: str = "xact.events.raw"  # Raw events from source
     downloads_pending_topic: str = "xact.downloads.pending"
     downloads_results_topic: str = "xact.downloads.results"
     dlq_topic: str = "xact.downloads.dlq"
@@ -178,6 +179,10 @@ class LocalKafkaConfig:
                 "LOCAL_KAFKA_SECURITY_PROTOCOL",
                 kafka_data.get("security_protocol", "PLAINTEXT")
             ),
+            events_topic=os.getenv(
+                "KAFKA_EVENTS_TOPIC",
+                kafka_data.get("events_topic", "xact.events.raw")
+            ),
             downloads_pending_topic=os.getenv(
                 "KAFKA_DOWNLOADS_PENDING_TOPIC",
                 kafka_data.get("downloads_pending_topic", "xact.downloads.pending")
@@ -216,6 +221,7 @@ class LocalKafkaConfig:
             bootstrap_servers=self.bootstrap_servers,
             security_protocol=self.security_protocol,
             sasl_mechanism=self.sasl_mechanism,
+            events_topic=self.events_topic,
             downloads_pending_topic=self.downloads_pending_topic,
             downloads_results_topic=self.downloads_results_topic,
             dlq_topic=self.dlq_topic,
@@ -225,8 +231,6 @@ class LocalKafkaConfig:
             onelake_base_path=self.onelake_base_path,
             onelake_domain_paths=self.onelake_domain_paths,
             cache_dir=self.cache_dir,
-            # Set a placeholder for events_topic (not used by local kafka workers)
-            events_topic="",
         )
 
 

@@ -436,7 +436,12 @@ class KQLEventPoller:
 
     async def _process_results(self, result: KQLQueryResult) -> int:
         """
-        Process query results into events and download tasks.
+        Process query results into events and publish to events.raw topic.
+
+        Events are published to the events_topic (xact.events.raw) for consumption
+        by the EventIngester, which handles attachment processing and produces
+        download tasks. This ensures consistent behavior between EventHub and
+        Eventhouse modes.
 
         Args:
             result: KQL query result
@@ -458,8 +463,9 @@ class KQLEventPoller:
                 # Write to Delta (batch for efficiency)
                 events_for_delta.append(event)
 
-                # Process attachments
-                await self._process_event_attachments(event)
+                # Publish EventMessage to events.raw topic
+                # EventIngester will consume and create download tasks
+                await self._publish_event(event)
 
                 events_processed += 1
 
@@ -478,6 +484,38 @@ class KQLEventPoller:
             asyncio.create_task(self._write_events_to_delta(events_for_delta))
 
         return events_processed
+
+    async def _publish_event(self, event: EventMessage) -> None:
+        """
+        Publish EventMessage to the events.raw topic.
+
+        Args:
+            event: EventMessage to publish
+        """
+        try:
+            await self._producer.send(
+                topic=self.config.kafka.events_topic,
+                key=event.trace_id,
+                value=event,
+                headers={"trace_id": event.trace_id},
+            )
+
+            logger.debug(
+                "Published event to events.raw",
+                extra={
+                    "trace_id": event.trace_id,
+                    "event_type": event.event_type,
+                    "attachment_count": len(event.attachments) if event.attachments else 0,
+                },
+            )
+        except Exception as e:
+            logger.error(
+                "Failed to publish event",
+                extra={
+                    "trace_id": event.trace_id,
+                    "error": str(e)[:200],
+                },
+            )
 
     def _row_to_event(self, row: dict[str, Any]) -> EventMessage:
         """

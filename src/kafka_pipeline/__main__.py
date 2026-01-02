@@ -230,6 +230,27 @@ async def run_result_processor(kafka_config, enable_delta_writes: bool = True):
     await worker.start()
 
 
+async def run_local_event_ingester(
+    local_kafka_config,
+    enable_delta_writes: bool = True,
+):
+    """Run EventIngester consuming from local Kafka events.raw topic.
+
+    Used in Eventhouse mode where the poller publishes to events.raw
+    and the ingester processes events to downloads.pending.
+    """
+    from kafka_pipeline.workers.event_ingester import EventIngesterWorker
+
+    logger.info("Starting Event Ingester (local Kafka mode)...")
+
+    worker = EventIngesterWorker(
+        config=local_kafka_config,
+        enable_delta_writes=enable_delta_writes,
+    )
+
+    await worker.start()
+
+
 async def run_all_workers(
     pipeline_config,
     enable_delta_writes: bool = True,
@@ -237,6 +258,8 @@ async def run_all_workers(
     """Run all pipeline workers concurrently.
 
     Uses the configured event source (Event Hub or Eventhouse) for ingestion.
+    Both modes use the same flow:
+        events.raw → EventIngester → downloads.pending → DownloadWorker → ...
     """
     from kafka_pipeline.pipeline_config import EventSourceType
 
@@ -244,24 +267,38 @@ async def run_all_workers(
 
     local_kafka_config = pipeline_config.local_kafka.to_kafka_config()
 
+    # Create tasks list
+    tasks = []
+
     # Create event source task based on configuration
     if pipeline_config.event_source == EventSourceType.EVENTHOUSE:
-        event_source_task = asyncio.create_task(
-            run_eventhouse_poller(pipeline_config),
-            name="eventhouse-poller",
+        # Eventhouse mode: Poller → events.raw → EventIngester → downloads.pending
+        tasks.append(
+            asyncio.create_task(
+                run_eventhouse_poller(pipeline_config),
+                name="eventhouse-poller",
+            )
+        )
+        tasks.append(
+            asyncio.create_task(
+                run_local_event_ingester(local_kafka_config, enable_delta_writes),
+                name="event-ingester",
+            )
         )
         logger.info("Using Eventhouse as event source")
     else:
+        # EventHub mode: EventHub → events.raw → EventIngester → downloads.pending
         eventhub_config = pipeline_config.eventhub.to_kafka_config()
-        event_source_task = asyncio.create_task(
-            run_event_ingester(eventhub_config, local_kafka_config, enable_delta_writes),
-            name="event-ingester",
+        tasks.append(
+            asyncio.create_task(
+                run_event_ingester(eventhub_config, local_kafka_config, enable_delta_writes),
+                name="event-ingester",
+            )
         )
         logger.info("Using Event Hub as event source")
 
-    # Create tasks for all workers
-    tasks = [
-        event_source_task,
+    # Add common workers
+    tasks.extend([
         asyncio.create_task(
             run_download_worker(local_kafka_config),
             name="download-worker",
@@ -274,7 +311,7 @@ async def run_all_workers(
             run_result_processor(local_kafka_config, enable_delta_writes),
             name="result-processor",
         ),
-    ]
+    ])
 
     # Wait for all tasks (they run indefinitely until stopped)
     try:
