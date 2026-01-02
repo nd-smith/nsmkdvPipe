@@ -286,6 +286,7 @@ class KQLEventPoller:
                 "source_table": config.source_table,
                 "poll_interval": config.poll_interval_seconds,
                 "batch_size": config.batch_size,
+                "pipeline_domain": config.domain,
             },
         )
 
