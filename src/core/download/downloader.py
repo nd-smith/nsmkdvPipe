@@ -204,7 +204,7 @@ class AttachmentDownloader:
             async with session.head(
                 url,
                 timeout=aiohttp.ClientTimeout(total=timeout),
-                allow_redirects=False,
+                allow_redirects=True,
             ) as response:
                 return response.content_length
         except Exception:
@@ -228,7 +228,6 @@ class AttachmentDownloader:
             url=task.url,
             session=session,
             timeout=task.timeout,
-            allow_redirects=False,
         )
 
         if error:
@@ -272,7 +271,7 @@ class AttachmentDownloader:
         # Ensure parent directory exists
         task.destination.parent.mkdir(parents=True, exist_ok=True)
 
-        bytes_written, error = await download_to_file(
+        result, error = await download_to_file(
             url=task.url,
             output_path=task.destination,
             session=session,
@@ -286,14 +285,10 @@ class AttachmentDownloader:
                 status_code=error.status_code,
             )
 
-        # For streaming, we need to make a separate HEAD request to get Content-Type
-        # (Alternative: modify streaming.py to return metadata - future enhancement)
-        content_type = await self._get_content_type(task.url, session, task.timeout)
-
         return DownloadOutcome.success_outcome(
             file_path=task.destination,
-            bytes_downloaded=bytes_written,
-            content_type=content_type,
+            bytes_downloaded=result.bytes_written,
+            content_type=result.content_type,
             status_code=200,
         )
 
@@ -315,7 +310,7 @@ class AttachmentDownloader:
             async with session.head(
                 url,
                 timeout=aiohttp.ClientTimeout(total=timeout),
-                allow_redirects=False,
+                allow_redirects=True,
             ) as response:
                 return response.headers.get("Content-Type")
         except Exception:
