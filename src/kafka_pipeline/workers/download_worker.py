@@ -278,9 +278,29 @@ class DownloadWorker:
         self._consumer = AIOKafkaConsumer(*self.topics, **consumer_config)
         await self._consumer.start()
 
+    async def request_shutdown(self) -> None:
+        """
+        Request graceful shutdown after current batch completes.
+
+        Sets the running flag to False so the batch loop will exit after
+        completing its current batch. This allows in-progress downloads
+        to finish and offsets to be committed before stopping.
+
+        Unlike stop(), this does not immediately clean up resources -
+        it allows the batch loop to exit naturally.
+        """
+        if not self._running:
+            logger.debug("Worker not running, shutdown request ignored")
+            return
+
+        logger.info(
+            "Graceful shutdown requested, will stop after current batch completes"
+        )
+        self._running = False
+
     async def stop(self) -> None:
         """
-        Stop the download worker and wait for in-flight downloads.
+        Stop the download worker and clean up resources.
 
         Performs graceful shutdown:
         1. Signals shutdown to stop accepting new batches
@@ -288,10 +308,12 @@ class DownloadWorker:
         3. Commits final offsets
         4. Closes all resources
 
-        Safe to call multiple times.
+        Safe to call multiple times. Will clean up resources even if
+        request_shutdown() was called first.
         """
-        if not self._running:
-            logger.debug("Worker not running or already stopped")
+        # Check if already fully stopped (consumer is None)
+        if self._consumer is None and self._http_session is None:
+            logger.debug("Worker already stopped")
             return
 
         logger.info("Stopping download worker, waiting for in-flight downloads")
