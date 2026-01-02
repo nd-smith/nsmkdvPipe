@@ -7,11 +7,24 @@ Configuration priority (highest to lowest):
 """
 
 import os
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import yaml
+
+
+def _get_default_cache_dir() -> str:
+    """Get cross-platform default cache directory.
+
+    Uses the system temp directory to ensure the path is valid on both
+    Windows and Unix systems.
+
+    Returns:
+        Absolute path to the default cache directory.
+    """
+    return str(Path(tempfile.gettempdir()) / "kafka_pipeline_cache")
 
 
 # Default config path: config.yaml in src/ directory
@@ -80,7 +93,8 @@ class KafkaConfig:
     upload_batch_size: int = 20  # Messages to fetch per batch
 
     # Cache directory for downloaded files awaiting upload
-    cache_dir: str = "/tmp/kafka_pipeline_cache"
+    # Default is computed at runtime via _get_default_cache_dir() for cross-platform support
+    cache_dir: str = field(default_factory=_get_default_cache_dir)
 
     @classmethod
     def from_env(cls) -> "KafkaConfig":
@@ -163,7 +177,7 @@ class KafkaConfig:
             onelake_base_path=os.getenv("ONELAKE_BASE_PATH", ""),
             onelake_domain_paths=onelake_domain_paths,
             # Cache directory
-            cache_dir=os.getenv("CACHE_DIR", "/tmp/kafka_pipeline_cache"),
+            cache_dir=os.getenv("CACHE_DIR") or _get_default_cache_dir(),
             # Download concurrency settings
             download_concurrency=min(
                 50,  # Max allowed
@@ -371,7 +385,7 @@ def load_config(
         download_batch_size=data.get("download_batch_size", 20),
         upload_concurrency=data.get("upload_concurrency", 10),
         upload_batch_size=data.get("upload_batch_size", 20),
-        cache_dir=data.get("cache_dir", "/tmp/kafka_pipeline_cache"),
+        cache_dir=data.get("cache_dir") or _get_default_cache_dir(),
     )
 
 
