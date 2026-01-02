@@ -50,67 +50,15 @@ services:
     command:
       - |
         echo "Creating Kafka topics..."
-
-        # Downloads pending topic (main work queue)
-        /opt/kafka/bin/kafka-topics.sh --create --if-not-exists \
-          --bootstrap-server kafka:9092 \
-          --topic xact.downloads.pending \
-          --partitions 6 \
-          --replication-factor 1
-
-        # Downloads cached topic (between download and upload workers)
-        /opt/kafka/bin/kafka-topics.sh --create --if-not-exists \
-          --bootstrap-server kafka:9092 \
-          --topic xact.downloads.cached \
-          --partitions 6 \
-          --replication-factor 1
-
-        # Downloads results topic
-        /opt/kafka/bin/kafka-topics.sh --create --if-not-exists \
-          --bootstrap-server kafka:9092 \
-          --topic xact.downloads.results \
-          --partitions 6 \
-          --replication-factor 1
-
-        # DLQ topic
-        /opt/kafka/bin/kafka-topics.sh --create --if-not-exists \
-          --bootstrap-server kafka:9092 \
-          --topic xact.downloads.dlq \
-          --partitions 3 \
-          --replication-factor 1
-
-        # Retry topics (5m, 10m, 20m, 40m delays)
-        /opt/kafka/bin/kafka-topics.sh --create --if-not-exists \
-          --bootstrap-server kafka:9092 \
-          --topic xact.downloads.pending.retry.5m \
-          --partitions 3 \
-          --replication-factor 1
-
-        /opt/kafka/bin/kafka-topics.sh --create --if-not-exists \
-          --bootstrap-server kafka:9092 \
-          --topic xact.downloads.pending.retry.10m \
-          --partitions 3 \
-          --replication-factor 1
-
-        /opt/kafka/bin/kafka-topics.sh --create --if-not-exists \
-          --bootstrap-server kafka:9092 \
-          --topic xact.downloads.pending.retry.20m \
-          --partitions 3 \
-          --replication-factor 1
-
-        /opt/kafka/bin/kafka-topics.sh --create --if-not-exists \
-          --bootstrap-server kafka:9092 \
-          --topic xact.downloads.pending.retry.40m \
-          --partitions 3 \
-          --replication-factor 1
-
-        # Events topic (for dev mode only)
-        /opt/kafka/bin/kafka-topics.sh --create --if-not-exists \
-          --bootstrap-server kafka:9092 \
-          --topic xact.events.raw \
-          --partitions 6 \
-          --replication-factor 1
-
+        /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server kafka:9092 --topic xact.downloads.pending --partitions 6 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server kafka:9092 --topic xact.downloads.cached --partitions 6 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server kafka:9092 --topic xact.downloads.results --partitions 6 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server kafka:9092 --topic xact.downloads.dlq --partitions 3 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server kafka:9092 --topic xact.downloads.pending.retry.5m --partitions 3 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server kafka:9092 --topic xact.downloads.pending.retry.10m --partitions 3 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server kafka:9092 --topic xact.downloads.pending.retry.20m --partitions 3 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server kafka:9092 --topic xact.downloads.pending.retry.40m --partitions 3 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server kafka:9092 --topic xact.events.raw --partitions 6 --replication-factor 1
         echo "Topics created successfully:"
         /opt/kafka/bin/kafka-topics.sh --list --bootstrap-server kafka:9092
 
