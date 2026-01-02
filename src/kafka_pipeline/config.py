@@ -48,6 +48,11 @@ class KafkaConfig:
     retries: int = 3
     retry_backoff_ms: int = 1000
 
+    # Connection settings (prevent timeout during long operations)
+    request_timeout_ms: int = 120000  # 2 minutes for requests
+    metadata_max_age_ms: int = 300000  # 5 minutes between metadata refreshes
+    connections_max_idle_ms: int = 540000  # 9 minutes idle before close
+
     # Topics
     events_topic: str = "xact.events.raw"
     downloads_pending_topic: str = "xact.downloads.pending"
