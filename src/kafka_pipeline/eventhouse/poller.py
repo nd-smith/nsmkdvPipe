@@ -746,6 +746,9 @@ class KQLEventPoller:
         Uses flatten_events() from verisk_pipeline to transform events
         into the correct xact_events schema with all 28 columns.
 
+        After successful write, updates the deduplicator cache with
+        the newly written trace_ids.
+
         Runs as background task, failures don't affect main processing.
 
         Args:
@@ -761,7 +764,19 @@ class KQLEventPoller:
             # Write using flatten_events() transformation
             success = await self._delta_writer.write_raw_events(raw_events)
 
-            if not success:
+            if success:
+                # Update deduplicator cache with newly written trace_ids
+                trace_ids = [event.trace_id for event in events]
+                added = self._deduplicator.add_to_cache(trace_ids)
+                logger.debug(
+                    "Updated dedup cache after Delta write",
+                    extra={
+                        "events_written": len(events),
+                        "trace_ids_added": added,
+                        "cache_size": self._deduplicator.get_cache_size(),
+                    },
+                )
+            else:
                 logger.warning(
                     "Delta write failed for events batch",
                     extra={"event_count": len(events)},

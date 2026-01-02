@@ -51,22 +51,24 @@ class EventhouseDeduplicator:
     Deduplicates Eventhouse events against xact_events Delta table.
 
     Workflow:
-    1. Query xact_events for recently processed trace_ids (Polars lazy scan)
-    2. Build KQL query with anti-join filter (trace_id !in dynamic([...]))
-    3. Return query with trace_ids embedded for execution
+    1. On first call, query xact_events for recently processed trace_ids
+    2. Cache trace_ids locally for subsequent polls
+    3. Build KQL query with anti-join filter (trace_id !in dynamic([...]))
+    4. Update cache when new events are written
 
     This ensures:
     - Time filter is FIRST in KQL (limits scan of Eventhouse table)
     - Anti-join happens IN KQL (not Python)
-    - trace_ids query from Delta is time-bounded
+    - Delta query happens ONCE per cycle (not every poll)
 
     Example:
         >>> dedup = EventhouseDeduplicator(config)
-        >>> query = await dedup.build_query_with_anti_join(
+        >>> query = dedup.build_deduped_query(
         ...     base_table="Events",
         ...     poll_from=datetime.now() - timedelta(hours=1),
         ... )
-        >>> # query contains: Events | where ingestion_time() > ... | where trace_id !in dynamic([...])
+        >>> # After writing events:
+        >>> dedup.add_to_cache(["trace-1", "trace-2"])
     """
 
     def __init__(self, config: DedupConfig):
@@ -76,6 +78,9 @@ class EventhouseDeduplicator:
             config: Deduplication configuration
         """
         self.config = config
+        # Local cache of trace_ids - populated on first query, updated on writes
+        self._trace_id_cache: set[str] = set()
+        self._cache_initialized: bool = False
 
     def _get_storage_options(self) -> dict:
         """Get Azure storage options for Delta table access.
@@ -85,50 +90,60 @@ class EventhouseDeduplicator:
         """
         return get_storage_options()
 
-    def get_recent_trace_ids(
+    def _load_cache_from_delta(
         self,
         window_hours: Optional[int] = None,
-    ) -> list[str]:
+    ) -> set[str]:
         """
-        Get trace_ids from xact_events within time window.
+        Load trace_ids from xact_events Delta table into cache.
 
-        Uses Polars lazy scan with predicate pushdown - only reads relevant
-        parquet files, not the entire table.
+        Uses partition pruning on event_date for efficient file-level filtering,
+        then applies ingested_at filter for precise time window.
 
         Args:
             window_hours: Hours to look back (defaults to config.xact_events_window_hours)
 
         Returns:
-            List of trace_ids that have been processed recently
+            Set of trace_ids that have been processed recently
         """
         window = window_hours or self.config.xact_events_window_hours
         cutoff = datetime.now(timezone.utc) - timedelta(hours=window)
+        cutoff_date = cutoff.date()
+        today = datetime.now(timezone.utc).date()
 
         start_time = time.perf_counter()
 
         try:
-            # Use Polars lazy scan with predicate pushdown
+            # Use Polars lazy scan with partition pruning
+            # CRITICAL: Filter on event_date FIRST for partition pruning,
+            # then filter on ingested_at for precise time window
             df = (
                 pl.scan_delta(
                     self.config.xact_events_table_path,
                     storage_options=self._get_storage_options(),
                 )
-                .filter(pl.col("ingested_at") > cutoff)  # Pushes down to Delta
-                .select("trace_id")  # Only reads one column
+                # Partition filter - enables file-level pruning
+                .filter(pl.col("event_date") >= cutoff_date)
+                .filter(pl.col("event_date") <= today)
+                # Row-level filter for precise time window
+                .filter(pl.col("ingested_at") > cutoff)
+                .select("trace_id")
+                .unique()
                 .collect()
             )
 
-            trace_ids = df["trace_id"].to_list()
+            trace_ids = set(df["trace_id"].to_list())
 
             duration_ms = (time.perf_counter() - start_time) * 1000
 
             logger.info(
-                "Retrieved recent trace_ids from xact_events",
+                "Loaded trace_id cache from xact_events",
                 extra={
                     "trace_id_count": len(trace_ids),
                     "window_hours": window,
                     "duration_ms": round(duration_ms, 2),
                     "table_path": self.config.xact_events_table_path,
+                    "partition_filter": f"{cutoff_date} to {today}",
                 },
             )
 
@@ -137,15 +152,15 @@ class EventhouseDeduplicator:
         except FileNotFoundError:
             # Table doesn't exist yet - first run, no deduplication needed
             logger.warning(
-                "xact_events table not found, skipping deduplication",
+                "xact_events table not found, starting with empty cache",
                 extra={"table_path": self.config.xact_events_table_path},
             )
-            return []
+            return set()
 
         except Exception as e:
             duration_ms = (time.perf_counter() - start_time) * 1000
             logger.error(
-                "Failed to retrieve trace_ids from xact_events",
+                "Failed to load trace_id cache from xact_events",
                 extra={
                     "error": str(e)[:200],
                     "duration_ms": round(duration_ms, 2),
@@ -154,6 +169,73 @@ class EventhouseDeduplicator:
             )
             # Re-raise to let caller handle
             raise
+
+    def get_recent_trace_ids(
+        self,
+        window_hours: Optional[int] = None,
+        force_refresh: bool = False,
+    ) -> list[str]:
+        """
+        Get trace_ids for deduplication from local cache.
+
+        On first call (or force_refresh), loads from Delta table.
+        Subsequent calls return cached values.
+
+        Args:
+            window_hours: Hours to look back (only used on cache load)
+            force_refresh: If True, reload cache from Delta
+
+        Returns:
+            List of trace_ids that have been processed recently
+        """
+        if not self._cache_initialized or force_refresh:
+            self._trace_id_cache = self._load_cache_from_delta(window_hours)
+            self._cache_initialized = True
+            logger.info(
+                "Initialized trace_id cache",
+                extra={"cache_size": len(self._trace_id_cache)},
+            )
+
+        return list(self._trace_id_cache)
+
+    def add_to_cache(self, trace_ids: list[str]) -> int:
+        """
+        Add newly written trace_ids to the local cache.
+
+        Call this after successfully writing events to Delta.
+
+        Args:
+            trace_ids: List of trace_ids that were just written
+
+        Returns:
+            Number of new trace_ids added (excludes duplicates)
+        """
+        if not trace_ids:
+            return 0
+
+        before_size = len(self._trace_id_cache)
+        self._trace_id_cache.update(trace_ids)
+        added = len(self._trace_id_cache) - before_size
+
+        if added > 0:
+            logger.debug(
+                "Added trace_ids to cache",
+                extra={
+                    "added": added,
+                    "total_size": len(self._trace_id_cache),
+                    "duplicates_skipped": len(trace_ids) - added,
+                },
+            )
+
+        return added
+
+    def get_cache_size(self) -> int:
+        """Return current cache size."""
+        return len(self._trace_id_cache)
+
+    def is_cache_initialized(self) -> bool:
+        """Return whether cache has been loaded from Delta."""
+        return self._cache_initialized
 
     def build_kql_anti_join_filter(
         self,
@@ -224,7 +306,7 @@ class EventhouseDeduplicator:
         Raises:
             ValueError: If trace_ids exceed max batch size
         """
-        # Get recent trace_ids
+        # Get recent trace_ids from cache (loads from Delta on first call)
         trace_ids = self.get_recent_trace_ids()
 
         # Check batch size
@@ -276,6 +358,7 @@ class EventhouseDeduplicator:
                 "trace_id_count": len(trace_ids),
                 "limit": limit,
                 "query_length": len(query),
+                "cache_initialized": self._cache_initialized,
             },
         )
 
@@ -327,7 +410,7 @@ def get_recent_trace_ids_sync(
     """
     Standalone function to get trace_ids from xact_events.
 
-    Uses lazy scan with predicate pushdown - only reads relevant parquet files.
+    Uses partition pruning on event_date for efficient file-level filtering.
 
     Args:
         table_path: Path to xact_events Delta table
@@ -338,6 +421,8 @@ def get_recent_trace_ids_sync(
         List of trace_ids
     """
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    cutoff_date = cutoff.date()
+    today = datetime.now(timezone.utc).date()
 
     if storage_options is None:
         storage_options = get_storage_options()
@@ -345,8 +430,13 @@ def get_recent_trace_ids_sync(
     try:
         return (
             pl.scan_delta(table_path, storage_options=storage_options)
+            # Partition filter for file-level pruning
+            .filter(pl.col("event_date") >= cutoff_date)
+            .filter(pl.col("event_date") <= today)
+            # Row-level filter for precise time window
             .filter(pl.col("ingested_at") > cutoff)
             .select("trace_id")
+            .unique()
             .collect()["trace_id"]
             .to_list()
         )
