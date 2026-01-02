@@ -325,16 +325,38 @@ class KQLEventPoller:
         logger.info("KQLEventPoller components started")
 
     async def stop(self) -> None:
-        """Gracefully shutdown all components."""
+        """Gracefully shutdown all components.
+
+        Errors during component cleanup are logged but do not prevent
+        other components from being cleaned up.
+        """
         logger.info("Stopping KQLEventPoller")
         self._running = False
         self._shutdown_event.set()
 
+        # Stop producer - errors are logged but don't prevent other cleanup
         if self._producer:
-            await self._producer.stop()
+            try:
+                await self._producer.stop()
+            except Exception as e:
+                logger.warning(
+                    "Error stopping producer during poller shutdown",
+                    extra={"error": str(e)[:200]},
+                )
+            finally:
+                self._producer = None
 
+        # Close KQL client
         if self._kql_client:
-            await self._kql_client.close()
+            try:
+                await self._kql_client.close()
+            except Exception as e:
+                logger.warning(
+                    "Error closing KQL client during poller shutdown",
+                    extra={"error": str(e)[:200]},
+                )
+            finally:
+                self._kql_client = None
 
         logger.info("KQLEventPoller stopped")
 

@@ -153,6 +153,10 @@ class BaseKafkaProducer:
 
         Flushes any pending messages and closes the connection gracefully.
         Safe to call multiple times.
+
+        Note: Errors during stop are logged but not re-raised, since cleanup
+        errors (especially during exception handling) should not mask the
+        original exception or prevent other cleanup from completing.
         """
         if not self._started or self._producer is None:
             logger.debug("Producer not started or already stopped")
@@ -167,12 +171,14 @@ class BaseKafkaProducer:
             await self._producer.stop()
             logger.info("Kafka producer stopped successfully")
         except Exception as e:
+            # Log but don't re-raise - cleanup errors should not propagate.
+            # This is especially important during GeneratorExit or CancelledError
+            # cleanup, where aiokafka's stop() may fail due to event loop state.
             log_exception(
                 logger,
                 e,
                 "Error stopping Kafka producer",
             )
-            raise
         finally:
             # Update connection status metric
             update_connection_status("producer", connected=False)
