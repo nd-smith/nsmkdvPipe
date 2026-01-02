@@ -282,12 +282,14 @@ class DeltaTableWriter(LoggedClass):
         dedupe_column: Optional[str] = None,
         dedupe_window_hours: int = 24,
         timestamp_column: str = "ingested_at",
+        partition_column: str = "event_date",
         z_order_columns: Optional[List[str]] = None,
     ):
         self.table_path = table_path
         self.dedupe_column = dedupe_column
         self.dedupe_window_hours = dedupe_window_hours
         self.timestamp_column = timestamp_column
+        self.partition_column = partition_column
         self.z_order_columns = z_order_columns or []
         self._reader = DeltaTableReader(table_path)
         self._optimization_scheduler: Optional[Any] = None
@@ -675,7 +677,7 @@ class DeltaTableWriter(LoggedClass):
 
     @with_retry(config=DELTA_RETRY_CONFIG, on_auth_error=_on_auth_error)
     def _get_recent_ids(self) -> Set[str]:
-        """Get dedupe column values from recent window using lazy scan."""
+        """Get dedupe column values from recent window using lazy scan with partition pruning."""
         if not self.dedupe_column:
             return set()
 
@@ -686,13 +688,29 @@ class DeltaTableWriter(LoggedClass):
             hours=self.dedupe_window_hours
         )
 
-        # Use lazy scan with predicate pushdown - only reads relevant parquet files
+        # Calculate date range for partition pruning
+        # Delta Lake only prunes parquet files based on partition columns (event_date),
+        # not row-level columns (ingested_at). We must filter on the partition column
+        # first to enable file-level pruning, then apply the fine-grained timestamp filter.
+        cutoff_date = cutoff.date()
+        today = datetime.now(timezone.utc).date()
+
         opts = get_storage_options()
+        lf = pl.scan_delta(self.table_path, storage_options=opts)
+
+        # Apply partition filter first for file-level pruning
+        partition_filter = (pl.col(self.partition_column) >= cutoff_date) & (
+            pl.col(self.partition_column) <= today
+        )
+
+        # Then apply row-level timestamp filter
+        timestamp_filter = pl.col(self.timestamp_column) > cutoff
+
         df = (
-            pl.scan_delta(self.table_path, storage_options=opts)
-            .filter(pl.col(self.timestamp_column) > cutoff)
+            lf.filter(partition_filter)
+            .filter(timestamp_filter)
             .select(self.dedupe_column)
-            .collect()
+            .collect(streaming=True)
         )
 
         if df is None or df.is_empty():
