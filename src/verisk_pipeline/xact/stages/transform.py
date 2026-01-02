@@ -160,8 +160,10 @@ def flatten_events(df: pl.DataFrame) -> pl.DataFrame:
         else {}
     )
 
-    # Create DataFrame from extracted fields
-    extracted_df = pl.DataFrame(extracted_columns)
+    # Create DataFrame from extracted fields with explicit schema to prevent Null types
+    # All extracted fields are strings - Delta Lake doesn't support Null type columns
+    extracted_schema = {col: pl.Utf8 for col in extracted_columns.keys()}
+    extracted_df = pl.DataFrame(extracted_columns, schema=extracted_schema)
 
     # Add raw_json column (the original data column)
     raw_json_col = df.select([pl.struct(pl.all()).cast(pl.Utf8).alias("raw_json")])
