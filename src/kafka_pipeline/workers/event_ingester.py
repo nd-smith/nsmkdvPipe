@@ -6,18 +6,23 @@ This worker is the entry point to the download pipeline:
 2. Validates attachment URLs against domain allowlist
 3. Generates blob storage paths for each attachment
 4. Produces DownloadTaskMessage to downloads.pending topic
-5. Writes events to Delta Lake (xact_events table) for analytics
+5. Writes events to Delta Lake (xact_events table) using flatten_events()
+
+Schema compatibility:
+- EventMessage matches verisk_pipeline EventRecord
+- DownloadTaskMessage matches verisk_pipeline Task
+- DeltaEventsWriter uses flatten_events() for xact_events table
 
 Consumer group: {prefix}-event-ingester
 Input topic: events.raw
 Output topic: downloads.pending
-Delta table: xact_events (analytics and deduplication)
+Delta table: xact_events (with all 28 flattened columns)
 """
 
 import asyncio
 import json
 import logging
-from typing import Optional
+from typing import List, Optional
 
 from aiokafka.structs import ConsumerRecord
 from pydantic import ValidationError
@@ -149,9 +154,9 @@ class EventIngesterWorker:
         """
         Process a single event message from Kafka.
 
-        Parses the EventMessage, validates attachments, generates download tasks,
-        and produces them to the pending topic. Also writes event to Delta Lake
-        for analytics (non-blocking).
+        Parses the EventMessage (matching verisk_pipeline EventRecord schema),
+        validates attachments, generates download tasks, and produces them to
+        the pending topic. Also writes event to Delta Lake for analytics.
 
         Args:
             record: ConsumerRecord containing EventMessage JSON
@@ -162,7 +167,7 @@ class EventIngesterWorker:
         # Decode and parse EventMessage
         try:
             message_data = json.loads(record.value.decode("utf-8"))
-            event = EventMessage(**message_data)
+            event = EventMessage.from_eventhouse_row(message_data)
         except (json.JSONDecodeError, ValidationError) as e:
             logger.error(
                 "Failed to parse EventMessage",
@@ -180,33 +185,33 @@ class EventIngesterWorker:
             "Processing event",
             extra={
                 "trace_id": event.trace_id,
-                "event_type": event.event_type,
-                "event_subtype": event.event_subtype,
+                "type": event.type,
+                "status_subtype": event.status_subtype,
                 "attachment_count": len(event.attachments) if event.attachments else 0,
             },
         )
 
         # Write event to Delta Lake for analytics (non-blocking)
-        # This happens in the background and doesn't block Kafka processing
+        # Uses flatten_events() from verisk_pipeline for proper schema
         if self.delta_writer:
             asyncio.create_task(self._write_event_to_delta(event))
 
-        # Skip events without attachments
+        # Skip events without attachments (many events are just status updates)
         if not event.attachments:
             logger.debug(
-                "Event has no attachments, skipping",
+                "Event has no attachments, skipping download task creation",
                 extra={"trace_id": event.trace_id},
             )
             return
 
-        # Extract assignment_id from payload (required for path generation)
-        assignment_id = event.payload.get("assignment_id")
+        # Extract assignment_id from data (required for path generation)
+        assignment_id = event.assignment_id
         if not assignment_id:
             logger.warning(
-                "Event missing assignment_id in payload, cannot generate paths",
+                "Event missing assignmentId in data, cannot generate paths",
                 extra={
                     "trace_id": event.trace_id,
-                    "event_type": event.event_type,
+                    "type": event.type,
                 },
             )
             return
@@ -228,11 +233,11 @@ class EventIngesterWorker:
         """
         Process a single attachment from an event.
 
-        Validates the URL, generates a blob path, creates a download task,
-        and produces it to the pending topic.
+        Validates the URL, generates a blob path, creates a download task
+        matching verisk_pipeline Task schema, and produces it to pending topic.
 
         Args:
-            event: Source EventMessage
+            event: Source EventMessage (matches verisk_pipeline EventRecord)
             attachment_url: URL of the attachment to download
             assignment_id: Assignment ID for path generation
         """
@@ -243,28 +248,28 @@ class EventIngesterWorker:
                 "Invalid attachment URL, skipping",
                 extra={
                     "trace_id": event.trace_id,
-                    "event_type": event.event_type,
+                    "type": event.type,
                     "url": sanitize_url(attachment_url),
                     "validation_error": error_message,
                 },
             )
             return
 
-        # Generate blob storage path
+        # Generate blob storage path (using status_subtype from event type)
         try:
             blob_path, file_type = generate_blob_path(
-                status_subtype=event.event_subtype,
+                status_subtype=event.status_subtype,
                 trace_id=event.trace_id,
                 assignment_id=assignment_id,
                 download_url=attachment_url,
-                estimate_version=event.payload.get("estimate_version"),
+                estimate_version=event.estimate_version,
             )
         except Exception as e:
             logger.error(
                 "Failed to generate blob path",
                 extra={
                     "trace_id": event.trace_id,
-                    "event_subtype": event.event_subtype,
+                    "status_subtype": event.status_subtype,
                     "assignment_id": assignment_id,
                     "error": str(e),
                 },
@@ -272,20 +277,16 @@ class EventIngesterWorker:
             )
             raise
 
-        # Create download task message
+        # Create download task message matching verisk_pipeline Task schema
         download_task = DownloadTaskMessage(
             trace_id=event.trace_id,
             attachment_url=attachment_url,
-            destination_path=blob_path,
-            event_type=event.event_type,
-            event_subtype=event.event_subtype,
+            blob_path=blob_path,
+            status_subtype=event.status_subtype,
+            file_type=file_type,
+            assignment_id=assignment_id,
+            estimate_version=event.estimate_version,
             retry_count=0,
-            original_timestamp=event.timestamp,
-            metadata={
-                "assignment_id": assignment_id,
-                "file_type": file_type,
-                "source_system": event.source_system,
-            },
         )
 
         # Produce download task to pending topic
@@ -301,8 +302,10 @@ class EventIngesterWorker:
                 "Created download task",
                 extra={
                     "trace_id": event.trace_id,
-                    "destination_path": blob_path,
+                    "blob_path": blob_path,
+                    "status_subtype": event.status_subtype,
                     "file_type": file_type,
+                    "assignment_id": assignment_id,
                     "partition": metadata.partition,
                     "offset": metadata.offset,
                 },
@@ -312,7 +315,7 @@ class EventIngesterWorker:
                 "Failed to produce download task",
                 extra={
                     "trace_id": event.trace_id,
-                    "destination_path": blob_path,
+                    "blob_path": blob_path,
                     "error": str(e),
                 },
                 exc_info=True,
@@ -323,14 +326,21 @@ class EventIngesterWorker:
         """
         Write event to Delta Lake table (background task).
 
+        Uses flatten_events() from verisk_pipeline to transform the event
+        into the correct xact_events schema with all 28 columns.
+
         This method runs as a background task and doesn't block Kafka processing.
         Failures are logged but don't affect the main event processing flow.
 
         Args:
-            event: EventMessage to write to Delta
+            event: EventMessage to write to Delta (matches EventRecord schema)
         """
         try:
-            success = await self.delta_writer.write_event(event)
+            # Convert to Eventhouse row format for flatten_events()
+            raw_event = event.to_eventhouse_row()
+
+            # Write using flatten_events() transformation
+            success = await self.delta_writer.write_raw_events([raw_event])
             record_delta_write(
                 table="xact_events",
                 event_count=1,

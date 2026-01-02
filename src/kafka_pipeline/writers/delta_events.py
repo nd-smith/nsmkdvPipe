@@ -1,22 +1,25 @@
 """
 Delta Lake writer for event analytics table.
 
-Writes EventMessage records to the xact_events Delta table with:
+Writes events to the xact_events Delta table with:
+- Flattening of nested JSON structures using verisk_pipeline transform
 - Deduplication by trace_id
 - Async/non-blocking writes
-- Metrics tracking
+- Schema compatibility with verisk_pipeline xact_events table
+
+Uses flatten_events() from verisk_pipeline to ensure schema compatibility.
 """
 
 import asyncio
+import json
 import logging
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 import polars as pl
-from pydantic import BaseModel
 
-from kafka_pipeline.schemas.events import EventMessage
 from verisk_pipeline.storage.delta import DeltaTableWriter
+from verisk_pipeline.xact.stages.transform import flatten_events, FLATTENED_SCHEMA
 
 logger = logging.getLogger(__name__)
 
@@ -25,17 +28,32 @@ class DeltaEventsWriter:
     """
     Writer for xact_events Delta table with deduplication and async support.
 
+    Uses flatten_events() from verisk_pipeline to transform raw Eventhouse rows
+    into the correct xact_events schema with all 28 columns.
+
     Features:
+    - Flattening of nested JSON using verisk_pipeline transform
     - Deduplication by trace_id within configurable time window
     - Non-blocking writes using asyncio.to_thread
-    - Metrics for write success/failure
-    - Schema compatibility with existing xact_events table
+    - Schema compatibility with verisk_pipeline xact_events table
+
+    Input format (raw Eventhouse rows):
+        - type: Full event type string (e.g., "verisk.claims.property.xn.documentsReceived")
+        - version: Event version
+        - utcDateTime: Event timestamp
+        - traceId: Trace identifier
+        - data: JSON string with nested event data
+
+    Output schema matches verisk_pipeline FLATTENED_SCHEMA:
+        - type, status_subtype, version, ingested_at, event_date, trace_id
+        - description, assignment_id, original_assignment_id, xn_address, carrier_id
+        - estimate_version, note, author, sender_reviewer_name, sender_reviewer_email
+        - carrier_reviewer_name, carrier_reviewer_email, event_datetime_mdt
+        - attachments (comma-joined), claim_number, contact_* fields, raw_json
 
     Usage:
         >>> writer = DeltaEventsWriter(table_path="abfss://.../xact_events")
-        >>> await writer.write_event(event_message)
-        >>> # Or batch writes
-        >>> await writer.write_events([event1, event2, event3])
+        >>> await writer.write_raw_events([{"type": "...", "traceId": "...", ...}])
     """
 
     def __init__(
@@ -69,49 +87,53 @@ class DeltaEventsWriter:
             },
         )
 
-    async def write_event(self, event: EventMessage) -> bool:
+    async def write_raw_events(self, raw_events: List[Dict[str, Any]]) -> bool:
         """
-        Write a single event to Delta table (non-blocking).
+        Write raw Eventhouse events to Delta table (non-blocking).
+
+        Transforms raw Eventhouse rows using flatten_events() from verisk_pipeline
+        to ensure schema compatibility with xact_events table.
 
         Args:
-            event: EventMessage to write
+            raw_events: List of raw event dicts with Eventhouse schema:
+                - type: Full event type string
+                - version: Event version
+                - utcDateTime: Event timestamp
+                - traceId: Trace identifier
+                - data: JSON string with nested event data
 
         Returns:
             True if write succeeded, False otherwise
         """
-        return await self.write_events([event])
-
-    async def write_events(self, events: List[EventMessage]) -> bool:
-        """
-        Write multiple events to Delta table (non-blocking).
-
-        Converts EventMessage objects to DataFrame and writes to Delta.
-        Uses asyncio.to_thread to avoid blocking the event loop.
-
-        Args:
-            events: List of EventMessage objects to write
-
-        Returns:
-            True if write succeeded, False otherwise
-        """
-        if not events:
+        if not raw_events:
             return True
 
         try:
-            # Convert events to DataFrame
-            df = self._events_to_dataframe(events)
+            # Create DataFrame from raw events in Eventhouse format
+            raw_df = pl.DataFrame(raw_events)
+
+            # Use flatten_events() from verisk_pipeline to transform
+            # This ensures schema compatibility with xact_events table
+            flattened_df = flatten_events(raw_df)
+
+            # Add created_at column (pipeline processing timestamp)
+            now = datetime.now(timezone.utc)
+            flattened_df = flattened_df.with_columns(
+                pl.lit(now).alias("created_at")
+            )
 
             # Perform write in thread pool to avoid blocking
             await asyncio.to_thread(
                 self._delta_writer.append,
-                df,
+                flattened_df,
                 dedupe=True,
             )
 
             logger.info(
                 "Successfully wrote events to Delta",
                 extra={
-                    "event_count": len(events),
+                    "event_count": len(raw_events),
+                    "columns": len(flattened_df.columns),
                     "table_path": self.table_path,
                 },
             )
@@ -121,7 +143,7 @@ class DeltaEventsWriter:
             logger.error(
                 "Failed to write events to Delta",
                 extra={
-                    "event_count": len(events),
+                    "event_count": len(raw_events),
                     "table_path": self.table_path,
                     "error": str(e),
                 },
@@ -129,63 +151,64 @@ class DeltaEventsWriter:
             )
             return False
 
-    def _events_to_dataframe(self, events: List[EventMessage]) -> pl.DataFrame:
+    async def write_dataframe(self, df: pl.DataFrame) -> bool:
         """
-        Convert EventMessage objects to Polars DataFrame.
+        Write a pre-flattened DataFrame to Delta table.
 
-        Schema matches xact_events table:
-        - trace_id: str
-        - event_type: str
-        - event_subtype: str (optional)
-        - source_system: str
-        - timestamp: datetime (event timestamp)
-        - ingested_at: datetime (current UTC time)
-        - attachments: list[str] (optional)
-        - payload: dict
-        - metadata: dict (optional)
+        Use this when you already have a DataFrame in the correct schema
+        (e.g., from a direct Eventhouse query that was already flattened).
 
         Args:
-            events: List of EventMessage objects
+            df: Polars DataFrame with xact_events schema
 
         Returns:
-            Polars DataFrame with xact_events schema
+            True if write succeeded, False otherwise
         """
-        # Current time for ingested_at
-        now = datetime.now(timezone.utc)
+        if df.is_empty():
+            return True
 
-        # Convert to list of dicts matching table schema
-        rows = []
-        for event in events:
-            row = {
-                "trace_id": event.trace_id,
-                "event_type": event.event_type,
-                "event_subtype": event.event_subtype,
-                "source_system": event.source_system,
-                "timestamp": event.timestamp,
-                "ingested_at": now,
-                "attachments": event.attachments or [],
-                "payload": event.payload or {},
-                "metadata": event.metadata or {},
-            }
-            rows.append(row)
+        try:
+            # Add created_at if not present
+            if "created_at" not in df.columns:
+                now = datetime.now(timezone.utc)
+                df = df.with_columns(pl.lit(now).alias("created_at"))
 
-        # Create DataFrame with explicit schema
-        df = pl.DataFrame(
-            rows,
-            schema={
-                "trace_id": pl.Utf8,
-                "event_type": pl.Utf8,
-                "event_subtype": pl.Utf8,
-                "source_system": pl.Utf8,
-                "timestamp": pl.Datetime(time_zone="UTC"),
-                "ingested_at": pl.Datetime(time_zone="UTC"),
-                "attachments": pl.List(pl.Utf8),
-                "payload": pl.Struct,
-                "metadata": pl.Struct,
-            },
-        )
+            # Perform write in thread pool to avoid blocking
+            await asyncio.to_thread(
+                self._delta_writer.append,
+                df,
+                dedupe=True,
+            )
 
-        return df
+            logger.info(
+                "Successfully wrote DataFrame to Delta",
+                extra={
+                    "row_count": len(df),
+                    "table_path": self.table_path,
+                },
+            )
+            return True
+
+        except Exception as e:
+            logger.error(
+                "Failed to write DataFrame to Delta",
+                extra={
+                    "row_count": len(df),
+                    "table_path": self.table_path,
+                    "error": str(e),
+                },
+                exc_info=True,
+            )
+            return False
+
+    def get_expected_schema(self) -> Dict[str, Any]:
+        """
+        Get the expected output schema for xact_events table.
+
+        Returns:
+            Dict mapping column names to Polars data types
+        """
+        return FLATTENED_SCHEMA.copy()
 
 
 __all__ = ["DeltaEventsWriter"]
