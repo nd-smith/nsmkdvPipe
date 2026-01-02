@@ -6,15 +6,17 @@ with connection pooling, retry logic, and proper error classification.
 """
 
 import asyncio
+import json
 import logging
 import os
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 import yaml
+from azure.core.credentials import AccessToken
 from azure.identity import DefaultAzureCredential
 from azure.kusto.data import KustoClient, KustoConnectionStringBuilder
 from azure.kusto.data.exceptions import KustoServiceError
@@ -28,6 +30,109 @@ logger = logging.getLogger(__name__)
 
 # Default config path: config.yaml in src/ directory
 DEFAULT_CONFIG_PATH = Path(__file__).parent.parent.parent / "config.yaml"
+
+# Kusto/Fabric resource for token acquisition
+KUSTO_RESOURCE = "https://kusto.kusto.windows.net"
+
+
+class FileBackedKustoCredential:
+    """
+    Credential that reads tokens from a JSON file for Kusto authentication.
+
+    The token file should be a JSON object with resource URLs as keys:
+    {
+        "https://kusto.kusto.windows.net": "token_value",
+        "https://storage.azure.com/": "token_value"
+    }
+
+    This credential re-reads from the file when tokens are near expiry,
+    allowing token_refresher to keep tokens updated externally.
+    """
+
+    def __init__(
+        self,
+        token_file: str,
+        resource: str = KUSTO_RESOURCE,
+        refresh_threshold_minutes: int = 10,
+    ):
+        """
+        Initialize file-backed credential.
+
+        Args:
+            token_file: Path to JSON token file
+            resource: Azure resource to get token for
+            refresh_threshold_minutes: Re-read file if token older than this
+        """
+        self._token_file = Path(token_file)
+        self._resource = resource
+        self._refresh_threshold = timedelta(minutes=refresh_threshold_minutes)
+        self._cached_token: Optional[str] = None
+        self._token_acquired_at: Optional[datetime] = None
+
+    def _should_refresh(self) -> bool:
+        """Check if token should be refreshed from file."""
+        if self._cached_token is None or self._token_acquired_at is None:
+            return True
+        age = datetime.now(timezone.utc) - self._token_acquired_at
+        return age >= self._refresh_threshold
+
+    def _read_token(self) -> str:
+        """Read token from file."""
+        if not self._token_file.exists():
+            raise RuntimeError(f"Token file not found: {self._token_file}")
+
+        content = self._token_file.read_text(encoding="utf-8").strip()
+        if not content:
+            raise RuntimeError(f"Token file is empty: {self._token_file}")
+
+        try:
+            tokens = json.loads(content)
+            if isinstance(tokens, dict):
+                # Try exact match
+                if self._resource in tokens:
+                    return tokens[self._resource]
+                # Try normalized match (with/without trailing slash)
+                resource_normalized = self._resource.rstrip("/")
+                for key, value in tokens.items():
+                    if key.rstrip("/") == resource_normalized:
+                        return value
+                # Try cluster URL pattern for Kusto
+                for key, value in tokens.items():
+                    if "kusto" in key.lower() or "fabric" in key.lower():
+                        logger.debug(
+                            "Using token for resource %s (requested %s)",
+                            key, self._resource
+                        )
+                        return value
+                raise RuntimeError(
+                    f"Token file does not contain token for resource: {self._resource}"
+                )
+            else:
+                # Plain text token
+                return content
+        except json.JSONDecodeError:
+            # Not JSON, treat as plain text
+            return content
+
+    def get_token(self, *scopes, **kwargs) -> AccessToken:
+        """
+        Return token in Azure SDK expected format.
+
+        Automatically refreshes from file if token is near expiry.
+        """
+        if self._should_refresh():
+            self._cached_token = self._read_token()
+            self._token_acquired_at = datetime.now(timezone.utc)
+            logger.debug(
+                "Read Kusto token from file",
+                extra={"token_file": str(self._token_file)},
+            )
+
+        # Token expiry is approximate (assume 1 hour from read)
+        expires_on = int(
+            (self._token_acquired_at + timedelta(hours=1)).timestamp()
+        )
+        return AccessToken(self._cached_token, expires_on)
 
 
 @dataclass
@@ -229,7 +334,8 @@ class KQLClient:
     async def connect(self) -> None:
         """Establish connection to Eventhouse.
 
-        Uses DefaultAzureCredential for authentication.
+        Uses token file authentication if AZURE_TOKEN_FILE is set,
+        otherwise falls back to DefaultAzureCredential.
         """
         async with self._lock:
             if self._client is not None:
@@ -244,8 +350,38 @@ class KQLClient:
             )
 
             try:
-                # Use DefaultAzureCredential for authentication
-                self._credential = DefaultAzureCredential()
+                # Check for token file authentication first
+                token_file = os.getenv("AZURE_TOKEN_FILE")
+                auth_mode = "default"
+
+                if token_file:
+                    token_path = Path(token_file)
+                    if token_path.exists():
+                        try:
+                            self._credential = FileBackedKustoCredential(
+                                token_file=token_file,
+                                resource=KUSTO_RESOURCE,
+                            )
+                            auth_mode = "token_file"
+                            logger.info(
+                                "Using token file for Eventhouse authentication",
+                                extra={"token_file": token_file},
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                "Token file auth failed, falling back to DefaultAzureCredential",
+                                extra={"error": str(e)[:200]},
+                            )
+                            self._credential = DefaultAzureCredential()
+                    else:
+                        logger.warning(
+                            "AZURE_TOKEN_FILE set but file not found, using DefaultAzureCredential",
+                            extra={"token_file": token_file},
+                        )
+                        self._credential = DefaultAzureCredential()
+                else:
+                    # Use DefaultAzureCredential for authentication
+                    self._credential = DefaultAzureCredential()
 
                 # Build connection string with token credential
                 kcsb = KustoConnectionStringBuilder.with_azure_token_credential(
@@ -261,6 +397,7 @@ class KQLClient:
                     extra={
                         "cluster_url": self.config.cluster_url,
                         "database": self.config.database,
+                        "auth_mode": auth_mode,
                     },
                 )
 
