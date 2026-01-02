@@ -12,6 +12,7 @@ Provides async Kafka consumer functionality with:
 """
 
 import asyncio
+import logging
 import time
 from typing import Awaitable, Callable, List, Optional
 
@@ -19,7 +20,7 @@ from aiokafka import AIOKafkaConsumer
 from aiokafka.structs import ConsumerRecord
 
 from core.auth.kafka_oauth import create_kafka_oauth_callback
-from core.logging.setup import get_logger
+from core.logging import get_logger, log_with_context, log_exception, KafkaLogContext
 from core.errors.exceptions import CircuitOpenError, ErrorCategory
 from core.errors.kafka_classifier import KafkaErrorClassifier
 from core.resilience.circuit_breaker import (
@@ -101,13 +102,13 @@ class BaseKafkaConsumer:
             f"kafka_consumer_{group_id}", KAFKA_CIRCUIT_CONFIG
         )
 
-        logger.info(
+        log_with_context(
+            logger,
+            logging.INFO,
             "Initialized Kafka consumer",
-            extra={
-                "topics": topics,
-                "group_id": group_id,
-                "bootstrap_servers": config.bootstrap_servers,
-            },
+            topics=topics,
+            group_id=group_id,
+            bootstrap_servers=config.bootstrap_servers,
         )
 
     async def start(self) -> None:
@@ -131,9 +132,12 @@ class BaseKafkaConsumer:
             logger.warning("Consumer already running, ignoring duplicate start call")
             return
 
-        logger.info(
+        log_with_context(
+            logger,
+            logging.INFO,
             "Starting Kafka consumer",
-            extra={"topics": self.topics, "group_id": self.group_id},
+            topics=self.topics,
+            group_id=self.group_id,
         )
 
         # Create aiokafka consumer configuration
@@ -176,13 +180,13 @@ class BaseKafkaConsumer:
         partition_count = len(self._consumer.assignment())
         update_assigned_partitions(self.group_id, partition_count)
 
-        logger.info(
+        log_with_context(
+            logger,
+            logging.INFO,
             "Kafka consumer started successfully",
-            extra={
-                "topics": self.topics,
-                "group_id": self.group_id,
-                "partitions": partition_count,
-            },
+            topics=self.topics,
+            group_id=self.group_id,
+            partitions=partition_count,
         )
 
         # Start message consumption loop
@@ -192,10 +196,10 @@ class BaseKafkaConsumer:
             logger.info("Consumer loop cancelled, shutting down")
             raise
         except Exception as e:
-            logger.error(
+            log_exception(
+                logger,
+                e,
                 "Consumer loop terminated with error",
-                extra={"error": str(e)},
-                exc_info=True,
             )
             raise
         finally:
@@ -223,10 +227,10 @@ class BaseKafkaConsumer:
                 await self._consumer.stop()
             logger.info("Kafka consumer stopped successfully")
         except Exception as e:
-            logger.error(
+            log_exception(
+                logger,
+                e,
                 "Error stopping Kafka consumer",
-                extra={"error": str(e)},
-                exc_info=True,
             )
             raise
         finally:
@@ -268,10 +272,10 @@ class BaseKafkaConsumer:
                 logger.info("Consumption loop cancelled")
                 raise
             except Exception as e:
-                logger.error(
+                log_exception(
+                    logger,
+                    e,
                     "Error in consumption loop",
-                    extra={"error": str(e)},
-                    exc_info=True,
                 )
                 # Continue processing - the circuit breaker will handle repeated failures
                 await asyncio.sleep(1)
@@ -289,68 +293,70 @@ class BaseKafkaConsumer:
         Args:
             message: ConsumerRecord to process
         """
-        logger.debug(
-            "Processing message",
-            extra={
-                "topic": message.topic,
-                "partition": message.partition,
-                "offset": message.offset,
-                "key": message.key.decode("utf-8") if message.key else None,
-            },
-        )
-
-        # Track processing time
-        start_time = time.perf_counter()
-        message_size = len(message.value) if message.value else 0
-
-        try:
-            # Call user-provided message handler
-            await self.message_handler(message)
-
-            # Record processing duration
-            duration = time.perf_counter() - start_time
-            message_processing_duration_seconds.labels(
-                topic=message.topic, consumer_group=self.group_id
-            ).observe(duration)
-
-            # Commit offset after successful processing (at-least-once semantics)
-            await self._consumer.commit()
-
-            # Update offset and lag metrics
-            self._update_partition_metrics(message)
-
-            # Record successful message consumption
-            record_message_consumed(
-                message.topic, self.group_id, message_size, success=True
+        # Use KafkaLogContext to automatically include Kafka context in all logs
+        with KafkaLogContext(
+            topic=message.topic,
+            partition=message.partition,
+            offset=message.offset,
+            key=message.key.decode("utf-8") if message.key else None,
+            consumer_group=self.group_id,
+        ):
+            log_with_context(
+                logger,
+                logging.DEBUG,
+                "Processing message",
+                message_size=len(message.value) if message.value else 0,
             )
 
-            logger.debug(
-                "Message processed successfully",
-                extra={
-                    "topic": message.topic,
-                    "partition": message.partition,
-                    "offset": message.offset,
-                    "duration_seconds": duration,
-                },
-            )
+            # Track processing time
+            start_time = time.perf_counter()
+            message_size = len(message.value) if message.value else 0
 
-        except Exception as e:
-            # Record processing duration even for failures
-            duration = time.perf_counter() - start_time
-            message_processing_duration_seconds.labels(
-                topic=message.topic, consumer_group=self.group_id
-            ).observe(duration)
+            try:
+                # Call user-provided message handler
+                await self.message_handler(message)
 
-            # Record failed message consumption
-            record_message_consumed(
-                message.topic, self.group_id, message_size, success=False
-            )
+                # Record processing duration
+                duration = time.perf_counter() - start_time
+                message_processing_duration_seconds.labels(
+                    topic=message.topic, consumer_group=self.group_id
+                ).observe(duration)
 
-            # Classify the error to determine routing
-            await self._handle_processing_error(message, e)
+                # Commit offset after successful processing (at-least-once semantics)
+                await self._consumer.commit()
+
+                # Update offset and lag metrics
+                self._update_partition_metrics(message)
+
+                # Record successful message consumption
+                record_message_consumed(
+                    message.topic, self.group_id, message_size, success=True
+                )
+
+                log_with_context(
+                    logger,
+                    logging.DEBUG,
+                    "Message processed successfully",
+                    duration_ms=round(duration * 1000, 2),
+                )
+
+            except Exception as e:
+                # Record processing duration even for failures
+                duration = time.perf_counter() - start_time
+                message_processing_duration_seconds.labels(
+                    topic=message.topic, consumer_group=self.group_id
+                ).observe(duration)
+
+                # Record failed message consumption
+                record_message_consumed(
+                    message.topic, self.group_id, message_size, success=False
+                )
+
+                # Classify the error to determine routing
+                await self._handle_processing_error(message, e, duration)
 
     async def _handle_processing_error(
-        self, message: ConsumerRecord, error: Exception
+        self, message: ConsumerRecord, error: Exception, duration: float
     ) -> None:
         """
         Handle message processing errors with intelligent routing.
@@ -365,6 +371,7 @@ class BaseKafkaConsumer:
         Args:
             message: The ConsumerRecord that failed processing
             error: The exception that occurred during processing
+            duration: Processing duration in seconds before error occurred
         """
         # Classify the error using Kafka error classifier
         classified_error = KafkaErrorClassifier.classify_consumer_error(
@@ -379,63 +386,67 @@ class BaseKafkaConsumer:
 
         error_category = classified_error.category
 
-        # Build log context
-        log_extra = {
-            "topic": message.topic,
-            "partition": message.partition,
-            "offset": message.offset,
-            "error_type": type(error).__name__,
-            "error_category": error_category.value,
-            "error_message": str(error),
-            "classified_as": type(classified_error).__name__,
-        }
-
         # Record error metric
         record_processing_error(message.topic, self.group_id, error_category.value)
 
+        # Common log context - Kafka context is automatically included via KafkaLogContext
+        common_context = {
+            "error_category": error_category.value,
+            "classified_as": type(classified_error).__name__,
+            "duration_ms": round(duration * 1000, 2),
+        }
+
         # Route based on error category
         if error_category == ErrorCategory.TRANSIENT:
-            logger.warning(
+            log_exception(
+                logger,
+                error,
                 "Transient error processing message - will retry on next poll",
-                extra=log_extra,
-                exc_info=True,
+                level=logging.WARNING,
+                **common_context,
             )
             # Don't commit offset - message will be reprocessed
             # TODO (WP-209): Send to retry topic with exponential backoff
 
         elif error_category == ErrorCategory.PERMANENT:
-            logger.error(
+            log_exception(
+                logger,
+                error,
                 "Permanent error processing message - should route to DLQ",
-                extra=log_extra,
-                exc_info=True,
+                **common_context,
             )
             # Don't commit offset yet
             # TODO (WP-211): Send to DLQ topic for manual review
             # For now, just log - message will be reprocessed (not ideal)
 
         elif error_category == ErrorCategory.AUTH:
-            logger.warning(
+            log_exception(
+                logger,
+                error,
                 "Authentication error - will reprocess after token refresh",
-                extra=log_extra,
-                exc_info=True,
+                level=logging.WARNING,
+                **common_context,
             )
             # Don't commit offset - message will be reprocessed after auth refresh
             # The token cache will refresh automatically on next attempt
 
         elif error_category == ErrorCategory.CIRCUIT_OPEN:
-            logger.warning(
+            log_exception(
+                logger,
+                error,
                 "Circuit breaker open - will reprocess when circuit closes",
-                extra=log_extra,
-                exc_info=True,
+                level=logging.WARNING,
+                **common_context,
             )
             # Don't commit offset - message will be reprocessed when circuit recovers
             # Circuit breaker will track failure rate and open/close accordingly
 
         else:  # UNKNOWN or other categories
-            logger.error(
+            log_exception(
+                logger,
+                error,
                 "Unknown error category - applying conservative retry",
-                extra=log_extra,
-                exc_info=True,
+                **common_context,
             )
             # Don't commit offset - conservative retry for unknown errors
 
@@ -475,13 +486,13 @@ class BaseKafkaConsumer:
 
         except Exception as e:
             # Don't fail message processing due to metrics issues
-            logger.debug(
+            log_with_context(
+                logger,
+                logging.DEBUG,
                 "Failed to update partition metrics",
-                extra={
-                    "topic": message.topic,
-                    "partition": message.partition,
-                    "error": str(e),
-                },
+                topic=message.topic,
+                partition=message.partition,
+                error=str(e),
             )
 
     @property
