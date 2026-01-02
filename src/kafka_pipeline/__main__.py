@@ -186,6 +186,7 @@ async def run_eventhouse_poller(pipeline_config):
         poll_interval_seconds=eventhouse_source.poll_interval_seconds,
         batch_size=eventhouse_source.batch_size,
         source_table=eventhouse_source.source_table,
+        events_table_path=eventhouse_source.xact_events_table_path,
     )
 
     async with KQLEventPoller(poller_config) as poller:
