@@ -1,11 +1,9 @@
 # Local Kafka for development and testing
 # Usage: docker-compose -f docker-compose.kafka.yml up -d
 
-version: '3.8'
-
 services:
   kafka:
-    image: bitnami/kafka:3.6
+    image: bitnami/kafka:latest
     container_name: kafka-pipeline-local
     ports:
       - "9092:9092"
@@ -41,7 +39,7 @@ services:
       start_period: 30s
 
   kafka-init:
-    image: bitnami/kafka:3.6
+    image: bitnami/kafka:latest
     depends_on:
       kafka:
         condition: service_healthy
