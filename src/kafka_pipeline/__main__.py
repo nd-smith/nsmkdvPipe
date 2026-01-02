@@ -295,6 +295,11 @@ def setup_signal_handlers(loop: asyncio.AbstractEventLoop):
         for task in asyncio.all_tasks(loop):
             task.cancel()
 
+    # Signal handlers are not supported on Windows
+    if sys.platform == "win32":
+        logger.debug("Signal handlers not supported on Windows, using KeyboardInterrupt")
+        return
+
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, lambda s=sig: handle_signal(s))
 
