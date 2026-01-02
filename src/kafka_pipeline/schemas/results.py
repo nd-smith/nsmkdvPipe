@@ -212,7 +212,10 @@ class FailedDownloadMessage(BaseModel):
         >>> task = DownloadTaskMessage(
         ...     trace_id="evt-456",
         ...     attachment_url="https://storage.example.com/bad.pdf",
-        ...     destination_path="claims/C-789/bad.pdf",
+        ...     blob_path="claims/C-789/bad.pdf",
+        ...     status_subtype="documentsReceived",
+        ...     file_type="pdf",
+        ...     assignment_id="C-789",
         ...     event_type="claim",
         ...     event_subtype="created",
         ...     retry_count=4,
@@ -295,7 +298,10 @@ class FailedDownloadMessage(BaseModel):
                     'original_task': {
                         'trace_id': 'evt-2024-004',
                         'attachment_url': 'https://storage.example.com/claims/C-99999/missing.pdf',
-                        'destination_path': 'claims/C-99999/missing.pdf',
+                        'blob_path': 'claims/C-99999/missing.pdf',
+                        'status_subtype': 'documentsReceived',
+                        'file_type': 'pdf',
+                        'assignment_id': 'C-99999',
                         'event_type': 'claim',
                         'event_subtype': 'created',
                         'retry_count': 4,

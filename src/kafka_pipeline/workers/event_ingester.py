@@ -36,7 +36,6 @@ from kafka_pipeline.producer import BaseKafkaProducer
 from kafka_pipeline.schemas.events import EventMessage
 from kafka_pipeline.schemas.tasks import DownloadTaskMessage
 from kafka_pipeline.writers import DeltaEventsWriter
-from verisk_pipeline.common.config.xact import get_config
 from verisk_pipeline.common.security import sanitize_url
 
 logger = get_logger(__name__)
@@ -69,13 +68,19 @@ class EventIngesterWorker:
         >>> await worker.stop()
     """
 
-    def __init__(self, config: KafkaConfig, enable_delta_writes: bool = True):
+    def __init__(
+        self,
+        config: KafkaConfig,
+        enable_delta_writes: bool = True,
+        events_table_path: str = "",
+    ):
         """
         Initialize event ingester worker.
 
         Args:
             config: Kafka configuration with topic names and connection settings
             enable_delta_writes: Whether to enable Delta Lake writes (default: True)
+            events_table_path: Full abfss:// path to xact_events Delta table
         """
         self.config = config
         self.producer: Optional[BaseKafkaProducer] = None
@@ -86,12 +91,15 @@ class EventIngesterWorker:
         # Consumer group for event ingestion
         self.consumer_group = f"{config.consumer_group_prefix}-event-ingester"
 
-        # Initialize Delta writer if enabled
-        if self.enable_delta_writes:
-            pipeline_config = get_config()
+        # Initialize Delta writer if enabled and path provided
+        if self.enable_delta_writes and events_table_path:
             self.delta_writer = DeltaEventsWriter(
-                table_path=pipeline_config.lakehouse.events_table_path,
+                table_path=events_table_path,
                 dedupe_window_hours=24,
+            )
+        elif self.enable_delta_writes:
+            logger.warning(
+                "Delta writes enabled but no events_table_path provided, skipping"
             )
 
         logger.info(
