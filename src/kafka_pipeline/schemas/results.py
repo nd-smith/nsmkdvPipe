@@ -3,6 +3,8 @@ Download result and failure message schemas for Kafka pipeline.
 
 Contains Pydantic models for download outcomes sent to results topic
 and failure messages sent to dead-letter queue (DLQ).
+
+Schema aligned with verisk_pipeline Task.to_tracking_row() for compatibility.
 """
 
 from datetime import datetime
@@ -17,30 +19,25 @@ class DownloadResultMessage(BaseModel):
     """Schema for download outcomes (success or failure).
 
     Sent to results topic after download worker processes a task.
-    Contains both successful downloads and failed attempts for observability.
+    Schema matches verisk_pipeline Task.to_tracking_row() for inventory table.
 
     Attributes:
         trace_id: Unique event identifier for correlation
         attachment_url: URL of the attachment that was processed
-        status: Outcome status (success, failed_transient, failed_permanent)
-        destination_path: Target path in blob storage (None if failed)
-        bytes_downloaded: Number of bytes downloaded (None if failed)
+        blob_path: Target path in OneLake/blob storage
+        status_subtype: Event status subtype (e.g., "documentsReceived")
+        file_type: File type (e.g., "pdf", "esx")
+        assignment_id: Assignment ID from event
+        status: Outcome status (completed, failed, failed_permanent)
+        http_status: HTTP response status code (optional)
+        bytes_downloaded: Number of bytes downloaded (0 if failed)
+        retry_count: Number of retry attempts made
         error_message: Error description if failed (truncated to 500 chars)
-        error_category: Error classification (transient, permanent, auth, etc.)
-        processing_time_ms: Total processing time in milliseconds
-        completed_at: Timestamp when processing completed
+        created_at: Timestamp when result was created
+        expires_at: URL expiration timestamp (optional)
+        expired_at_ingest: Whether URL was expired at ingest time (optional)
 
-    Example:
-        >>> from datetime import datetime, timezone
-        >>> result = DownloadResultMessage(
-        ...     trace_id="evt-123",
-        ...     attachment_url="https://storage.example.com/file.pdf",
-        ...     status="success",
-        ...     destination_path="claims/C-456/file.pdf",
-        ...     bytes_downloaded=2048576,
-        ...     processing_time_ms=1250,
-        ...     completed_at=datetime.now(timezone.utc)
-        ... )
+    Matches verisk_pipeline Task.to_tracking_row() output for xact_attachments table.
     """
 
     trace_id: str = Field(
@@ -53,38 +50,62 @@ class DownloadResultMessage(BaseModel):
         description="URL of the attachment that was processed",
         min_length=1
     )
-    status: Literal["success", "failed_transient", "failed_permanent"] = Field(
+    blob_path: str = Field(
         ...,
-        description="Outcome status: success, failed_transient, or failed_permanent"
+        description="Target path in OneLake/blob storage",
+        min_length=1
     )
-    destination_path: Optional[str] = Field(
-        default=None,
-        description="Target path in blob storage (None if download failed)"
+    status_subtype: str = Field(
+        ...,
+        description="Event status subtype (last part of event type)",
+        min_length=1
     )
-    bytes_downloaded: Optional[int] = Field(
+    file_type: str = Field(
+        ...,
+        description="File type extracted from URL extension",
+        min_length=1
+    )
+    assignment_id: str = Field(
+        ...,
+        description="Assignment ID from event payload",
+        min_length=1
+    )
+    status: Literal["completed", "failed", "failed_permanent"] = Field(
+        ...,
+        description="Outcome status: completed, failed (transient), or failed_permanent"
+    )
+    http_status: Optional[int] = Field(
         default=None,
-        description="Number of bytes downloaded (None if failed)",
+        description="HTTP response status code"
+    )
+    bytes_downloaded: int = Field(
+        default=0,
+        description="Number of bytes downloaded (0 if failed)",
+        ge=0
+    )
+    retry_count: int = Field(
+        default=0,
+        description="Number of retry attempts made",
         ge=0
     )
     error_message: Optional[str] = Field(
         default=None,
         description="Error description if failed (truncated to 500 chars)"
     )
-    error_category: Optional[str] = Field(
+    created_at: datetime = Field(
+        ...,
+        description="Timestamp when result was created"
+    )
+    expires_at: Optional[datetime] = Field(
         default=None,
-        description="Error classification (transient, permanent, auth, etc.)"
+        description="URL expiration timestamp (optional)"
     )
-    processing_time_ms: int = Field(
-        ...,
-        description="Total processing time in milliseconds",
-        ge=0
-    )
-    completed_at: datetime = Field(
-        ...,
-        description="Timestamp when processing completed"
+    expired_at_ingest: Optional[bool] = Field(
+        default=None,
+        description="Whether URL was expired at ingest time"
     )
 
-    @field_validator('trace_id', 'attachment_url')
+    @field_validator('trace_id', 'attachment_url', 'blob_path', 'status_subtype', 'file_type', 'assignment_id')
     @classmethod
     def validate_non_empty_strings(cls, v: str, info) -> str:
         """Ensure string fields are not empty or whitespace-only."""
@@ -100,46 +121,71 @@ class DownloadResultMessage(BaseModel):
             return v[:497] + "..."
         return v
 
-    @field_serializer('completed_at')
-    def serialize_timestamp(self, timestamp: datetime) -> str:
+    @field_serializer('created_at', 'expires_at')
+    def serialize_timestamp(self, timestamp: Optional[datetime]) -> Optional[str]:
         """Serialize datetime to ISO 8601 format."""
+        if timestamp is None:
+            return None
         return timestamp.isoformat()
+
+    def to_tracking_row(self) -> dict:
+        """
+        Convert to tracking table row format.
+
+        Returns:
+            Dict suitable for xact_attachments table insert
+        """
+        return {
+            "trace_id": self.trace_id,
+            "attachment_url": self.attachment_url,
+            "blob_path": self.blob_path,
+            "status_subtype": self.status_subtype,
+            "file_type": self.file_type,
+            "assignment_id": self.assignment_id,
+            "status": self.status,
+            "http_status": self.http_status,
+            "bytes_downloaded": self.bytes_downloaded,
+            "retry_count": self.retry_count,
+            "error_message": self.error_message,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "expires_at": self.expires_at,
+            "expired_at_ingest": self.expired_at_ingest,
+        }
 
     model_config = {
         'json_schema_extra': {
             'examples': [
                 {
-                    'trace_id': 'evt-2024-001',
-                    'attachment_url': 'https://storage.example.com/claims/C-12345/document.pdf',
-                    'status': 'success',
-                    'destination_path': 'claims/C-12345/document.pdf',
+                    'trace_id': 'abc123-def456',
+                    'attachment_url': 'https://xactware.com/docs/estimate.pdf',
+                    'blob_path': 'documentsReceived/A12345/pdf/estimate.pdf',
+                    'status_subtype': 'documentsReceived',
+                    'file_type': 'pdf',
+                    'assignment_id': 'A12345',
+                    'status': 'completed',
+                    'http_status': 200,
                     'bytes_downloaded': 2048576,
+                    'retry_count': 0,
                     'error_message': None,
-                    'error_category': None,
-                    'processing_time_ms': 1250,
-                    'completed_at': '2024-12-25T10:31:15Z'
+                    'created_at': '2024-12-25T10:31:15Z',
+                    'expires_at': None,
+                    'expired_at_ingest': False
                 },
                 {
-                    'trace_id': 'evt-2024-002',
-                    'attachment_url': 'https://storage.example.com/policies/P-67890/image.jpg',
-                    'status': 'failed_transient',
-                    'destination_path': None,
-                    'bytes_downloaded': None,
-                    'error_message': 'Connection timeout after 30 seconds',
-                    'error_category': 'transient',
-                    'processing_time_ms': 30150,
-                    'completed_at': '2024-12-25T10:31:45Z'
-                },
-                {
-                    'trace_id': 'evt-2024-003',
-                    'attachment_url': 'https://storage.example.com/invalid/file.exe',
-                    'status': 'failed_permanent',
-                    'destination_path': None,
-                    'bytes_downloaded': None,
-                    'error_message': 'File type .exe not allowed',
-                    'error_category': 'permanent',
-                    'processing_time_ms': 50,
-                    'completed_at': '2024-12-25T10:32:00Z'
+                    'trace_id': 'xyz789-abc123',
+                    'attachment_url': 'https://xactware.com/estimates/v2.esx',
+                    'blob_path': 'estimateCreated/B67890/esx/v2.esx',
+                    'status_subtype': 'estimateCreated',
+                    'file_type': 'esx',
+                    'assignment_id': 'B67890',
+                    'status': 'failed',
+                    'http_status': 503,
+                    'bytes_downloaded': 0,
+                    'retry_count': 2,
+                    'error_message': 'Service temporarily unavailable',
+                    'created_at': '2024-12-25T10:31:45Z',
+                    'expires_at': None,
+                    'expired_at_ingest': False
                 }
             ]
         }

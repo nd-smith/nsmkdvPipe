@@ -4,7 +4,9 @@ Delta Lake writer for attachment inventory table.
 Writes download results to the xact_attachments Delta table with:
 - Idempotency via merge on (trace_id, attachment_url)
 - Async/non-blocking writes
-- Metrics tracking for batch size and latency
+- Schema compatibility with verisk_pipeline xact_attachments table
+
+Schema aligned with verisk_pipeline Task.to_tracking_row() for compatibility.
 """
 
 import asyncio
@@ -17,19 +19,48 @@ import polars as pl
 
 from kafka_pipeline.schemas.results import DownloadResultMessage
 from verisk_pipeline.storage.delta import DeltaTableWriter
+from verisk_pipeline.xact.xact_models import XACT_PRIMARY_KEYS
 
 logger = logging.getLogger(__name__)
+
+
+# Schema for xact_attachments table (matches verisk_pipeline)
+INVENTORY_SCHEMA = {
+    "trace_id": pl.Utf8,
+    "attachment_url": pl.Utf8,
+    "blob_path": pl.Utf8,
+    "status_subtype": pl.Utf8,
+    "file_type": pl.Utf8,
+    "assignment_id": pl.Utf8,
+    "status": pl.Utf8,
+    "http_status": pl.Int64,
+    "bytes_downloaded": pl.Int64,
+    "retry_count": pl.Int64,
+    "error_message": pl.Utf8,
+    "created_at": pl.Utf8,
+    "expires_at": pl.Datetime(time_zone="UTC"),
+    "expired_at_ingest": pl.Boolean,
+}
 
 
 class DeltaInventoryWriter:
     """
     Writer for xact_attachments Delta table with idempotency and async support.
 
-    Features:
-    - Merge on (trace_id, attachment_url) for idempotency
-    - Non-blocking writes using asyncio.to_thread
-    - Metrics for batch size and write latency
-    - Schema compatibility with existing xact_attachments table
+    Schema matches verisk_pipeline Task.to_tracking_row() output:
+    - trace_id, attachment_url: Primary keys for merge
+    - blob_path: Destination path in OneLake
+    - status_subtype: Event type suffix (e.g., "documentsReceived")
+    - file_type: File extension (e.g., "pdf", "esx")
+    - assignment_id: Assignment ID from event
+    - status: completed/failed/failed_permanent
+    - http_status: HTTP response code
+    - bytes_downloaded: Size of downloaded file
+    - retry_count: Number of retry attempts
+    - error_message: Error description (if failed)
+    - created_at: Timestamp of result creation
+    - expires_at: URL expiration time (optional)
+    - expired_at_ingest: Whether URL was expired at ingest
 
     Usage:
         >>> writer = DeltaInventoryWriter(table_path="abfss://.../xact_attachments")
@@ -48,7 +79,7 @@ class DeltaInventoryWriter:
         # Initialize underlying Delta writer with merge support
         self._delta_writer = DeltaTableWriter(
             table_path=table_path,
-            z_order_columns=["trace_id", "downloaded_at"],
+            z_order_columns=["trace_id", "created_at"],
         )
 
         logger.info(
@@ -138,15 +169,21 @@ class DeltaInventoryWriter:
         """
         Convert DownloadResultMessage objects to Polars DataFrame.
 
-        Schema matches xact_attachments table:
-        - trace_id: str
-        - attachment_url: str
-        - blob_path: str (destination_path from result)
+        Schema matches verisk_pipeline xact_attachments table:
+        - trace_id: str (primary key)
+        - attachment_url: str (primary key)
+        - blob_path: str
+        - status_subtype: str
+        - file_type: str
+        - assignment_id: str
+        - status: str (completed/failed/failed_permanent)
+        - http_status: int
         - bytes_downloaded: int
-        - downloaded_at: datetime (completed_at from result)
-        - processing_time_ms: int
-        - created_at: datetime (current UTC time)
-        - created_date: date (current UTC date)
+        - retry_count: int
+        - error_message: str
+        - created_at: str (ISO format)
+        - expires_at: datetime (optional)
+        - expired_at_ingest: bool (optional)
 
         Args:
             results: List of DownloadResultMessage objects
@@ -154,38 +191,11 @@ class DeltaInventoryWriter:
         Returns:
             Polars DataFrame with xact_attachments schema
         """
-        # Current time for created_at
-        now = datetime.now(timezone.utc)
-
-        # Convert to list of dicts matching table schema
-        rows = []
-        for result in results:
-            row = {
-                "trace_id": result.trace_id,
-                "attachment_url": result.attachment_url,
-                "blob_path": result.destination_path,
-                "bytes_downloaded": result.bytes_downloaded,
-                "downloaded_at": result.completed_at,
-                "processing_time_ms": result.processing_time_ms,
-                "created_at": now,
-                "created_date": now.date(),
-            }
-            rows.append(row)
+        # Convert to list of dicts using to_tracking_row() for consistency
+        rows = [result.to_tracking_row() for result in results]
 
         # Create DataFrame with explicit schema
-        df = pl.DataFrame(
-            rows,
-            schema={
-                "trace_id": pl.Utf8,
-                "attachment_url": pl.Utf8,
-                "blob_path": pl.Utf8,
-                "bytes_downloaded": pl.Int64,
-                "downloaded_at": pl.Datetime(time_zone="UTC"),
-                "processing_time_ms": pl.Int64,
-                "created_at": pl.Datetime(time_zone="UTC"),
-                "created_date": pl.Date,
-            },
-        )
+        df = pl.DataFrame(rows, schema=INVENTORY_SCHEMA)
 
         return df
 

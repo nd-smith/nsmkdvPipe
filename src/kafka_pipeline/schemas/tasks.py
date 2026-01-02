@@ -2,47 +2,58 @@
 Download task message schemas for Kafka pipeline.
 
 Contains Pydantic models for download work items sent to download workers.
+Schema aligned with verisk_pipeline Task dataclass for compatibility.
 """
 
-from datetime import datetime
-from typing import Any, Dict
+from typing import Optional
 
-from pydantic import BaseModel, Field, field_serializer, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 class DownloadTaskMessage(BaseModel):
     """Schema for download work items sent to download workers.
 
     Represents a single attachment download task derived from an event.
-    Includes retry tracking and metadata for observability.
+    Schema matches verisk_pipeline.xact.xact_models.Task for compatibility.
 
     Attributes:
         trace_id: Unique identifier from the source event (for correlation)
         attachment_url: URL of the attachment to download
-        destination_path: Target path in blob storage for the downloaded file
-        event_type: High-level event category from source event
-        event_subtype: Specific event action from source event
+        blob_path: Target path in OneLake/blob storage for the downloaded file
+        status_subtype: Event status subtype (e.g., "documentsReceived", "estimateCreated")
+        file_type: File type extracted from URL (e.g., "pdf", "esx", "jpg")
+        assignment_id: Assignment ID from event payload (required for path generation)
+        estimate_version: Estimate version from event payload (optional)
         retry_count: Number of times this task has been retried (starts at 0)
-        original_timestamp: Timestamp from the original event (preserved through retries)
-        metadata: Extensible metadata dict for additional context
+
+    Matches verisk_pipeline Task dataclass:
+        @dataclass
+        class Task:
+            trace_id: str
+            attachment_url: str
+            blob_path: str
+            status_subtype: str
+            file_type: str
+            assignment_id: str
+            estimate_version: Optional[str] = None
+            retry_count: int = 0
 
     Example:
-        >>> from datetime import datetime, timezone
         >>> task = DownloadTaskMessage(
-        ...     trace_id="evt-123",
-        ...     attachment_url="https://storage.example.com/file.pdf",
-        ...     destination_path="claims/C-456/file.pdf",
-        ...     event_type="claim",
-        ...     event_subtype="created",
-        ...     retry_count=0,
-        ...     original_timestamp=datetime.now(timezone.utc),
-        ...     metadata={"file_size": 1024, "content_type": "application/pdf"}
+        ...     trace_id="abc123-def456",
+        ...     attachment_url="https://example.com/docs/estimate.pdf",
+        ...     blob_path="documentsReceived/A12345/pdf/estimate.pdf",
+        ...     status_subtype="documentsReceived",
+        ...     file_type="pdf",
+        ...     assignment_id="A12345",
+        ...     estimate_version="1.0",
+        ...     retry_count=0
         ... )
     """
 
     trace_id: str = Field(
         ...,
-        description="Unique event identifier for correlation",
+        description="Unique event identifier (from traceId)",
         min_length=1
     )
     attachment_url: str = Field(
@@ -50,36 +61,37 @@ class DownloadTaskMessage(BaseModel):
         description="URL of the attachment to download",
         min_length=1
     )
-    destination_path: str = Field(
+    blob_path: str = Field(
         ...,
-        description="Target path in blob storage",
+        description="Target path in OneLake/blob storage",
         min_length=1
     )
-    event_type: str = Field(
+    status_subtype: str = Field(
         ...,
-        description="High-level event category",
+        description="Event status subtype (last part of event type)",
         min_length=1
     )
-    event_subtype: str = Field(
+    file_type: str = Field(
         ...,
-        description="Specific event action or subtype",
+        description="File type extracted from URL extension",
         min_length=1
+    )
+    assignment_id: str = Field(
+        ...,
+        description="Assignment ID from event payload",
+        min_length=1
+    )
+    estimate_version: Optional[str] = Field(
+        default=None,
+        description="Estimate version from event payload (optional)"
     )
     retry_count: int = Field(
         default=0,
         description="Number of retry attempts (starts at 0)",
         ge=0
     )
-    original_timestamp: datetime = Field(
-        ...,
-        description="Timestamp from original event (preserved through retries)"
-    )
-    metadata: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="Extensible metadata for additional context"
-    )
 
-    @field_validator('trace_id', 'attachment_url', 'destination_path', 'event_type', 'event_subtype')
+    @field_validator('trace_id', 'attachment_url', 'blob_path', 'status_subtype', 'file_type', 'assignment_id')
     @classmethod
     def validate_non_empty_strings(cls, v: str, info) -> str:
         """Ensure string fields are not empty or whitespace-only."""
@@ -95,39 +107,69 @@ class DownloadTaskMessage(BaseModel):
             raise ValueError("retry_count must be non-negative")
         return v
 
-    @field_serializer('original_timestamp')
-    def serialize_timestamp(self, timestamp: datetime) -> str:
-        """Serialize datetime to ISO 8601 format."""
-        return timestamp.isoformat()
+    def to_verisk_task(self) -> "Task":
+        """
+        Convert to verisk_pipeline Task dataclass for compatibility.
+
+        Returns:
+            verisk_pipeline.xact.xact_models.Task instance
+        """
+        from verisk_pipeline.xact.xact_models import Task
+        return Task(
+            trace_id=self.trace_id,
+            attachment_url=self.attachment_url,
+            blob_path=self.blob_path,
+            status_subtype=self.status_subtype,
+            file_type=self.file_type,
+            assignment_id=self.assignment_id,
+            estimate_version=self.estimate_version,
+            retry_count=self.retry_count,
+        )
+
+    @classmethod
+    def from_verisk_task(cls, task: "Task") -> "DownloadTaskMessage":
+        """
+        Create from verisk_pipeline Task dataclass.
+
+        Args:
+            task: verisk_pipeline.xact.xact_models.Task instance
+
+        Returns:
+            DownloadTaskMessage instance
+        """
+        return cls(
+            trace_id=task.trace_id,
+            attachment_url=task.attachment_url,
+            blob_path=task.blob_path,
+            status_subtype=task.status_subtype,
+            file_type=task.file_type,
+            assignment_id=task.assignment_id,
+            estimate_version=task.estimate_version,
+            retry_count=task.retry_count,
+        )
 
     model_config = {
         'json_schema_extra': {
             'examples': [
                 {
-                    'trace_id': 'evt-2024-001',
-                    'attachment_url': 'https://storage.example.com/claims/C-12345/document.pdf',
-                    'destination_path': 'claims/C-12345/document.pdf',
-                    'event_type': 'claim',
-                    'event_subtype': 'created',
-                    'retry_count': 0,
-                    'original_timestamp': '2024-12-25T10:30:00Z',
-                    'metadata': {
-                        'expected_size': 2048576,
-                        'content_type': 'application/pdf',
-                        'source_system': 'claimx'
-                    }
+                    'trace_id': 'abc123-def456-ghi789',
+                    'attachment_url': 'https://xactware.com/docs/estimate.pdf',
+                    'blob_path': 'documentsReceived/A12345/pdf/estimate.pdf',
+                    'status_subtype': 'documentsReceived',
+                    'file_type': 'pdf',
+                    'assignment_id': 'A12345',
+                    'estimate_version': '1.0',
+                    'retry_count': 0
                 },
                 {
-                    'trace_id': 'evt-2024-002',
-                    'attachment_url': 'https://storage.example.com/policies/P-67890/image.jpg',
-                    'destination_path': 'policies/P-67890/image.jpg',
-                    'event_type': 'policy',
-                    'event_subtype': 'updated',
-                    'retry_count': 2,
-                    'original_timestamp': '2024-12-25T09:15:00Z',
-                    'metadata': {
-                        'retry_reason': 'transient_network_error'
-                    }
+                    'trace_id': 'xyz789-abc123',
+                    'attachment_url': 'https://xactware.com/estimates/v2.esx',
+                    'blob_path': 'estimateCreated/B67890/esx/v2.esx',
+                    'status_subtype': 'estimateCreated',
+                    'file_type': 'esx',
+                    'assignment_id': 'B67890',
+                    'estimate_version': '2.0',
+                    'retry_count': 2
                 }
             ]
         }

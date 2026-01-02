@@ -489,6 +489,8 @@ class KQLEventPoller:
         """
         Publish EventMessage to the events.raw topic.
 
+        EventMessage schema matches verisk_pipeline EventRecord.
+
         Args:
             event: EventMessage to publish
         """
@@ -504,7 +506,8 @@ class KQLEventPoller:
                 "Published event to events.raw",
                 extra={
                     "trace_id": event.trace_id,
-                    "event_type": event.event_type,
+                    "type": event.type,
+                    "status_subtype": event.status_subtype,
                     "attachment_count": len(event.attachments) if event.attachments else 0,
                 },
             )
@@ -521,72 +524,71 @@ class KQLEventPoller:
         """
         Convert a KQL result row to EventMessage.
 
+        Creates EventMessage matching verisk_pipeline EventRecord schema:
+        - type: Full event type string
+        - version: Event version
+        - utc_datetime: Event timestamp
+        - trace_id: Trace identifier
+        - data: JSON string with nested event data
+
+        Eventhouse source columns:
+        - type: "verisk.claims.property.xn.documentsReceived"
+        - version: Event version number
+        - utcDateTime: Event timestamp
+        - traceId: UUID trace identifier (camelCase!)
+        - data: JSON object containing payload and nested attachments
+
         Args:
             row: Dictionary from KQL result
 
         Returns:
-            EventMessage
+            EventMessage matching verisk_pipeline EventRecord schema
         """
-        mapping = self.config.column_mapping
+        import json
 
-        # Extract and parse timestamp
-        timestamp_val = row.get(mapping["timestamp"])
-        if isinstance(timestamp_val, str):
-            timestamp = datetime.fromisoformat(timestamp_val.replace("Z", "+00:00"))
-        elif isinstance(timestamp_val, datetime):
-            timestamp = timestamp_val
+        # Extract trace_id (supports both traceId and trace_id column names)
+        trace_id = row.get("traceId", row.get("trace_id", ""))
+
+        # Extract full event type
+        full_type = row.get("type", "")
+
+        # Extract version
+        version = str(row.get("version", ""))
+
+        # Extract timestamp as string
+        timestamp_val = row.get("utcDateTime", row.get("timestamp", ""))
+        if isinstance(timestamp_val, datetime):
+            utc_datetime = timestamp_val.isoformat()
         else:
-            timestamp = datetime.now(timezone.utc)
+            utc_datetime = str(timestamp_val) if timestamp_val else ""
 
-        # Extract attachments (could be string or list)
-        attachments_val = row.get(mapping.get("attachments", "attachments"))
-        if isinstance(attachments_val, str):
-            # Try to parse as JSON array
-            import json
-
-            try:
-                attachments = json.loads(attachments_val)
-            except json.JSONDecodeError:
-                # Single URL as string
-                attachments = [attachments_val] if attachments_val else None
-        elif isinstance(attachments_val, list):
-            attachments = attachments_val
+        # Extract data field as JSON string
+        data_val = row.get("data", {})
+        if isinstance(data_val, dict):
+            data = json.dumps(data_val)
+        elif isinstance(data_val, str):
+            data = data_val
         else:
-            attachments = None
+            data = "{}"
 
-        # Extract payload (could be string or dict)
-        payload_val = row.get(mapping.get("payload", "payload"), {})
-        if isinstance(payload_val, str):
-            import json
-
-            try:
-                payload = json.loads(payload_val)
-            except json.JSONDecodeError:
-                payload = {"raw": payload_val}
-        elif isinstance(payload_val, dict):
-            payload = payload_val
-        else:
-            payload = {}
-
-        return EventMessage(
-            trace_id=row.get(mapping["trace_id"], ""),
-            event_type=row.get(mapping["event_type"], ""),
-            event_subtype=row.get(mapping["event_subtype"], ""),
-            timestamp=timestamp,
-            source_system=row.get(mapping["source_system"], ""),
-            payload=payload,
-            attachments=attachments,
-        )
+        # Create EventMessage using from_eventhouse_row for proper parsing
+        return EventMessage.from_eventhouse_row({
+            "type": full_type,
+            "version": version,
+            "utcDateTime": utc_datetime,
+            "traceId": trace_id,
+            "data": data,
+        })
 
     async def _process_event_attachments(self, event: EventMessage) -> None:
         """
-        Process attachments from an event.
+        Process attachments from an event (legacy method).
 
-        Validates URLs, generates blob paths, creates download tasks,
-        and produces to Kafka.
+        Note: This is now handled by EventIngester after events are published
+        to the events.raw topic. Kept for backwards compatibility.
 
         Args:
-            event: EventMessage to process
+            event: EventMessage to process (matches verisk_pipeline EventRecord)
         """
         if not event.attachments:
             logger.debug(
@@ -595,11 +597,11 @@ class KQLEventPoller:
             )
             return
 
-        # Extract assignment_id from payload
-        assignment_id = event.payload.get("assignment_id")
+        # Extract assignment_id from data
+        assignment_id = event.assignment_id
         if not assignment_id:
             logger.warning(
-                "Event missing assignment_id, cannot generate paths",
+                "Event missing assignmentId, cannot generate paths",
                 extra={"trace_id": event.trace_id},
             )
             return
@@ -618,10 +620,13 @@ class KQLEventPoller:
         assignment_id: str,
     ) -> None:
         """
-        Process a single attachment.
+        Process a single attachment (legacy method).
+
+        Note: This is now handled by EventIngester after events are published
+        to the events.raw topic. Kept for backwards compatibility.
 
         Args:
-            event: Source event
+            event: Source event (matches verisk_pipeline EventRecord)
             attachment_url: URL to download
             assignment_id: For path generation
         """
@@ -638,14 +643,14 @@ class KQLEventPoller:
             )
             return
 
-        # Generate blob path
+        # Generate blob path using status_subtype
         try:
             blob_path, file_type = generate_blob_path(
-                status_subtype=event.event_subtype,
+                status_subtype=event.status_subtype,
                 trace_id=event.trace_id,
                 assignment_id=assignment_id,
                 download_url=attachment_url,
-                estimate_version=event.payload.get("estimate_version"),
+                estimate_version=event.estimate_version,
             )
         except Exception as e:
             logger.error(
@@ -657,21 +662,16 @@ class KQLEventPoller:
             )
             return
 
-        # Create download task
+        # Create download task matching verisk_pipeline Task schema
         download_task = DownloadTaskMessage(
             trace_id=event.trace_id,
             attachment_url=attachment_url,
-            destination_path=blob_path,
-            event_type=event.event_type,
-            event_subtype=event.event_subtype,
+            blob_path=blob_path,
+            status_subtype=event.status_subtype,
+            file_type=file_type,
+            assignment_id=assignment_id,
+            estimate_version=event.estimate_version,
             retry_count=0,
-            original_timestamp=event.timestamp,
-            metadata={
-                "assignment_id": assignment_id,
-                "file_type": file_type,
-                "source_system": event.source_system,
-                "source": "eventhouse",  # Mark as from Eventhouse poller
-            },
         )
 
         # Produce to Kafka
@@ -687,7 +687,7 @@ class KQLEventPoller:
                 "Created download task",
                 extra={
                     "trace_id": event.trace_id,
-                    "destination_path": blob_path,
+                    "blob_path": blob_path,
                     "file_type": file_type,
                 },
             )
@@ -704,16 +704,23 @@ class KQLEventPoller:
         """
         Write events to Delta Lake for deduplication tracking.
 
+        Uses flatten_events() from verisk_pipeline to transform events
+        into the correct xact_events schema with all 28 columns.
+
         Runs as background task, failures don't affect main processing.
 
         Args:
-            events: Events to write
+            events: Events to write (matching verisk_pipeline EventRecord schema)
         """
         if not self._delta_writer:
             return
 
         try:
-            success = await self._delta_writer.write_events(events)
+            # Convert EventMessage objects to Eventhouse row format
+            raw_events = [event.to_eventhouse_row() for event in events]
+
+            # Write using flatten_events() transformation
+            success = await self._delta_writer.write_raw_events(raw_events)
 
             if not success:
                 logger.warning(
