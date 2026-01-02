@@ -18,9 +18,15 @@ Event Source Configuration:
 import os
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import yaml
 
 from kafka_pipeline.config import KafkaConfig
+
+# Default config path: config.yaml in src/ directory
+DEFAULT_CONFIG_PATH = Path(__file__).parent.parent / "config.yaml"
 
 
 class EventSourceType(str, Enum):
@@ -116,36 +122,92 @@ class LocalKafkaConfig:
 
     # Storage
     onelake_base_path: str = ""
+    onelake_domain_paths: Dict[str, str] = field(default_factory=dict)
+
+    # Cache directory
+    cache_dir: str = "/tmp/kafka_pipeline_cache"
 
     @classmethod
-    def from_env(cls) -> "LocalKafkaConfig":
-        """Load local Kafka configuration from environment variables.
+    def from_env(cls, config_path: Optional[Path] = None) -> "LocalKafkaConfig":
+        """Load local Kafka configuration from config.yaml and environment variables.
 
-        Optional (all have defaults for local development):
+        Configuration priority (highest to lowest):
+        1. Environment variables
+        2. config.yaml file (under 'kafka:' key)
+        3. Dataclass defaults
+
+        Optional env vars (all have defaults):
             LOCAL_KAFKA_BOOTSTRAP_SERVERS: Kafka broker (default: localhost:9092)
             LOCAL_KAFKA_SECURITY_PROTOCOL: Protocol (default: PLAINTEXT)
             KAFKA_DOWNLOADS_PENDING_TOPIC: Pending topic (default: xact.downloads.pending)
             KAFKA_DOWNLOADS_RESULTS_TOPIC: Results topic (default: xact.downloads.results)
             KAFKA_DLQ_TOPIC: DLQ topic (default: xact.downloads.dlq)
-            ONELAKE_BASE_PATH: OneLake path for uploads
+            ONELAKE_BASE_PATH: OneLake path for uploads (fallback)
+            ONELAKE_XACT_PATH: OneLake path for xact domain
+            ONELAKE_CLAIMX_PATH: OneLake path for claimx domain
         """
-        retry_delays_str = os.getenv("RETRY_DELAYS", "300,600,1200,2400")
+        config_path = config_path or DEFAULT_CONFIG_PATH
+
+        # Load from config.yaml
+        kafka_data: Dict[str, Any] = {}
+        if config_path.exists():
+            with open(config_path, "r") as f:
+                yaml_data = yaml.safe_load(f) or {}
+            kafka_data = yaml_data.get("kafka", {})
+
+        # Parse retry delays
+        retry_delays_str = os.getenv(
+            "RETRY_DELAYS",
+            ",".join(str(d) for d in kafka_data.get("retry_delays", [300, 600, 1200, 2400]))
+        )
         retry_delays = [int(d.strip()) for d in retry_delays_str.split(",")]
 
+        # Build domain paths from config.yaml and environment variables
+        onelake_domain_paths: Dict[str, str] = kafka_data.get("onelake_domain_paths", {}).copy()
+        if os.getenv("ONELAKE_XACT_PATH"):
+            onelake_domain_paths["xact"] = os.getenv("ONELAKE_XACT_PATH", "")
+        if os.getenv("ONELAKE_CLAIMX_PATH"):
+            onelake_domain_paths["claimx"] = os.getenv("ONELAKE_CLAIMX_PATH", "")
+
         return cls(
-            bootstrap_servers=os.getenv("LOCAL_KAFKA_BOOTSTRAP_SERVERS", "localhost:9092"),
-            security_protocol=os.getenv("LOCAL_KAFKA_SECURITY_PROTOCOL", "PLAINTEXT"),
+            bootstrap_servers=os.getenv(
+                "LOCAL_KAFKA_BOOTSTRAP_SERVERS",
+                kafka_data.get("bootstrap_servers", "localhost:9094")
+            ),
+            security_protocol=os.getenv(
+                "LOCAL_KAFKA_SECURITY_PROTOCOL",
+                kafka_data.get("security_protocol", "PLAINTEXT")
+            ),
             downloads_pending_topic=os.getenv(
-                "KAFKA_DOWNLOADS_PENDING_TOPIC", "xact.downloads.pending"
+                "KAFKA_DOWNLOADS_PENDING_TOPIC",
+                kafka_data.get("downloads_pending_topic", "xact.downloads.pending")
             ),
             downloads_results_topic=os.getenv(
-                "KAFKA_DOWNLOADS_RESULTS_TOPIC", "xact.downloads.results"
+                "KAFKA_DOWNLOADS_RESULTS_TOPIC",
+                kafka_data.get("downloads_results_topic", "xact.downloads.results")
             ),
-            dlq_topic=os.getenv("KAFKA_DLQ_TOPIC", "xact.downloads.dlq"),
-            consumer_group_prefix=os.getenv("KAFKA_CONSUMER_GROUP_PREFIX", "xact"),
+            dlq_topic=os.getenv(
+                "KAFKA_DLQ_TOPIC",
+                kafka_data.get("dlq_topic", "xact.downloads.dlq")
+            ),
+            consumer_group_prefix=os.getenv(
+                "KAFKA_CONSUMER_GROUP_PREFIX",
+                kafka_data.get("consumer_group_prefix", "xact")
+            ),
             retry_delays=retry_delays,
-            max_retries=int(os.getenv("MAX_RETRIES", "4")),
-            onelake_base_path=os.getenv("ONELAKE_BASE_PATH", ""),
+            max_retries=int(os.getenv(
+                "MAX_RETRIES",
+                str(kafka_data.get("max_retries", 4))
+            )),
+            onelake_base_path=os.getenv(
+                "ONELAKE_BASE_PATH",
+                kafka_data.get("onelake_base_path", "")
+            ),
+            onelake_domain_paths=onelake_domain_paths,
+            cache_dir=os.getenv(
+                "CACHE_DIR",
+                kafka_data.get("cache_dir", "/tmp/kafka_pipeline_cache")
+            ),
         )
 
     def to_kafka_config(self) -> KafkaConfig:
@@ -161,6 +223,8 @@ class LocalKafkaConfig:
             retry_delays=self.retry_delays,
             max_retries=self.max_retries,
             onelake_base_path=self.onelake_base_path,
+            onelake_domain_paths=self.onelake_domain_paths,
+            cache_dir=self.cache_dir,
             # Set a placeholder for events_topic (not used by local kafka workers)
             events_topic="",
         )
