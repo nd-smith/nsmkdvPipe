@@ -213,15 +213,39 @@ class UploadWorker:
             logger.error(f"Upload worker error: {e}", exc_info=True)
             raise
         finally:
-            await self.stop()
+            self._running = False
+
+    async def request_shutdown(self) -> None:
+        """
+        Request graceful shutdown after current batch completes.
+
+        Sets the running flag to False so the batch loop will exit after
+        completing its current batch. This allows in-progress uploads
+        to finish and offsets to be committed before stopping.
+
+        Unlike stop(), this does not immediately clean up resources -
+        it allows the batch loop to exit naturally.
+        """
+        if not self._running:
+            logger.debug("Worker not running, shutdown request ignored")
+            return
+
+        logger.info(
+            "Graceful shutdown requested, will stop after current batch completes"
+        )
+        self._running = False
 
     async def stop(self) -> None:
         """
-        Stop the upload worker gracefully.
+        Stop the upload worker and clean up resources.
 
         Waits for in-flight uploads to complete before stopping.
+        Safe to call multiple times. Will clean up resources even if
+        request_shutdown() was called first.
         """
-        if not self._running:
+        # Check if already fully stopped (consumer is None)
+        if self._consumer is None and not self.onelake_clients:
+            logger.debug("Worker already stopped")
             return
 
         logger.info("Stopping upload worker...")

@@ -46,6 +46,18 @@ from core.logging.setup import get_logger, setup_logging
 # This allows module-level logging before full initialization
 logger = logging.getLogger(__name__)
 
+# Global shutdown event for graceful batch completion
+# Set by signal handlers, checked by workers to finish current batch before exiting
+_shutdown_event: Optional[asyncio.Event] = None
+
+
+def get_shutdown_event() -> asyncio.Event:
+    """Get or create the global shutdown event."""
+    global _shutdown_event
+    if _shutdown_event is None:
+        _shutdown_event = asyncio.Event()
+    return _shutdown_event
+
 
 def parse_args() -> argparse.Namespace:
     """Parse command line arguments."""
@@ -200,13 +212,36 @@ async def run_download_worker(kafka_config):
 
     Reads download tasks from local Kafka, downloads files to local cache,
     and produces CachedDownloadMessage for the upload worker.
+
+    Supports graceful shutdown: when shutdown event is set, the worker
+    finishes its current batch before exiting.
     """
     from kafka_pipeline.workers.download_worker import DownloadWorker
 
     logger.info("Starting Download worker...")
 
     worker = DownloadWorker(config=kafka_config)
-    await worker.start()
+    shutdown_event = get_shutdown_event()
+
+    async def shutdown_watcher():
+        """Wait for shutdown signal and stop worker gracefully."""
+        await shutdown_event.wait()
+        logger.info("Shutdown signal received, stopping download worker after current batch...")
+        await worker.request_shutdown()
+
+    # Start shutdown watcher alongside worker
+    watcher_task = asyncio.create_task(shutdown_watcher())
+
+    try:
+        await worker.start()
+    finally:
+        watcher_task.cancel()
+        try:
+            await watcher_task
+        except asyncio.CancelledError:
+            pass
+        # Clean up resources after worker exits
+        await worker.stop()
 
 
 async def run_upload_worker(kafka_config):
@@ -214,13 +249,36 @@ async def run_upload_worker(kafka_config):
 
     Reads cached downloads from local Kafka, uploads files to OneLake,
     and produces DownloadResultMessage.
+
+    Supports graceful shutdown: when shutdown event is set, the worker
+    finishes its current batch before exiting.
     """
     from kafka_pipeline.workers.upload_worker import UploadWorker
 
     logger.info("Starting Upload worker...")
 
     worker = UploadWorker(config=kafka_config)
-    await worker.start()
+    shutdown_event = get_shutdown_event()
+
+    async def shutdown_watcher():
+        """Wait for shutdown signal and stop worker gracefully."""
+        await shutdown_event.wait()
+        logger.info("Shutdown signal received, stopping upload worker after current batch...")
+        await worker.request_shutdown()
+
+    # Start shutdown watcher alongside worker
+    watcher_task = asyncio.create_task(shutdown_watcher())
+
+    try:
+        await worker.start()
+    finally:
+        watcher_task.cancel()
+        try:
+            await watcher_task
+        except asyncio.CancelledError:
+            pass
+        # Clean up resources after worker exits
+        await worker.stop()
 
 
 async def run_result_processor(kafka_config, enable_delta_writes: bool = True):
@@ -363,13 +421,23 @@ async def run_all_workers(
 
 
 def setup_signal_handlers(loop: asyncio.AbstractEventLoop):
-    """Set up signal handlers for graceful shutdown."""
+    """Set up signal handlers for graceful shutdown.
+
+    Sets the global shutdown event to allow workers to finish their current
+    batch before exiting, rather than cancelling tasks immediately.
+    """
 
     def handle_signal(sig):
-        logger.info(f"Received signal {sig.name}, initiating shutdown...")
-        # Cancel all tasks
-        for task in asyncio.all_tasks(loop):
-            task.cancel()
+        logger.info(f"Received signal {sig.name}, initiating graceful shutdown...")
+        # Set shutdown event to signal workers to finish current batch and exit
+        shutdown_event = get_shutdown_event()
+        if not shutdown_event.is_set():
+            shutdown_event.set()
+        else:
+            # Second signal - force immediate shutdown
+            logger.warning("Received second signal, forcing immediate shutdown...")
+            for task in asyncio.all_tasks(loop):
+                task.cancel()
 
     # Signal handlers are not supported on Windows
     if sys.platform == "win32":
