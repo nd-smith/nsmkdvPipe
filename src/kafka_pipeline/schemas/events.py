@@ -7,7 +7,7 @@ Schema aligned with verisk_pipeline EventRecord for compatibility.
 
 import json
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from pydantic import BaseModel, Field, computed_field, field_serializer, field_validator
 
@@ -20,19 +20,19 @@ class EventMessage(BaseModel):
 
     Eventhouse source columns:
         - type: Full event type string (e.g., "verisk.claims.property.xn.documentsReceived")
-        - version: Event version
+        - version: Event version (integer)
         - utcDateTime: Event timestamp
         - traceId: Trace identifier (camelCase in source)
-        - data: JSON string with nested event data
+        - data: JSON object with nested event data
 
     Attributes:
         type: Full event type string (e.g., "verisk.claims.property.xn.documentsReceived")
-        version: Event version string
+        version: Event version (integer)
         utc_datetime: Event timestamp as string
         trace_id: Unique identifier for the event (from traceId)
-        data: Raw JSON string with nested event data
+        data: JSON string with nested event data (serializes to object)
 
-    Computed properties:
+    Computed properties (excluded from serialization):
         status_subtype: Last part of type string (e.g., "documentsReceived")
         data_dict: Parsed data as dict (for convenience)
         attachments: List of attachment URLs from data.attachments
@@ -49,7 +49,7 @@ class EventMessage(BaseModel):
     Example:
         >>> event = EventMessage(
         ...     type="verisk.claims.property.xn.documentsReceived",
-        ...     version="1.0",
+        ...     version=1,
         ...     utc_datetime="2024-12-25T10:30:00Z",
         ...     trace_id="abc123-def456",
         ...     data='{"assignmentId": "A12345", "attachments": ["https://..."]}'
@@ -63,9 +63,9 @@ class EventMessage(BaseModel):
         description="Full event type string (e.g., 'verisk.claims.property.xn.documentsReceived')",
         min_length=1
     )
-    version: str = Field(
+    version: Union[int, str] = Field(
         ...,
-        description="Event version string"
+        description="Event version (integer preferred)"
     )
     utc_datetime: str = Field(
         ...,
@@ -82,6 +82,16 @@ class EventMessage(BaseModel):
         ...,
         description="Raw JSON string with nested event data"
     )
+
+    @field_serializer('data')
+    def serialize_data_as_object(self, v: str) -> Dict[str, Any]:
+        """Serialize data field as JSON object instead of string."""
+        if not v:
+            return {}
+        try:
+            return json.loads(v)
+        except (json.JSONDecodeError, TypeError):
+            return {}
 
     @computed_field
     @property
@@ -186,13 +196,56 @@ class EventMessage(BaseModel):
         if isinstance(data, dict):
             data = json.dumps(data)
 
+        # Preserve version as its original type (int preferred)
+        version = row.get("version", 1)
+        if isinstance(version, str) and version.isdigit():
+            version = int(version)
+
         return cls(
             type=row.get("type", ""),
-            version=str(row.get("version", "")),
+            version=version,
             utcDateTime=str(row.get("utcDateTime", "")),
             traceId=row.get("traceId", row.get("trace_id", "")),
             data=data,
         )
+
+    def model_dump_json(self, **kwargs) -> str:
+        """Serialize to JSON with aliases and without computed fields.
+
+        Overrides default to:
+        - Use camelCase field names (utcDateTime, traceId)
+        - Exclude computed fields (status_subtype, data_dict, etc.)
+        - Serialize data as object (via field_serializer)
+        """
+        # Set defaults for Kafka-compatible output
+        kwargs.setdefault('by_alias', True)
+        kwargs.setdefault('exclude', {
+            'status_subtype',
+            'data_dict',
+            'attachments',
+            'assignment_id',
+            'estimate_version',
+        })
+        return super().model_dump_json(**kwargs)
+
+    def model_dump(self, **kwargs) -> Dict[str, Any]:
+        """Serialize to dict with aliases and without computed fields.
+
+        Overrides default to:
+        - Use camelCase field names (utcDateTime, traceId)
+        - Exclude computed fields (status_subtype, data_dict, etc.)
+        - Serialize data as object (via field_serializer)
+        """
+        # Set defaults for Kafka-compatible output
+        kwargs.setdefault('by_alias', True)
+        kwargs.setdefault('exclude', {
+            'status_subtype',
+            'data_dict',
+            'attachments',
+            'assignment_id',
+            'estimate_version',
+        })
+        return super().model_dump(**kwargs)
 
     model_config = {
         'populate_by_name': True,  # Allow both alias and field name
@@ -200,17 +253,17 @@ class EventMessage(BaseModel):
             'examples': [
                 {
                     'type': 'verisk.claims.property.xn.documentsReceived',
-                    'version': '1.0',
+                    'version': 1,
                     'utcDateTime': '2024-12-25T10:30:00Z',
                     'traceId': 'abc123-def456-ghi789',
-                    'data': '{"assignmentId": "A12345", "description": "Documents received", "attachments": ["https://xactware.com/docs/estimate.pdf"]}'
+                    'data': {"assignmentId": "A12345", "description": "Documents received", "attachments": ["https://xactware.com/docs/estimate.pdf"]}
                 },
                 {
                     'type': 'verisk.claims.property.xn.estimateCreated',
-                    'version': '2.0',
+                    'version': 2,
                     'utcDateTime': '2024-12-25T11:00:00Z',
                     'traceId': 'xyz789-abc123',
-                    'data': '{"assignmentId": "B67890", "estimateVersion": "1.0", "note": "Initial estimate"}'
+                    'data': {"assignmentId": "B67890", "estimateVersion": "1.0", "note": "Initial estimate"}
                 }
             ]
         }
