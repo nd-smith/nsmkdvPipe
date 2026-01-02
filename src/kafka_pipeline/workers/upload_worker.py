@@ -15,7 +15,6 @@ Architecture:
 """
 
 import asyncio
-import logging
 import os
 import time
 from dataclasses import dataclass
@@ -27,6 +26,7 @@ from aiokafka import AIOKafkaConsumer
 from aiokafka.structs import ConsumerRecord
 
 from core.auth.kafka_oauth import create_kafka_oauth_callback
+from core.logging.setup import get_logger
 from kafka_pipeline.config import KafkaConfig
 from kafka_pipeline.producer import BaseKafkaProducer
 from kafka_pipeline.schemas.cached import CachedDownloadMessage
@@ -42,7 +42,7 @@ from kafka_pipeline.metrics import (
     message_processing_duration_seconds,
 )
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 @dataclass

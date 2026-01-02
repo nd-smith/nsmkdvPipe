@@ -35,15 +35,15 @@ import logging
 import os
 import signal
 import sys
-from typing import List, Optional
+from pathlib import Path
+from typing import Optional
 
 from prometheus_client import start_http_server
 
-# Configure logging before imports
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
+from core.logging.setup import get_logger, setup_logging
+
+# Placeholder logger until setup_logging() is called in main()
+# This allows module-level logging before full initialization
 logger = logging.getLogger(__name__)
 
 
@@ -99,6 +99,20 @@ Examples:
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         default="INFO",
         help="Logging level (default: INFO)",
+    )
+
+    parser.add_argument(
+        "--json-logs",
+        action="store_true",
+        default=None,
+        help="Enable JSON formatted logs (default: from JSON_LOGS env var or True)",
+    )
+
+    parser.add_argument(
+        "--log-dir",
+        type=str,
+        default=None,
+        help="Log directory path (default: from LOG_DIR env var or ./logs)",
     )
 
     return parser.parse_args()
@@ -343,10 +357,38 @@ def setup_signal_handlers(loop: asyncio.AbstractEventLoop):
 
 def main():
     """Main entry point."""
+    global logger
     args = parse_args()
 
-    # Configure logging level
-    logging.getLogger().setLevel(getattr(logging, args.log_level))
+    # Determine log configuration
+    log_level = getattr(logging, args.log_level)
+
+    # JSON logs: CLI arg > env var > default True
+    if args.json_logs is not None:
+        json_logs = args.json_logs
+    else:
+        json_logs = os.getenv("JSON_LOGS", "true").lower() in ("true", "1", "yes")
+
+    # Log directory: CLI arg > env var > default ./logs
+    log_dir_str = args.log_dir or os.getenv("LOG_DIR", "logs")
+    log_dir = Path(log_dir_str)
+
+    # Worker ID for log context
+    worker_id = os.getenv("WORKER_ID", f"kafka-{args.worker}")
+
+    # Initialize structured logging infrastructure
+    setup_logging(
+        name="kafka_pipeline",
+        stage=args.worker,
+        domain="kafka",
+        log_dir=log_dir,
+        json_format=json_logs,
+        console_level=log_level,
+        worker_id=worker_id,
+    )
+
+    # Re-get logger after setup to use new handlers
+    logger = get_logger(__name__)
 
     # Start Prometheus metrics server
     logger.info(f"Starting metrics server on port {args.metrics_port}")

@@ -10,18 +10,18 @@ Schema aligned with verisk_pipeline Task.to_tracking_row() for compatibility.
 """
 
 import asyncio
-import logging
 import time
 from datetime import datetime, timezone
 from typing import List
 
 import polars as pl
 
+from core.logging.setup import get_logger
 from kafka_pipeline.schemas.results import DownloadResultMessage
 from verisk_pipeline.storage.delta import DeltaTableWriter
 from verisk_pipeline.xact.xact_models import XACT_PRIMARY_KEYS
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 # Schema for xact_attachments table (matches verisk_pipeline)

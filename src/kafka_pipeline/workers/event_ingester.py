@@ -21,12 +21,12 @@ Delta table: xact_events (with all 28 flattened columns)
 
 import asyncio
 import json
-import logging
 from typing import List, Optional
 
 from aiokafka.structs import ConsumerRecord
 from pydantic import ValidationError
 
+from core.logging.setup import get_logger
 from core.paths.resolver import generate_blob_path
 from core.security.url_validation import validate_download_url
 from kafka_pipeline.config import KafkaConfig
@@ -39,7 +39,7 @@ from kafka_pipeline.writers import DeltaEventsWriter
 from verisk_pipeline.common.config.xact import get_config
 from verisk_pipeline.common.security import sanitize_url
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class EventIngesterWorker:
