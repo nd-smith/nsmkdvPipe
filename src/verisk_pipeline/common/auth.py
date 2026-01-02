@@ -418,8 +418,21 @@ class AzureAuth:
     def get_storage_token(self, force_refresh: bool = False) -> Optional[str]:
         """Get token for OneLake/ADLS storage operations."""
         if self.token_file:
+            # Check cache first to avoid repeated file reads
+            if not force_refresh:
+                cached = self._cache.get(self.STORAGE_RESOURCE)
+                if cached:
+                    log_with_context(
+                        logger,
+                        logging.DEBUG,
+                        "Using cached storage token",
+                        resource=self.STORAGE_RESOURCE,
+                    )
+                    return cached
             try:
-                return self._read_token_file(resource=self.STORAGE_RESOURCE)
+                token = self._read_token_file(resource=self.STORAGE_RESOURCE)
+                self._cache.set(self.STORAGE_RESOURCE, token)
+                return token
             except AzureAuthError as e:
                 # Log warning but don't fail - return None to trigger fallback
                 log_with_context(
@@ -436,22 +449,8 @@ class AzureAuth:
 
     def get_storage_options(self, force_refresh: bool = False) -> Dict[str, str]:
         """Get delta-rs / object_store compatible auth options."""
-        if self.token_file:
-            try:
-                token = self._read_token_file(resource=self.STORAGE_RESOURCE)
-                return {"azure_storage_token": token}
-            except AzureAuthError as e:
-                # Log warning but don't fail - let auth fail at access time
-                log_with_context(
-                    logger,
-                    logging.WARNING,
-                    "Token file configured but unavailable - auth will fail at access time",
-                    token_file=self.token_file,
-                    error=str(e),
-                )
-                return {}
-
-        if self.use_cli:
+        if self.token_file or self.use_cli:
+            # Use get_storage_token() which handles caching for both file and CLI modes
             token = self.get_storage_token(force_refresh)
             if token:
                 return {"azure_storage_token": token}
@@ -475,8 +474,21 @@ class AzureAuth:
     def get_kusto_token(self, cluster_uri: str, force_refresh: bool = False) -> str:
         """Get token for Kusto/Eventhouse."""
         if self.token_file:
+            # Check cache first to avoid repeated file reads
+            if not force_refresh:
+                cached = self._cache.get(cluster_uri)
+                if cached:
+                    log_with_context(
+                        logger,
+                        logging.DEBUG,
+                        "Using cached Kusto token",
+                        resource=cluster_uri,
+                    )
+                    return cached
             try:
-                return self._read_token_file(resource=cluster_uri)
+                token = self._read_token_file(resource=cluster_uri)
+                self._cache.set(cluster_uri, token)
+                return token
             except AzureAuthError as e:
                 # Log warning and try to fall back to CLI if available
                 log_with_context(
