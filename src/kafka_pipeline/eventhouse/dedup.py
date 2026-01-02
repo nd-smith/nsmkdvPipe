@@ -76,13 +76,14 @@ class EventhouseDeduplicator:
             config: Deduplication configuration
         """
         self.config = config
-        self._storage_options: Optional[dict] = None
 
     def _get_storage_options(self) -> dict:
-        """Get Azure storage options for Delta table access."""
-        if self._storage_options is None:
-            self._storage_options = get_storage_options()
-        return self._storage_options
+        """Get Azure storage options for Delta table access.
+
+        Note: No instance-level caching here - the auth module handles caching
+        and will detect when the token file is modified to refresh tokens.
+        """
+        return get_storage_options()
 
     def get_recent_trace_ids(
         self,
