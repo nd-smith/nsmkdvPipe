@@ -173,13 +173,27 @@ async def stream_download_url(
         )
 
 
+@dataclass
+class DownloadToFileResult:
+    """
+    Result from download_to_file operation.
+
+    Attributes:
+        bytes_written: Number of bytes written to file
+        content_type: MIME type from Content-Type header
+    """
+
+    bytes_written: int
+    content_type: Optional[str]
+
+
 async def download_to_file(
     url: str,
     output_path: Path,
     session: aiohttp.ClientSession,
     timeout: int = 120,
     chunk_size: int = CHUNK_SIZE,
-) -> tuple[Optional[int], Optional[StreamDownloadError]]:
+) -> tuple[Optional[DownloadToFileResult], Optional[StreamDownloadError]]:
     """
     Download URL content directly to file using streaming.
 
@@ -194,12 +208,12 @@ async def download_to_file(
         chunk_size: Size of chunks in bytes (default: 8MB)
 
     Returns:
-        Tuple of (bytes_written, None) on success
+        Tuple of (DownloadToFileResult, None) on success
         or (None, StreamDownloadError) on failure
 
     Example:
         async with aiohttp.ClientSession() as session:
-            bytes_written, error = await download_to_file(
+            result, error = await download_to_file(
                 "https://example.com/file.pdf",
                 Path("output.pdf"),
                 session
@@ -207,7 +221,7 @@ async def download_to_file(
             if error:
                 print(f"Download failed: {error.error_message}")
             else:
-                print(f"Downloaded {bytes_written} bytes")
+                print(f"Downloaded {result.bytes_written} bytes, type: {result.content_type}")
     """
     response, error = await stream_download_url(
         url=url,
@@ -227,7 +241,10 @@ async def download_to_file(
                 await asyncio.to_thread(f.write, chunk)
                 bytes_written += len(chunk)
 
-        return bytes_written, None
+        return DownloadToFileResult(
+            bytes_written=bytes_written,
+            content_type=response.content_type,
+        ), None
 
     except OSError as e:
         # Disk full, permissions, etc.
@@ -271,6 +288,7 @@ __all__ = [
     "STREAM_THRESHOLD",
     "StreamDownloadResponse",
     "StreamDownloadError",
+    "DownloadToFileResult",
     "stream_download_url",
     "download_to_file",
     "should_stream",
