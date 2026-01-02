@@ -27,6 +27,9 @@ class CachedDownloadMessage(BaseModel):
         content_type: MIME type of the downloaded file (if available)
         event_type: Type of the originating event (e.g., "claim", "policy")
         event_subtype: Subtype of the originating event (e.g., "created")
+        status_subtype: Event status subtype (e.g., "documentsReceived")
+        file_type: File type extracted from URL extension (e.g., "pdf", "esx")
+        assignment_id: Assignment ID from event payload
         original_timestamp: Timestamp from the original event
         downloaded_at: Timestamp when the file was downloaded to cache
         metadata: Additional context passed through from original task
@@ -42,6 +45,9 @@ class CachedDownloadMessage(BaseModel):
         ...     content_type="application/pdf",
         ...     event_type="claim",
         ...     event_subtype="created",
+        ...     status_subtype="documentsReceived",
+        ...     file_type="pdf",
+        ...     assignment_id="A-789",
         ...     original_timestamp=datetime.now(timezone.utc),
         ...     downloaded_at=datetime.now(timezone.utc)
         ... )
@@ -86,6 +92,21 @@ class CachedDownloadMessage(BaseModel):
         description="Subtype of the originating event",
         min_length=1
     )
+    status_subtype: str = Field(
+        ...,
+        description="Event status subtype (e.g., 'documentsReceived')",
+        min_length=1
+    )
+    file_type: str = Field(
+        ...,
+        description="File type extracted from URL extension (e.g., 'pdf', 'esx')",
+        min_length=1
+    )
+    assignment_id: str = Field(
+        ...,
+        description="Assignment ID from event payload",
+        min_length=1
+    )
     original_timestamp: datetime = Field(
         ...,
         description="Timestamp from the original event"
@@ -100,7 +121,8 @@ class CachedDownloadMessage(BaseModel):
     )
 
     @field_validator('trace_id', 'attachment_url', 'destination_path',
-                     'local_cache_path', 'event_type', 'event_subtype')
+                     'local_cache_path', 'event_type', 'event_subtype',
+                     'status_subtype', 'file_type', 'assignment_id')
     @classmethod
     def validate_non_empty_strings(cls, v: str, info) -> str:
         """Ensure string fields are not empty or whitespace-only."""
@@ -125,11 +147,13 @@ class CachedDownloadMessage(BaseModel):
                     'content_type': 'application/pdf',
                     'event_type': 'claim',
                     'event_subtype': 'created',
+                    'status_subtype': 'documentsReceived',
+                    'file_type': 'pdf',
+                    'assignment_id': 'A-789',
                     'original_timestamp': '2024-12-25T10:30:00Z',
                     'downloaded_at': '2024-12-25T10:30:05Z',
                     'metadata': {
-                        'source_partition': 3,
-                        'assignment_id': 'A-789'
+                        'source_partition': 3
                     }
                 }
             ]
