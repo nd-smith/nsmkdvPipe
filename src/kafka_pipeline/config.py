@@ -1,20 +1,34 @@
-"""Kafka pipeline configuration from environment variables."""
+"""Kafka pipeline configuration from YAML and environment variables.
+
+Configuration priority (highest to lowest):
+1. Environment variables
+2. config.yaml file
+3. Dataclass defaults
+"""
 
 import os
 from dataclasses import dataclass, field
-from typing import List
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import yaml
+
+
+# Default config path: config.yaml in project root (4 levels up from this file)
+DEFAULT_CONFIG_PATH = Path(__file__).parent.parent.parent / "config.yaml"
 
 
 @dataclass
 class KafkaConfig:
     """Kafka connection and behavior configuration.
 
-    Load from environment using KafkaConfig.from_env().
+    Load from YAML using load_config() or get_config().
+    For backwards compatibility, from_env() is still available.
     All timing values in milliseconds unless otherwise noted.
     """
 
     # Connection
-    bootstrap_servers: str
+    bootstrap_servers: str = ""
     security_protocol: str = "SASL_SSL"
     sasl_mechanism: str = "OAUTHBEARER"
 
@@ -64,7 +78,10 @@ class KafkaConfig:
 
     @classmethod
     def from_env(cls) -> "KafkaConfig":
-        """Load configuration from environment variables.
+        """Load configuration from environment variables only.
+
+        DEPRECATED: Use load_config() or get_config() instead.
+        This method is kept for backwards compatibility.
 
         Required environment variables:
             KAFKA_BOOTSTRAP_SERVERS: Kafka broker addresses
@@ -107,11 +124,9 @@ class KafkaConfig:
             sasl_mechanism=os.getenv("KAFKA_SASL_MECHANISM", "OAUTHBEARER"),
             sasl_plain_username=os.getenv("KAFKA_SASL_PLAIN_USERNAME", ""),
             sasl_plain_password=os.getenv("KAFKA_SASL_PLAIN_PASSWORD", ""),
-
             # Consumer defaults
             max_poll_records=int(os.getenv("KAFKA_MAX_POLL_RECORDS", "100")),
             session_timeout_ms=int(os.getenv("KAFKA_SESSION_TIMEOUT_MS", "30000")),
-
             # Topics
             events_topic=os.getenv("KAFKA_EVENTS_TOPIC", "xact.events.raw"),
             downloads_pending_topic=os.getenv(
@@ -124,27 +139,21 @@ class KafkaConfig:
                 "KAFKA_DOWNLOADS_RESULTS_TOPIC", "xact.downloads.results"
             ),
             dlq_topic=os.getenv("KAFKA_DLQ_TOPIC", "xact.downloads.dlq"),
-
             # Consumer group
             consumer_group_prefix=os.getenv("KAFKA_CONSUMER_GROUP_PREFIX", "xact"),
-
             # Retry configuration
             retry_delays=retry_delays,
             max_retries=int(os.getenv("MAX_RETRIES", "4")),
-
             # Storage configuration
             onelake_base_path=os.getenv("ONELAKE_BASE_PATH", ""),
-
             # Cache directory
             cache_dir=os.getenv("CACHE_DIR", "/tmp/kafka_pipeline_cache"),
-
             # Download concurrency settings
             download_concurrency=min(
                 50,  # Max allowed
                 max(1, int(os.getenv("DOWNLOAD_CONCURRENCY", "10"))),  # Min 1
             ),
             download_batch_size=max(1, int(os.getenv("DOWNLOAD_BATCH_SIZE", "20"))),
-
             # Upload concurrency settings
             upload_concurrency=min(
                 50,  # Max allowed
@@ -182,3 +191,192 @@ class KafkaConfig:
             Full consumer group name (e.g., "xact-download-worker")
         """
         return f"{self.consumer_group_prefix}-{worker_type}-worker"
+
+
+def _deep_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]:
+    """Deep merge overlay into base dict."""
+    result = base.copy()
+    for key, value in overlay.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+
+def _apply_env_overrides(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Apply environment variable overrides to config data.
+
+    Environment variables take precedence over YAML values.
+    """
+    result = data.copy()
+
+    # Map environment variables to config keys
+    env_mapping = {
+        "KAFKA_BOOTSTRAP_SERVERS": "bootstrap_servers",
+        "KAFKA_SECURITY_PROTOCOL": "security_protocol",
+        "KAFKA_SASL_MECHANISM": "sasl_mechanism",
+        "KAFKA_SASL_PLAIN_USERNAME": "sasl_plain_username",
+        "KAFKA_SASL_PLAIN_PASSWORD": "sasl_plain_password",
+        "KAFKA_MAX_POLL_RECORDS": ("max_poll_records", int),
+        "KAFKA_SESSION_TIMEOUT_MS": ("session_timeout_ms", int),
+        "KAFKA_EVENTS_TOPIC": "events_topic",
+        "KAFKA_DOWNLOADS_PENDING_TOPIC": "downloads_pending_topic",
+        "KAFKA_DOWNLOADS_CACHED_TOPIC": "downloads_cached_topic",
+        "KAFKA_DOWNLOADS_RESULTS_TOPIC": "downloads_results_topic",
+        "KAFKA_DLQ_TOPIC": "dlq_topic",
+        "KAFKA_CONSUMER_GROUP_PREFIX": "consumer_group_prefix",
+        "MAX_RETRIES": ("max_retries", int),
+        "ONELAKE_BASE_PATH": "onelake_base_path",
+        "CACHE_DIR": "cache_dir",
+        "DOWNLOAD_CONCURRENCY": ("download_concurrency", int),
+        "DOWNLOAD_BATCH_SIZE": ("download_batch_size", int),
+        "UPLOAD_CONCURRENCY": ("upload_concurrency", int),
+        "UPLOAD_BATCH_SIZE": ("upload_batch_size", int),
+    }
+
+    for env_var, config_key in env_mapping.items():
+        env_value = os.getenv(env_var)
+        if env_value is not None:
+            if isinstance(config_key, tuple):
+                key, converter = config_key
+                result[key] = converter(env_value)
+            else:
+                result[config_key] = env_value
+
+    # Special handling for retry_delays (comma-separated list)
+    retry_delays_str = os.getenv("RETRY_DELAYS")
+    if retry_delays_str is not None:
+        result["retry_delays"] = [int(d.strip()) for d in retry_delays_str.split(",")]
+
+    # Apply concurrency constraints
+    if "download_concurrency" in result:
+        result["download_concurrency"] = min(50, max(1, result["download_concurrency"]))
+    if "upload_concurrency" in result:
+        result["upload_concurrency"] = min(50, max(1, result["upload_concurrency"]))
+    if "download_batch_size" in result:
+        result["download_batch_size"] = max(1, result["download_batch_size"])
+    if "upload_batch_size" in result:
+        result["upload_batch_size"] = max(1, result["upload_batch_size"])
+
+    return result
+
+
+def load_config(
+    config_path: Optional[Path] = None,
+    overrides: Optional[Dict[str, Any]] = None,
+) -> KafkaConfig:
+    """Load Kafka configuration from YAML file with environment variable overrides.
+
+    Configuration priority (highest to lowest):
+    1. Environment variables
+    2. overrides parameter
+    3. config.yaml file (under 'kafka:' key)
+    4. Dataclass defaults
+
+    Args:
+        config_path: Path to YAML config file. Defaults to config.yaml in project root.
+        overrides: Dict of overrides to apply (after YAML, before env vars)
+
+    Returns:
+        KafkaConfig instance
+
+    Example config.yaml:
+        kafka:
+          bootstrap_servers: "localhost:9092"
+          security_protocol: "PLAINTEXT"
+          events_topic: "xact.events.raw"
+          download_concurrency: 20
+    """
+    config_path = config_path or DEFAULT_CONFIG_PATH
+
+    # Load YAML
+    data: Dict[str, Any] = {}
+    if config_path.exists():
+        with open(config_path, "r") as f:
+            yaml_data = yaml.safe_load(f) or {}
+
+        # Extract kafka section if present
+        if "kafka" in yaml_data:
+            data = yaml_data["kafka"]
+        else:
+            # Allow flat structure for backwards compatibility
+            data = yaml_data
+
+    # Apply overrides
+    if overrides:
+        data = _deep_merge(data, overrides)
+
+    # Apply environment variable overrides
+    data = _apply_env_overrides(data)
+
+    # Validate required fields
+    if not data.get("bootstrap_servers"):
+        raise ValueError(
+            "bootstrap_servers is required. "
+            "Set in config.yaml under 'kafka:' key or via KAFKA_BOOTSTRAP_SERVERS env var."
+        )
+
+    # Build config from data
+    return KafkaConfig(
+        bootstrap_servers=data.get("bootstrap_servers", ""),
+        security_protocol=data.get("security_protocol", "SASL_SSL"),
+        sasl_mechanism=data.get("sasl_mechanism", "OAUTHBEARER"),
+        sasl_plain_username=data.get("sasl_plain_username", ""),
+        sasl_plain_password=data.get("sasl_plain_password", ""),
+        auto_offset_reset=data.get("auto_offset_reset", "earliest"),
+        enable_auto_commit=data.get("enable_auto_commit", False),
+        max_poll_records=data.get("max_poll_records", 100),
+        max_poll_interval_ms=data.get("max_poll_interval_ms", 300000),
+        session_timeout_ms=data.get("session_timeout_ms", 30000),
+        acks=data.get("acks", "all"),
+        retries=data.get("retries", 3),
+        retry_backoff_ms=data.get("retry_backoff_ms", 1000),
+        events_topic=data.get("events_topic", "xact.events.raw"),
+        downloads_pending_topic=data.get("downloads_pending_topic", "xact.downloads.pending"),
+        downloads_cached_topic=data.get("downloads_cached_topic", "xact.downloads.cached"),
+        downloads_results_topic=data.get("downloads_results_topic", "xact.downloads.results"),
+        dlq_topic=data.get("dlq_topic", "xact.downloads.dlq"),
+        consumer_group_prefix=data.get("consumer_group_prefix", "xact"),
+        retry_delays=data.get("retry_delays", [300, 600, 1200, 2400]),
+        max_retries=data.get("max_retries", 4),
+        onelake_base_path=data.get("onelake_base_path", ""),
+        download_concurrency=data.get("download_concurrency", 10),
+        download_batch_size=data.get("download_batch_size", 20),
+        upload_concurrency=data.get("upload_concurrency", 10),
+        upload_batch_size=data.get("upload_batch_size", 20),
+        cache_dir=data.get("cache_dir", "/tmp/kafka_pipeline_cache"),
+    )
+
+
+# Singleton instance
+_kafka_config: Optional[KafkaConfig] = None
+
+
+def get_config() -> KafkaConfig:
+    """Get or load the singleton Kafka config instance.
+
+    Uses load_config() on first call, then returns cached instance.
+    """
+    global _kafka_config
+    if _kafka_config is None:
+        _kafka_config = load_config()
+    return _kafka_config
+
+
+def set_config(config: KafkaConfig) -> None:
+    """Set the singleton Kafka config instance.
+
+    Useful for testing or programmatic configuration.
+    """
+    global _kafka_config
+    _kafka_config = config
+
+
+def reset_config() -> None:
+    """Reset the singleton config instance.
+
+    Forces reload on next get_config() call.
+    """
+    global _kafka_config
+    _kafka_config = None

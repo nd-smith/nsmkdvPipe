@@ -1,0 +1,58 @@
+# Kafka Pipeline Configuration
+# Copy this file to config.yaml and customize as needed.
+# Environment variables override these values.
+
+kafka:
+  # Connection settings
+  bootstrap_servers: "localhost:9092"
+  security_protocol: "PLAINTEXT"  # Options: PLAINTEXT, SASL_SSL, SASL_PLAINTEXT
+  sasl_mechanism: "OAUTHBEARER"   # Options: OAUTHBEARER, PLAIN
+
+  # SASL_PLAIN credentials (if using SASL_PLAIN mechanism)
+  # sasl_plain_username: ""
+  # sasl_plain_password: ""
+
+  # Consumer settings
+  auto_offset_reset: "earliest"   # Options: earliest, latest
+  enable_auto_commit: false
+  max_poll_records: 100
+  max_poll_interval_ms: 300000    # 5 minutes
+  session_timeout_ms: 30000
+
+  # Producer settings
+  acks: "all"                     # Options: all, 0, 1
+  retries: 3
+  retry_backoff_ms: 1000
+
+  # Topic names
+  events_topic: "xact.events.raw"
+  downloads_pending_topic: "xact.downloads.pending"
+  downloads_cached_topic: "xact.downloads.cached"
+  downloads_results_topic: "xact.downloads.results"
+  dlq_topic: "xact.downloads.dlq"
+
+  # Consumer group prefix
+  consumer_group_prefix: "xact"
+
+  # Retry configuration (delays in seconds)
+  retry_delays: [300, 600, 1200, 2400]  # 5m, 10m, 20m, 40m
+  max_retries: 4
+
+  # Storage configuration
+  onelake_base_path: ""           # abfss:// path to OneLake files directory
+
+  # Concurrency settings
+  download_concurrency: 10        # Max concurrent downloads (1-50)
+  download_batch_size: 20         # Messages to fetch per batch
+  upload_concurrency: 10          # Max concurrent uploads (1-50)
+  upload_batch_size: 20           # Messages to fetch per batch
+
+  # Local cache directory for downloaded files
+  cache_dir: "/tmp/kafka_pipeline_cache"
+
+# Verisk pipeline config can be added under 'xact:' key
+# xact:
+#   kusto:
+#     cluster: "..."
+#   lakehouse:
+#     path: "..."

@@ -1,9 +1,18 @@
 """Tests for Kafka configuration."""
 
 import os
+from pathlib import Path
 import pytest
+import tempfile
 
-from kafka_pipeline.config import KafkaConfig
+from kafka_pipeline.config import (
+    KafkaConfig,
+    load_config,
+    get_config,
+    set_config,
+    reset_config,
+    DEFAULT_CONFIG_PATH,
+)
 
 
 class TestKafkaConfig:
@@ -227,3 +236,208 @@ class TestKafkaConfig:
         config.bootstrap_servers = "kafka2:9093"
         assert config.bootstrap_servers == "kafka2:9093"
         assert config.bootstrap_servers != original_servers
+
+
+class TestYamlConfigLoading:
+    """Test YAML configuration loading with environment overrides."""
+
+    @pytest.fixture(autouse=True)
+    def clean_env(self, monkeypatch):
+        """Clear Kafka-related environment variables before each test."""
+        env_vars = [
+            "KAFKA_BOOTSTRAP_SERVERS",
+            "KAFKA_SECURITY_PROTOCOL",
+            "KAFKA_SASL_MECHANISM",
+            "KAFKA_EVENTS_TOPIC",
+            "RETRY_DELAYS",
+            "MAX_RETRIES",
+            "DOWNLOAD_CONCURRENCY",
+        ]
+        for var in env_vars:
+            monkeypatch.delenv(var, raising=False)
+        # Reset singleton
+        reset_config()
+
+    def test_load_config_from_yaml(self, tmp_path):
+        """Test loading configuration from YAML file."""
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("""
+kafka:
+  bootstrap_servers: "yaml-kafka:9092"
+  security_protocol: "PLAINTEXT"
+  events_topic: "yaml.events"
+  download_concurrency: 25
+""")
+
+        config = load_config(config_path=config_file)
+
+        assert config.bootstrap_servers == "yaml-kafka:9092"
+        assert config.security_protocol == "PLAINTEXT"
+        assert config.events_topic == "yaml.events"
+        assert config.download_concurrency == 25
+
+    def test_load_config_flat_structure(self, tmp_path):
+        """Test loading config without nested 'kafka:' key."""
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("""
+bootstrap_servers: "flat-kafka:9092"
+security_protocol: "SASL_SSL"
+""")
+
+        config = load_config(config_path=config_file)
+
+        assert config.bootstrap_servers == "flat-kafka:9092"
+        assert config.security_protocol == "SASL_SSL"
+
+    def test_env_overrides_yaml(self, tmp_path, monkeypatch):
+        """Test that environment variables override YAML values."""
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("""
+kafka:
+  bootstrap_servers: "yaml-kafka:9092"
+  security_protocol: "PLAINTEXT"
+""")
+
+        # Environment should override YAML
+        monkeypatch.setenv("KAFKA_BOOTSTRAP_SERVERS", "env-kafka:9093")
+        monkeypatch.setenv("KAFKA_SECURITY_PROTOCOL", "SASL_SSL")
+
+        config = load_config(config_path=config_file)
+
+        assert config.bootstrap_servers == "env-kafka:9093"
+        assert config.security_protocol == "SASL_SSL"
+
+    def test_overrides_parameter(self, tmp_path):
+        """Test that overrides parameter works."""
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("""
+kafka:
+  bootstrap_servers: "yaml-kafka:9092"
+  download_concurrency: 10
+""")
+
+        config = load_config(
+            config_path=config_file,
+            overrides={"download_concurrency": 30}
+        )
+
+        assert config.bootstrap_servers == "yaml-kafka:9092"
+        assert config.download_concurrency == 30
+
+    def test_missing_bootstrap_servers_raises(self, tmp_path):
+        """Test that missing bootstrap_servers raises ValueError."""
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("""
+kafka:
+  security_protocol: "PLAINTEXT"
+""")
+
+        with pytest.raises(ValueError, match="bootstrap_servers is required"):
+            load_config(config_path=config_file)
+
+    def test_missing_config_file_with_env(self, tmp_path, monkeypatch):
+        """Test that missing config file is ok if env vars are set."""
+        config_file = tmp_path / "nonexistent.yaml"
+        monkeypatch.setenv("KAFKA_BOOTSTRAP_SERVERS", "env-kafka:9093")
+
+        config = load_config(config_path=config_file)
+
+        assert config.bootstrap_servers == "env-kafka:9093"
+
+    def test_retry_delays_from_yaml(self, tmp_path):
+        """Test loading retry_delays list from YAML."""
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("""
+kafka:
+  bootstrap_servers: "kafka:9092"
+  retry_delays: [60, 120, 240]
+""")
+
+        config = load_config(config_path=config_file)
+
+        assert config.retry_delays == [60, 120, 240]
+
+    def test_concurrency_constraints(self, tmp_path):
+        """Test that concurrency values are constrained to valid range."""
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("""
+kafka:
+  bootstrap_servers: "kafka:9092"
+  download_concurrency: 100
+  upload_concurrency: 0
+""")
+
+        config = load_config(config_path=config_file)
+
+        # Should be clamped to valid range (1-50)
+        assert config.download_concurrency == 50
+        assert config.upload_concurrency == 1
+
+
+class TestConfigSingleton:
+    """Test singleton config pattern."""
+
+    @pytest.fixture(autouse=True)
+    def reset_singleton(self, monkeypatch):
+        """Reset singleton and clear env before and after each test."""
+        # Clear env vars that might override our test values
+        monkeypatch.delenv("KAFKA_BOOTSTRAP_SERVERS", raising=False)
+        reset_config()
+        yield
+        reset_config()
+
+    def test_get_config_returns_same_instance(self, tmp_path, monkeypatch):
+        """Test that get_config returns the same instance."""
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("""
+kafka:
+  bootstrap_servers: "singleton-kafka:9092"
+""")
+        # Point to our test config
+        monkeypatch.setattr(
+            "kafka_pipeline.config.DEFAULT_CONFIG_PATH",
+            config_file
+        )
+
+        config1 = get_config()
+        config2 = get_config()
+
+        assert config1 is config2
+        assert config1.bootstrap_servers == "singleton-kafka:9092"
+
+    def test_set_config_overrides_singleton(self, monkeypatch):
+        """Test that set_config sets the singleton instance."""
+        custom_config = KafkaConfig(bootstrap_servers="custom:9092")
+
+        set_config(custom_config)
+        retrieved = get_config()
+
+        assert retrieved is custom_config
+        assert retrieved.bootstrap_servers == "custom:9092"
+
+    def test_reset_config_clears_singleton(self, tmp_path, monkeypatch):
+        """Test that reset_config clears the singleton."""
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("""
+kafka:
+  bootstrap_servers: "first:9092"
+""")
+        monkeypatch.setattr(
+            "kafka_pipeline.config.DEFAULT_CONFIG_PATH",
+            config_file
+        )
+
+        first = get_config()
+        assert first.bootstrap_servers == "first:9092"
+
+        # Update config file
+        config_file.write_text("""
+kafka:
+  bootstrap_servers: "second:9092"
+""")
+
+        reset_config()
+        second = get_config()
+
+        assert second.bootstrap_servers == "second:9092"
+        assert first is not second
