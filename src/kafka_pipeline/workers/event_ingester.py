@@ -74,6 +74,7 @@ class EventIngesterWorker:
         config: KafkaConfig,
         enable_delta_writes: bool = True,
         events_table_path: str = "",
+        domain: str = "xact",
     ):
         """
         Initialize event ingester worker.
@@ -82,8 +83,10 @@ class EventIngesterWorker:
             config: Kafka configuration with topic names and connection settings
             enable_delta_writes: Whether to enable Delta Lake writes (default: True)
             events_table_path: Full abfss:// path to xact_events Delta table
+            domain: Domain identifier for OneLake routing (e.g., "xact", "claimx")
         """
         self.config = config
+        self.domain = domain
         self.producer: Optional[BaseKafkaProducer] = None
         self.consumer: Optional[BaseKafkaConsumer] = None
         self.delta_writer: Optional[DeltaEventsWriter] = None
@@ -301,7 +304,7 @@ class EventIngesterWorker:
             assignment_id=assignment_id,
             estimate_version=event.estimate_version,
             retry_count=0,
-            event_type=event.type.split(".")[0] if "." in event.type else event.type,
+            event_type=self.domain,  # Use configured domain for OneLake routing
             event_subtype=event.status_subtype,
             original_timestamp=original_timestamp,
         )

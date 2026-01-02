@@ -123,6 +123,7 @@ async def run_event_ingester(
     local_kafka_config,
     enable_delta_writes: bool = True,
     events_table_path: str = "",
+    domain: str = "xact",
 ):
     """Run the Event Ingester worker.
 
@@ -142,6 +143,7 @@ async def run_event_ingester(
         config=eventhub_config,
         enable_delta_writes=enable_delta_writes,
         events_table_path=events_table_path,
+        domain=domain,
     )
 
     await worker.start()
@@ -251,6 +253,7 @@ async def run_local_event_ingester(
     local_kafka_config,
     enable_delta_writes: bool = True,
     events_table_path: str = "",
+    domain: str = "xact",
 ):
     """Run EventIngester consuming from local Kafka events.raw topic.
 
@@ -265,6 +268,7 @@ async def run_local_event_ingester(
         config=local_kafka_config,
         enable_delta_writes=enable_delta_writes,
         events_table_path=events_table_path,
+        domain=domain,
     )
 
     await worker.start()
@@ -309,6 +313,7 @@ async def run_all_workers(
                     local_kafka_config,
                     enable_delta_writes,
                     events_table_path=eventhouse_events_path,
+                    domain=pipeline_config.domain,
                 ),
                 name="event-ingester",
             )
@@ -324,6 +329,7 @@ async def run_all_workers(
                     local_kafka_config,
                     enable_delta_writes,
                     events_table_path=pipeline_config.events_table_path,
+                    domain=pipeline_config.domain,
                 ),
                 name="event-ingester",
             )
@@ -475,6 +481,7 @@ def main():
                         local_kafka_config,
                         enable_delta_writes,
                         events_table_path=pipeline_config.events_table_path,
+                        domain=pipeline_config.domain,
                     )
                 )
         elif args.worker == "download":

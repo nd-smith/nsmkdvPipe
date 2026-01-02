@@ -366,6 +366,9 @@ class PipelineConfig:
     # Local Kafka for internal pipeline communication
     local_kafka: LocalKafkaConfig = field(default_factory=LocalKafkaConfig)
 
+    # Domain identifier for OneLake routing (e.g., "xact", "claimx")
+    domain: str = "xact"
+
     # Delta Lake configuration
     enable_delta_writes: bool = True
     events_table_path: str = ""
@@ -422,6 +425,7 @@ class PipelineConfig:
             eventhub=eventhub_config,
             eventhouse=eventhouse_config,
             local_kafka=local_kafka,
+            domain=os.getenv("PIPELINE_DOMAIN", "xact"),
             enable_delta_writes=os.getenv("ENABLE_DELTA_WRITES", "true").lower() == "true",
             events_table_path=os.getenv("DELTA_EVENTS_TABLE_PATH", ""),
             inventory_table_path=os.getenv("DELTA_INVENTORY_TABLE_PATH", ""),
