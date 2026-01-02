@@ -7,9 +7,10 @@ import sys
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 from core.logging.context import set_log_context
+from core.logging.filters import StageContextFilter
 from core.logging.formatters import ConsoleFormatter, JSONFormatter
 
 # Default settings
@@ -169,6 +170,114 @@ def setup_logging(
     logger.debug(
         f"Logging initialized: file={log_file}, json={json_format}",
         extra={"stage": stage or "pipeline", "domain": domain or "unknown"},
+    )
+
+    return logger
+
+
+def setup_multi_worker_logging(
+    workers: List[str],
+    domain: str = "kafka",
+    log_dir: Optional[Path] = None,
+    json_format: bool = True,
+    console_level: int = DEFAULT_CONSOLE_LEVEL,
+    file_level: int = DEFAULT_FILE_LEVEL,
+    max_bytes: int = DEFAULT_MAX_BYTES,
+    backup_count: int = DEFAULT_BACKUP_COUNT,
+    suppress_noisy: bool = True,
+) -> logging.Logger:
+    """
+    Configure logging with per-worker file handlers.
+
+    Creates one RotatingFileHandler per worker type, each filtered
+    to only receive logs from that worker's context. Also creates
+    a combined log file that receives all logs.
+
+    Log files are organized by domain and date:
+        logs/kafka/2025-01-15/kafka_download_20250115.log
+        logs/kafka/2025-01-15/kafka_upload_20250115.log
+        logs/kafka/2025-01-15/kafka_pipeline_20250115.log  (combined)
+
+    Args:
+        workers: List of worker stage names (e.g., ["download", "upload"])
+        domain: Pipeline domain (default: "kafka")
+        log_dir: Directory for log files (default: ./logs)
+        json_format: Use JSON format for file logs (default: True)
+        console_level: Console handler level (default: INFO)
+        file_level: File handler level (default: DEBUG)
+        max_bytes: Max size per log file before rotation
+        backup_count: Number of backup files to keep
+        suppress_noisy: Quiet down Azure SDK and HTTP client loggers
+
+    Returns:
+        Configured logger instance
+    """
+    log_dir = log_dir or DEFAULT_LOG_DIR
+
+    # Create formatters
+    if json_format:
+        file_formatter = JSONFormatter()
+    else:
+        file_formatter = logging.Formatter(
+            "%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s"
+        )
+    console_formatter = ConsoleFormatter()
+
+    # Configure root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.DEBUG)  # Capture all, handlers filter
+    root_logger.handlers.clear()
+
+    # Add console handler (receives all logs)
+    if sys.platform == "win32":
+        safe_stdout = io.TextIOWrapper(
+            sys.stdout.buffer, encoding="utf-8", errors="replace"
+        )
+        console_handler = logging.StreamHandler(safe_stdout)
+    else:
+        console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(console_level)
+    console_handler.setFormatter(console_formatter)
+    root_logger.addHandler(console_handler)
+
+    # Add per-worker file handlers
+    for worker in workers:
+        log_file = get_log_file_path(log_dir, domain=domain, stage=worker)
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+
+        handler = RotatingFileHandler(
+            log_file,
+            maxBytes=max_bytes,
+            backupCount=backup_count,
+            encoding="utf-8",
+        )
+        handler.setLevel(file_level)
+        handler.setFormatter(file_formatter)
+        handler.addFilter(StageContextFilter(worker))
+        root_logger.addHandler(handler)
+
+    # Add combined file handler (no filter - receives all logs)
+    combined_file = get_log_file_path(log_dir, domain=domain, stage="pipeline")
+    combined_file.parent.mkdir(parents=True, exist_ok=True)
+    combined_handler = RotatingFileHandler(
+        combined_file,
+        maxBytes=max_bytes,
+        backupCount=backup_count,
+        encoding="utf-8",
+    )
+    combined_handler.setLevel(file_level)
+    combined_handler.setFormatter(file_formatter)
+    root_logger.addHandler(combined_handler)
+
+    # Suppress noisy loggers
+    if suppress_noisy:
+        for logger_name in NOISY_LOGGERS:
+            logging.getLogger(logger_name).setLevel(logging.WARNING)
+
+    logger = logging.getLogger("kafka_pipeline")
+    logger.debug(
+        f"Multi-worker logging initialized: workers={workers}, domain={domain}",
+        extra={"stage": "pipeline", "domain": domain},
     )
 
     return logger

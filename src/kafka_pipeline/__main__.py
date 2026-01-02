@@ -40,7 +40,11 @@ from typing import Optional
 
 from prometheus_client import start_http_server
 
-from core.logging.setup import get_logger, setup_logging
+from core.logging.context import set_log_context
+from core.logging.setup import get_logger, setup_logging, setup_multi_worker_logging
+
+# Worker stages for multi-worker logging
+WORKER_STAGES = ["event-ingester", "download", "upload", "result-processor"]
 
 # Placeholder logger until setup_logging() is called in main()
 # This allows module-level logging before full initialization
@@ -143,6 +147,7 @@ async def run_event_ingester(
     """
     from kafka_pipeline.workers.event_ingester import EventIngesterWorker
 
+    set_log_context(stage="event-ingester")
     logger.info("Starting Event Ingester worker...")
 
     # For event ingester, we need to read from Event Hub and write to local Kafka
@@ -171,6 +176,7 @@ async def run_eventhouse_poller(pipeline_config):
     from kafka_pipeline.eventhouse.kql_client import EventhouseConfig
     from kafka_pipeline.eventhouse.poller import KQLEventPoller, PollerConfig
 
+    set_log_context(stage="event-ingester")
     logger.info("Starting Eventhouse Poller...")
 
     eventhouse_source = pipeline_config.eventhouse
@@ -218,6 +224,7 @@ async def run_download_worker(kafka_config):
     """
     from kafka_pipeline.workers.download_worker import DownloadWorker
 
+    set_log_context(stage="download")
     logger.info("Starting Download worker...")
 
     worker = DownloadWorker(config=kafka_config)
@@ -255,6 +262,7 @@ async def run_upload_worker(kafka_config):
     """
     from kafka_pipeline.workers.upload_worker import UploadWorker
 
+    set_log_context(stage="upload")
     logger.info("Starting Upload worker...")
 
     worker = UploadWorker(config=kafka_config)
@@ -290,6 +298,7 @@ async def run_result_processor(kafka_config, enable_delta_writes: bool = True):
     """
     from kafka_pipeline.workers.result_processor import ResultProcessor
 
+    set_log_context(stage="result-processor")
     logger.info("Starting Result Processor worker...")
 
     # Get table paths from environment
@@ -320,6 +329,7 @@ async def run_local_event_ingester(
     """
     from kafka_pipeline.workers.event_ingester import EventIngesterWorker
 
+    set_log_context(stage="event-ingester")
     logger.info("Starting Event Ingester (local Kafka mode)...")
 
     worker = EventIngesterWorker(
@@ -470,15 +480,26 @@ def main():
     worker_id = os.getenv("WORKER_ID", f"kafka-{args.worker}")
 
     # Initialize structured logging infrastructure
-    setup_logging(
-        name="kafka_pipeline",
-        stage=args.worker,
-        domain="kafka",
-        log_dir=log_dir,
-        json_format=json_logs,
-        console_level=log_level,
-        worker_id=worker_id,
-    )
+    if args.worker == "all":
+        # Multi-worker mode: create per-worker log files
+        setup_multi_worker_logging(
+            workers=WORKER_STAGES,
+            domain="kafka",
+            log_dir=log_dir,
+            json_format=json_logs,
+            console_level=log_level,
+        )
+    else:
+        # Single worker mode: single log file
+        setup_logging(
+            name="kafka_pipeline",
+            stage=args.worker,
+            domain="kafka",
+            log_dir=log_dir,
+            json_format=json_logs,
+            console_level=log_level,
+            worker_id=worker_id,
+        )
 
     # Re-get logger after setup to use new handlers
     logger = get_logger(__name__)
