@@ -384,8 +384,9 @@ class UploadWorker:
             if not cache_path.exists():
                 raise FileNotFoundError(f"Cached file not found: {cache_path}")
 
-            # Get domain from metadata to route to correct OneLake path
-            domain = cached_message.metadata.get("source_system", "").lower()
+            # Get domain from event_type to route to correct OneLake path
+            # event_type is extracted from event.type (e.g., "xact" from "xact.documentsReceived")
+            domain = cached_message.event_type.lower()
 
             # Get appropriate OneLake client for this domain
             onelake_client = self.onelake_clients.get(domain)
