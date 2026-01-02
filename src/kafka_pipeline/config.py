@@ -63,7 +63,8 @@ class KafkaConfig:
     max_retries: int = 4
 
     # Storage configuration
-    onelake_base_path: str = ""  # abfss:// path to OneLake files directory
+    onelake_base_path: str = ""  # abfss:// path to OneLake files directory (fallback)
+    onelake_domain_paths: Dict[str, str] = field(default_factory=dict)  # Domain -> OneLake path
 
     # Download concurrency settings (FR-2.6)
     download_concurrency: int = 10  # Max concurrent downloads (default: 10, range: 1-50)
@@ -99,7 +100,9 @@ class KafkaConfig:
             KAFKA_SESSION_TIMEOUT_MS: 30000 (default)
             RETRY_DELAYS: 300,600,1200,2400 (default, comma-separated seconds)
             MAX_RETRIES: 4 (default)
-            ONELAKE_BASE_PATH: OneLake abfss:// path (required for upload)
+            ONELAKE_BASE_PATH: OneLake abfss:// path (fallback for upload)
+            ONELAKE_XACT_PATH: OneLake path for xact domain
+            ONELAKE_CLAIMX_PATH: OneLake path for claimx domain
             DOWNLOAD_CONCURRENCY: 10 (default, max concurrent downloads, range 1-50)
             DOWNLOAD_BATCH_SIZE: 20 (default, messages to fetch per batch)
             UPLOAD_CONCURRENCY: 10 (default, max concurrent uploads, range 1-50)
@@ -116,6 +119,13 @@ class KafkaConfig:
         # Parse retry delays from comma-separated string
         retry_delays_str = os.getenv("RETRY_DELAYS", "300,600,1200,2400")
         retry_delays = [int(d.strip()) for d in retry_delays_str.split(",")]
+
+        # Build domain paths from environment variables
+        onelake_domain_paths: Dict[str, str] = {}
+        if os.getenv("ONELAKE_XACT_PATH"):
+            onelake_domain_paths["xact"] = os.getenv("ONELAKE_XACT_PATH", "")
+        if os.getenv("ONELAKE_CLAIMX_PATH"):
+            onelake_domain_paths["claimx"] = os.getenv("ONELAKE_CLAIMX_PATH", "")
 
         return cls(
             # Connection
@@ -146,6 +156,7 @@ class KafkaConfig:
             max_retries=int(os.getenv("MAX_RETRIES", "4")),
             # Storage configuration
             onelake_base_path=os.getenv("ONELAKE_BASE_PATH", ""),
+            onelake_domain_paths=onelake_domain_paths,
             # Cache directory
             cache_dir=os.getenv("CACHE_DIR", "/tmp/kafka_pipeline_cache"),
             # Download concurrency settings
@@ -249,6 +260,15 @@ def _apply_env_overrides(data: Dict[str, Any]) -> Dict[str, Any]:
     if retry_delays_str is not None:
         result["retry_delays"] = [int(d.strip()) for d in retry_delays_str.split(",")]
 
+    # Special handling for domain-specific OneLake paths
+    domain_paths = result.get("onelake_domain_paths", {}).copy()
+    if os.getenv("ONELAKE_XACT_PATH"):
+        domain_paths["xact"] = os.getenv("ONELAKE_XACT_PATH", "")
+    if os.getenv("ONELAKE_CLAIMX_PATH"):
+        domain_paths["claimx"] = os.getenv("ONELAKE_CLAIMX_PATH", "")
+    if domain_paths:
+        result["onelake_domain_paths"] = domain_paths
+
     # Apply concurrency constraints
     if "download_concurrency" in result:
         result["download_concurrency"] = min(50, max(1, result["download_concurrency"]))
@@ -341,6 +361,7 @@ def load_config(
         retry_delays=data.get("retry_delays", [300, 600, 1200, 2400]),
         max_retries=data.get("max_retries", 4),
         onelake_base_path=data.get("onelake_base_path", ""),
+        onelake_domain_paths=data.get("onelake_domain_paths", {}),
         download_concurrency=data.get("download_concurrency", 10),
         download_batch_size=data.get("download_batch_size", 20),
         upload_concurrency=data.get("upload_concurrency", 10),

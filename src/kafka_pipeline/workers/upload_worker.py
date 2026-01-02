@@ -95,14 +95,17 @@ class UploadWorker:
             config: Kafka configuration
 
         Raises:
-            ValueError: If ONELAKE_BASE_PATH is not configured
+            ValueError: If no OneLake path is configured (neither domain paths nor base path)
         """
         self.config = config
 
-        # Validate OneLake configuration
-        if not config.onelake_base_path:
+        # Validate OneLake configuration - need either domain paths or base path
+        if not config.onelake_domain_paths and not config.onelake_base_path:
             raise ValueError(
-                "ONELAKE_BASE_PATH environment variable is required for upload worker"
+                "OneLake path configuration required. Set either:\n"
+                "  - onelake_domain_paths in config.yaml (preferred), or\n"
+                "  - ONELAKE_XACT_PATH / ONELAKE_CLAIMX_PATH env vars, or\n"
+                "  - ONELAKE_BASE_PATH env var (fallback for all domains)"
             )
 
         # Topic to consume from
@@ -121,15 +124,18 @@ class UploadWorker:
         # Create producer for result messages
         self.producer = BaseKafkaProducer(config=config)
 
-        # Create OneLake client (lazy initialized in start())
-        self.onelake_client: Optional[OneLakeClient] = None
+        # OneLake clients by domain (lazy initialized in start())
+        self.onelake_clients: Dict[str, OneLakeClient] = {}
 
+        # Log configured domains
+        configured_domains = list(config.onelake_domain_paths.keys())
         logger.info(
             "Initialized upload worker",
             extra={
                 "consumer_group": self.CONSUMER_GROUP,
                 "topic": self.topic,
-                "onelake_base_path": config.onelake_base_path,
+                "configured_domains": configured_domains,
+                "fallback_path": config.onelake_base_path or "(none)",
                 "upload_concurrency": config.upload_concurrency,
                 "upload_batch_size": config.upload_batch_size,
             },
@@ -166,9 +172,19 @@ class UploadWorker:
         # Start producer
         await self.producer.start()
 
-        # Initialize OneLake client
-        self.onelake_client = OneLakeClient(self.config.onelake_base_path)
-        await self.onelake_client.__aenter__()
+        # Initialize OneLake clients for each configured domain
+        for domain, path in self.config.onelake_domain_paths.items():
+            client = OneLakeClient(path)
+            await client.__aenter__()
+            self.onelake_clients[domain] = client
+            logger.info(f"Initialized OneLake client for domain '{domain}'")
+
+        # Initialize fallback client if base_path is configured
+        if self.config.onelake_base_path:
+            fallback_client = OneLakeClient(self.config.onelake_base_path)
+            await fallback_client.__aenter__()
+            self.onelake_clients["_fallback"] = fallback_client
+            logger.info("Initialized fallback OneLake client")
 
         # Create Kafka consumer
         await self._create_consumer()
@@ -228,10 +244,14 @@ class UploadWorker:
         # Stop producer
         await self.producer.stop()
 
-        # Close OneLake client
-        if self.onelake_client is not None:
-            await self.onelake_client.close()
-            self.onelake_client = None
+        # Close all OneLake clients
+        for domain, client in self.onelake_clients.items():
+            try:
+                await client.close()
+                logger.debug(f"Closed OneLake client for domain '{domain}'")
+            except Exception as e:
+                logger.warning(f"Error closing OneLake client for '{domain}': {e}")
+        self.onelake_clients.clear()
 
         # Update metrics
         update_connection_status("consumer", connected=False)
@@ -360,9 +380,27 @@ class UploadWorker:
             if not cache_path.exists():
                 raise FileNotFoundError(f"Cached file not found: {cache_path}")
 
-            # Upload to OneLake
-            assert self.onelake_client is not None
-            blob_path = await self.onelake_client.upload_file(
+            # Get domain from metadata to route to correct OneLake path
+            domain = cached_message.metadata.get("source_system", "").lower()
+
+            # Get appropriate OneLake client for this domain
+            onelake_client = self.onelake_clients.get(domain)
+            if onelake_client is None:
+                # Fall back to default client
+                onelake_client = self.onelake_clients.get("_fallback")
+                if onelake_client is None:
+                    raise ValueError(
+                        f"No OneLake client configured for domain '{domain}' "
+                        f"and no fallback configured. "
+                        f"Available domains: {list(self.onelake_clients.keys())}"
+                    )
+                logger.debug(
+                    f"Using fallback OneLake client for domain '{domain}'",
+                    extra={"trace_id": trace_id},
+                )
+
+            # Upload to OneLake (domain-specific path)
+            blob_path = await onelake_client.upload_file(
                 relative_path=cached_message.destination_path,
                 local_path=cache_path,
                 overwrite=True,
@@ -372,6 +410,7 @@ class UploadWorker:
                 "Uploaded file to OneLake",
                 extra={
                     "trace_id": trace_id,
+                    "domain": domain,
                     "destination_path": cached_message.destination_path,
                     "blob_path": blob_path,
                     "bytes": cached_message.bytes_downloaded,

@@ -55,7 +55,7 @@ def sample_cached_message():
         event_subtype="documentsReceived",
         original_timestamp=datetime.now(timezone.utc),
         downloaded_at=datetime.now(timezone.utc),
-        metadata={"source_partition": 3},
+        metadata={"source_partition": 3, "source_system": "xact"},
     )
 
 
@@ -110,16 +110,17 @@ class TestUploadWorkerInitialization:
         assert worker._consumer is None
 
     async def test_initialization_without_onelake_path_fails(self):
-        """Test worker initialization fails without ONELAKE_BASE_PATH."""
+        """Test worker initialization fails without any OneLake paths configured."""
         config = KafkaConfig(
             bootstrap_servers="localhost:9092",
-            onelake_base_path=None,  # Not configured
+            onelake_base_path="",  # Not configured
+            onelake_domain_paths={},  # No domain paths either
         )
 
         with pytest.raises(ValueError) as exc_info:
             UploadWorker(config)
 
-        assert "ONELAKE_BASE_PATH" in str(exc_info.value)
+        assert "OneLake" in str(exc_info.value)
 
     async def test_concurrency_settings(self, kafka_config):
         """Test worker uses configured concurrency settings."""
@@ -167,11 +168,12 @@ class TestUploadWorkerProcessing:
         worker._in_flight_tasks = set()
         worker._in_flight_lock = asyncio.Lock()
 
-        # Mock OneLake client
-        worker.onelake_client = AsyncMock()
-        worker.onelake_client.upload_file = AsyncMock(
+        # Mock OneLake clients (domain-based)
+        mock_client = AsyncMock()
+        mock_client.upload_file = AsyncMock(
             return_value="abfss://test@test.dfs.core.windows.net/Files/claims/C-456/document.pdf"
         )
+        worker.onelake_clients = {"xact": mock_client}
 
         # Mock producer
         worker.producer = AsyncMock()
@@ -187,8 +189,8 @@ class TestUploadWorkerProcessing:
         assert result.error is None
 
         # Verify OneLake upload was called
-        worker.onelake_client.upload_file.assert_called_once()
-        call_args = worker.onelake_client.upload_file.call_args
+        mock_client.upload_file.assert_called_once()
+        call_args = mock_client.upload_file.call_args
         assert call_args.kwargs["relative_path"] == "claims/C-456/document.pdf"
         assert call_args.kwargs["overwrite"] is True
 
@@ -235,8 +237,9 @@ class TestUploadWorkerProcessing:
         worker._in_flight_tasks = set()
         worker._in_flight_lock = asyncio.Lock()
 
-        # Mock OneLake client
-        worker.onelake_client = AsyncMock()
+        # Mock OneLake clients (domain-based)
+        mock_client = AsyncMock()
+        worker.onelake_clients = {"xact": mock_client}
 
         # Mock producer
         worker.producer = AsyncMock()
@@ -251,7 +254,7 @@ class TestUploadWorkerProcessing:
         assert isinstance(result.error, FileNotFoundError)
 
         # Verify OneLake upload was NOT called
-        worker.onelake_client.upload_file.assert_not_called()
+        mock_client.upload_file.assert_not_called()
 
         # Verify failure result message was produced
         worker.producer.send.assert_called_once()
@@ -294,11 +297,12 @@ class TestUploadWorkerProcessing:
         worker._in_flight_tasks = set()
         worker._in_flight_lock = asyncio.Lock()
 
-        # Mock OneLake client to fail
-        worker.onelake_client = AsyncMock()
-        worker.onelake_client.upload_file = AsyncMock(
+        # Mock OneLake clients to fail
+        mock_client = AsyncMock()
+        mock_client.upload_file = AsyncMock(
             side_effect=Exception("OneLake connection failed")
         )
+        worker.onelake_clients = {"xact": mock_client}
 
         # Mock producer
         worker.producer = AsyncMock()
@@ -372,9 +376,10 @@ class TestUploadWorkerConcurrency:
         worker._in_flight_lock = asyncio.Lock()
         worker._consumer = AsyncMock()
 
-        # Mock OneLake client
-        worker.onelake_client = AsyncMock()
-        worker.onelake_client.upload_file = AsyncMock(return_value="path/to/file.pdf")
+        # Mock OneLake clients (domain-based)
+        mock_client = AsyncMock()
+        mock_client.upload_file = AsyncMock(return_value="path/to/file.pdf")
+        worker.onelake_clients = {"xact": mock_client}
 
         # Mock producer
         worker.producer = AsyncMock()
@@ -413,8 +418,6 @@ class TestUploadWorkerConcurrency:
         max_concurrent = 0
         lock = asyncio.Lock()
 
-        original_upload = worker.onelake_client.upload_file
-
         async def mock_upload(*args, **kwargs):
             nonlocal concurrent_count, max_concurrent
             async with lock:
@@ -428,7 +431,7 @@ class TestUploadWorkerConcurrency:
 
             return "path/to/file.pdf"
 
-        worker.onelake_client.upload_file = AsyncMock(side_effect=mock_upload)
+        mock_client.upload_file = AsyncMock(side_effect=mock_upload)
 
         # Process batch
         await worker._process_batch(messages)
@@ -472,8 +475,8 @@ class TestUploadWorkerConcurrency:
         worker._in_flight_tasks = set()
         worker._in_flight_lock = asyncio.Lock()
 
-        # Mock OneLake client
-        worker.onelake_client = AsyncMock()
+        # Mock OneLake clients (domain-based)
+        mock_client = AsyncMock()
 
         in_flight_during_upload = None
 
@@ -483,7 +486,8 @@ class TestUploadWorkerConcurrency:
                 in_flight_during_upload = len(worker._in_flight_tasks)
             return "path/to/file.pdf"
 
-        worker.onelake_client.upload_file = AsyncMock(side_effect=capture_in_flight)
+        mock_client.upload_file = AsyncMock(side_effect=capture_in_flight)
+        worker.onelake_clients = {"xact": mock_client}
 
         # Mock producer
         worker.producer = AsyncMock()
@@ -541,9 +545,10 @@ class TestUploadWorkerConcurrency:
             )
             messages.append(record)
 
-        # Mock OneLake client
-        worker.onelake_client = AsyncMock()
-        worker.onelake_client.upload_file = AsyncMock(return_value="path/to/file.pdf")
+        # Mock OneLake clients (domain-based)
+        mock_client = AsyncMock()
+        mock_client.upload_file = AsyncMock(return_value="path/to/file.pdf")
+        worker.onelake_clients = {"xact": mock_client}
 
         # Mock producer
         worker.producer = AsyncMock()
@@ -606,9 +611,10 @@ class TestUploadWorkerCacheCleanup:
         worker._in_flight_tasks = set()
         worker._in_flight_lock = asyncio.Lock()
 
-        # Mock OneLake client
-        worker.onelake_client = AsyncMock()
-        worker.onelake_client.upload_file = AsyncMock(return_value="path/to/file.pdf")
+        # Mock OneLake clients (domain-based)
+        mock_client = AsyncMock()
+        mock_client.upload_file = AsyncMock(return_value="path/to/file.pdf")
+        worker.onelake_clients = {"xact": mock_client}
 
         # Mock producer
         worker.producer = AsyncMock()
@@ -655,11 +661,12 @@ class TestUploadWorkerCacheCleanup:
         worker._in_flight_tasks = set()
         worker._in_flight_lock = asyncio.Lock()
 
-        # Mock OneLake client to fail
-        worker.onelake_client = AsyncMock()
-        worker.onelake_client.upload_file = AsyncMock(
+        # Mock OneLake clients to fail
+        mock_client = AsyncMock()
+        mock_client.upload_file = AsyncMock(
             side_effect=Exception("Upload failed")
         )
+        worker.onelake_clients = {"xact": mock_client}
 
         # Mock producer
         worker.producer = AsyncMock()
@@ -707,9 +714,10 @@ class TestUploadWorkerCacheCleanup:
         worker._in_flight_tasks = set()
         worker._in_flight_lock = asyncio.Lock()
 
-        # Mock OneLake client
-        worker.onelake_client = AsyncMock()
-        worker.onelake_client.upload_file = AsyncMock(return_value="path/to/file.pdf")
+        # Mock OneLake clients (domain-based)
+        mock_client = AsyncMock()
+        mock_client.upload_file = AsyncMock(return_value="path/to/file.pdf")
+        worker.onelake_clients = {"xact": mock_client}
 
         # Mock producer
         worker.producer = AsyncMock()
@@ -737,7 +745,7 @@ class TestUploadWorkerGracefulShutdown:
         worker._in_flight_lock = asyncio.Lock()
         worker._consumer = AsyncMock()
         worker.producer = AsyncMock()
-        worker.onelake_client = AsyncMock()
+        worker.onelake_clients = {"xact": AsyncMock()}
 
         # Simulate in-flight tasks completing
         async def clear_in_flight():
@@ -763,7 +771,7 @@ class TestUploadWorkerGracefulShutdown:
         worker._in_flight_lock = asyncio.Lock()
         worker._consumer = AsyncMock()
         worker.producer = AsyncMock()
-        worker.onelake_client = AsyncMock()
+        worker.onelake_clients = {"xact": AsyncMock()}
 
         # Stop with short timeout (modify for test - in real code it's 30s)
         # The worker has a 30s timeout, but we can't easily override it

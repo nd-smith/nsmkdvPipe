@@ -58,7 +58,14 @@ kafka:
   # ---------------------------------------------------------------------------
   # Storage Configuration
   # ---------------------------------------------------------------------------
+  # Domain-specific OneLake paths (recommended - separates data by source)
+  onelake_domain_paths:
+    xact: ""                                # ONELAKE_XACT_PATH (abfss://.../Files/xact)
+    claimx: ""                              # ONELAKE_CLAIMX_PATH (abfss://.../Files/claimx)
+
+  # Fallback path (used if source_system not in onelake_domain_paths)
   onelake_base_path: ""                     # ONELAKE_BASE_PATH (abfss://)
+
   cache_dir: "/tmp/kafka_pipeline_cache"    # CACHE_DIR
 
   # ---------------------------------------------------------------------------
