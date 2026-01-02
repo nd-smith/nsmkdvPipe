@@ -8,6 +8,7 @@ Provides async Kafka producer functionality with:
 - Header support for message routing
 """
 
+import logging
 import time
 from typing import Dict, List, Optional, Tuple
 
@@ -16,7 +17,7 @@ from aiokafka.structs import RecordMetadata
 from pydantic import BaseModel
 
 from core.auth.kafka_oauth import create_kafka_oauth_callback
-from core.logging.setup import get_logger
+from core.logging import get_logger, log_with_context, log_exception
 from core.resilience.circuit_breaker import (
     CircuitBreaker,
     KAFKA_CIRCUIT_CONFIG,
@@ -77,13 +78,13 @@ class BaseKafkaProducer:
         )
         self._started = False
 
-        logger.info(
+        log_with_context(
+            logger,
+            logging.INFO,
             "Initialized Kafka producer",
-            extra={
-                "bootstrap_servers": config.bootstrap_servers,
-                "security_protocol": config.security_protocol,
-                "sasl_mechanism": config.sasl_mechanism,
-            },
+            bootstrap_servers=config.bootstrap_servers,
+            security_protocol=config.security_protocol,
+            sasl_mechanism=config.sasl_mechanism,
         )
 
     async def start(self) -> None:
@@ -138,12 +139,12 @@ class BaseKafkaProducer:
         # Update connection status metric
         update_connection_status("producer", connected=True)
 
-        logger.info(
+        log_with_context(
+            logger,
+            logging.INFO,
             "Kafka producer started successfully",
-            extra={
-                "bootstrap_servers": self.config.bootstrap_servers,
-                "acks": self.config.acks,
-            },
+            bootstrap_servers=self.config.bootstrap_servers,
+            acks=self.config.acks,
         )
 
     async def stop(self) -> None:
@@ -166,10 +167,10 @@ class BaseKafkaProducer:
             await self._producer.stop()
             logger.info("Kafka producer stopped successfully")
         except Exception as e:
-            logger.error(
+            log_exception(
+                logger,
+                e,
                 "Error stopping Kafka producer",
-                extra={"error": str(e)},
-                exc_info=True,
             )
             raise
         finally:
@@ -215,14 +216,14 @@ class BaseKafkaProducer:
         if headers:
             headers_list = [(k, v.encode("utf-8")) for k, v in headers.items()]
 
-        logger.debug(
+        log_with_context(
+            logger,
+            logging.DEBUG,
             "Sending message to Kafka",
-            extra={
-                "topic": topic,
-                "key": key,
-                "headers": headers,
-                "value_size": len(value_bytes),
-            },
+            topic=topic,
+            key=key,
+            headers=headers,
+            value_size=len(value_bytes),
         )
 
         # Send through circuit breaker
@@ -240,13 +241,13 @@ class BaseKafkaProducer:
             # Record successful message production
             record_message_produced(topic, len(value_bytes), success=True)
 
-            logger.debug(
+            log_with_context(
+                logger,
+                logging.DEBUG,
                 "Message sent successfully",
-                extra={
-                    "topic": metadata.topic,
-                    "partition": metadata.partition,
-                    "offset": metadata.offset,
-                },
+                topic=metadata.topic,
+                partition=metadata.partition,
+                offset=metadata.offset,
             )
 
             return metadata
@@ -256,14 +257,12 @@ class BaseKafkaProducer:
             record_message_produced(topic, len(value_bytes), success=False)
             record_producer_error(topic, type(e).__name__)
 
-            logger.error(
+            log_exception(
+                logger,
+                e,
                 "Failed to send message",
-                extra={
-                    "topic": topic,
-                    "key": key,
-                    "error": str(e),
-                },
-                exc_info=True,
+                topic=topic,
+                key=key,
             )
             raise
 
@@ -298,13 +297,13 @@ class BaseKafkaProducer:
             logger.warning("send_batch called with empty message list")
             return []
 
-        logger.info(
+        log_with_context(
+            logger,
+            logging.INFO,
             "Sending batch to Kafka",
-            extra={
-                "topic": topic,
-                "message_count": len(messages),
-                "headers": headers,
-            },
+            topic=topic,
+            message_count=len(messages),
+            headers=headers,
         )
 
         # Convert headers to list of tuples
@@ -352,14 +351,14 @@ class BaseKafkaProducer:
             for _ in results:
                 record_message_produced(topic, total_bytes // len(results), success=True)
 
-            logger.info(
+            log_with_context(
+                logger,
+                logging.INFO,
                 "Batch sent successfully",
-                extra={
-                    "topic": topic,
-                    "message_count": len(results),
-                    "partitions": list({r.partition for r in results}),
-                    "duration_seconds": duration,
-                },
+                topic=topic,
+                message_count=len(results),
+                partitions=list({r.partition for r in results}),
+                duration_ms=round(duration * 1000, 2),
             )
 
             return results
@@ -374,15 +373,13 @@ class BaseKafkaProducer:
                 record_message_produced(topic, total_bytes // len(messages), success=False)
             record_producer_error(topic, type(e).__name__)
 
-            logger.error(
+            log_exception(
+                logger,
+                e,
                 "Failed to send batch",
-                extra={
-                    "topic": topic,
-                    "message_count": len(messages),
-                    "error": str(e),
-                    "duration_seconds": duration,
-                },
-                exc_info=True,
+                topic=topic,
+                message_count=len(messages),
+                duration_ms=round(duration * 1000, 2),
             )
             raise
 
