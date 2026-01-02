@@ -153,7 +153,7 @@ class DLQCLIManager:
             print(f"Original Task:")
             print(f"  Event Type:        {dlq_msg.original_task.event_type}")
             print(f"  Event Subtype:     {dlq_msg.original_task.event_subtype}")
-            print(f"  Destination Path:  {dlq_msg.original_task.destination_path}")
+            print(f"  Blob Path:         {dlq_msg.original_task.blob_path}")
             print(f"  Original Time:     {dlq_msg.original_task.original_timestamp}")
             print()
 

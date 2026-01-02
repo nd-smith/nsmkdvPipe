@@ -251,7 +251,11 @@ class DLQHandler:
         replayed_task = DownloadTaskMessage(
             trace_id=dlq_msg.original_task.trace_id,
             attachment_url=dlq_msg.original_task.attachment_url,
-            destination_path=dlq_msg.original_task.destination_path,
+            blob_path=dlq_msg.original_task.blob_path,
+            status_subtype=dlq_msg.original_task.status_subtype,
+            file_type=dlq_msg.original_task.file_type,
+            assignment_id=dlq_msg.original_task.assignment_id,
+            estimate_version=dlq_msg.original_task.estimate_version,
             event_type=dlq_msg.original_task.event_type,
             event_subtype=dlq_msg.original_task.event_subtype,
             retry_count=0,  # Reset retry count

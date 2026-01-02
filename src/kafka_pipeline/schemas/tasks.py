@@ -5,9 +5,10 @@ Contains Pydantic models for download work items sent to download workers.
 Schema aligned with verisk_pipeline Task dataclass for compatibility.
 """
 
-from typing import Optional
+from datetime import datetime
+from typing import Any, Dict, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_serializer, field_validator
 
 
 class DownloadTaskMessage(BaseModel):
@@ -25,8 +26,12 @@ class DownloadTaskMessage(BaseModel):
         assignment_id: Assignment ID from event payload (required for path generation)
         estimate_version: Estimate version from event payload (optional)
         retry_count: Number of times this task has been retried (starts at 0)
+        event_type: Type of the originating event (e.g., "xact")
+        event_subtype: Subtype of the originating event (e.g., "documentsReceived")
+        original_timestamp: Timestamp from the original Kafka event
+        metadata: Additional context passed through from original event
 
-    Matches verisk_pipeline Task dataclass:
+    Matches verisk_pipeline Task dataclass (core fields):
         @dataclass
         class Task:
             trace_id: str
@@ -39,6 +44,7 @@ class DownloadTaskMessage(BaseModel):
             retry_count: int = 0
 
     Example:
+        >>> from datetime import datetime, timezone
         >>> task = DownloadTaskMessage(
         ...     trace_id="abc123-def456",
         ...     attachment_url="https://example.com/docs/estimate.pdf",
@@ -47,7 +53,10 @@ class DownloadTaskMessage(BaseModel):
         ...     file_type="pdf",
         ...     assignment_id="A12345",
         ...     estimate_version="1.0",
-        ...     retry_count=0
+        ...     retry_count=0,
+        ...     event_type="xact",
+        ...     event_subtype="documentsReceived",
+        ...     original_timestamp=datetime.now(timezone.utc),
         ... )
     """
 
@@ -90,8 +99,26 @@ class DownloadTaskMessage(BaseModel):
         description="Number of retry attempts (starts at 0)",
         ge=0
     )
+    event_type: str = Field(
+        ...,
+        description="Type of the originating event (e.g., 'xact')",
+        min_length=1
+    )
+    event_subtype: str = Field(
+        ...,
+        description="Subtype of the originating event (e.g., 'documentsReceived')",
+        min_length=1
+    )
+    original_timestamp: datetime = Field(
+        ...,
+        description="Timestamp from the original Kafka event"
+    )
+    metadata: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Additional context passed through from original event"
+    )
 
-    @field_validator('trace_id', 'attachment_url', 'blob_path', 'status_subtype', 'file_type', 'assignment_id')
+    @field_validator('trace_id', 'attachment_url', 'blob_path', 'status_subtype', 'file_type', 'assignment_id', 'event_type', 'event_subtype')
     @classmethod
     def validate_non_empty_strings(cls, v: str, info) -> str:
         """Ensure string fields are not empty or whitespace-only."""
@@ -106,6 +133,11 @@ class DownloadTaskMessage(BaseModel):
         if v < 0:
             raise ValueError("retry_count must be non-negative")
         return v
+
+    @field_serializer('original_timestamp')
+    def serialize_timestamp(self, timestamp: datetime) -> str:
+        """Serialize datetime to ISO 8601 format."""
+        return timestamp.isoformat()
 
     def to_verisk_task(self) -> "Task":
         """
@@ -159,7 +191,11 @@ class DownloadTaskMessage(BaseModel):
                     'file_type': 'pdf',
                     'assignment_id': 'A12345',
                     'estimate_version': '1.0',
-                    'retry_count': 0
+                    'retry_count': 0,
+                    'event_type': 'xact',
+                    'event_subtype': 'documentsReceived',
+                    'original_timestamp': '2024-12-25T10:30:00Z',
+                    'metadata': {'source_partition': 0}
                 },
                 {
                     'trace_id': 'xyz789-abc123',
@@ -169,7 +205,11 @@ class DownloadTaskMessage(BaseModel):
                     'file_type': 'esx',
                     'assignment_id': 'B67890',
                     'estimate_version': '2.0',
-                    'retry_count': 2
+                    'retry_count': 2,
+                    'event_type': 'xact',
+                    'event_subtype': 'estimateCreated',
+                    'original_timestamp': '2024-12-25T11:00:00Z',
+                    'metadata': {'source_partition': 1}
                 }
             ]
         }

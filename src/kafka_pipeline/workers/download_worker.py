@@ -552,7 +552,7 @@ class DownloadWorker:
                 extra={
                     "trace_id": task_message.trace_id,
                     "attachment_url": task_message.attachment_url,
-                    "destination_path": task_message.destination_path,
+                    "destination_path": task_message.blob_path,
                     "retry_count": task_message.retry_count,
                     "topic": message.topic,
                 },
@@ -646,8 +646,8 @@ class DownloadWorker:
             DownloadTask configured for AttachmentDownloader
         """
         # Create temporary file path (unique per trace_id)
-        # Use destination_path to preserve file extension
-        destination_filename = Path(task_message.destination_path).name
+        # Use blob_path to preserve file extension
+        destination_filename = Path(task_message.blob_path).name
         temp_file = self.temp_dir / task_message.trace_id / destination_filename
 
         return DownloadTask(
@@ -701,8 +701,8 @@ class DownloadWorker:
         cache_subdir = self.cache_dir / task_message.trace_id
         cache_subdir.mkdir(parents=True, exist_ok=True)
 
-        # Use original filename from destination_path
-        filename = Path(task_message.destination_path).name
+        # Use original filename from blob_path
+        filename = Path(task_message.blob_path).name
         cache_path = cache_subdir / filename
 
         # Move file from temp to cache (atomic on same filesystem)
@@ -727,7 +727,7 @@ class DownloadWorker:
         cached_message = CachedDownloadMessage(
             trace_id=task_message.trace_id,
             attachment_url=task_message.attachment_url,
-            destination_path=task_message.destination_path,
+            destination_path=task_message.blob_path,
             local_cache_path=str(cache_path),
             bytes_downloaded=outcome.bytes_downloaded or 0,
             content_type=outcome.content_type,
