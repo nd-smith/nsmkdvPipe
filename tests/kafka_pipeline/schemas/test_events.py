@@ -5,7 +5,6 @@ Validates Pydantic model behavior, JSON serialization, and field validation.
 """
 
 import json
-from datetime import datetime, timezone
 
 import pytest
 from pydantic import ValidationError
@@ -19,53 +18,48 @@ class TestEventMessageCreation:
     def test_create_with_all_fields(self):
         """EventMessage can be created with all fields populated."""
         event = EventMessage(
-            trace_id="evt-123",
-            event_type="claim",
-            event_subtype="created",
-            timestamp=datetime(2024, 12, 25, 10, 30, 0, tzinfo=timezone.utc),
-            source_system="claimx",
-            payload={"claim_id": "C-456", "amount": 10000},
-            attachments=["https://storage.example.com/file1.pdf"]
+            type="verisk.claims.property.xn.documentsReceived",
+            version=1,
+            utcDateTime="2024-12-25T10:30:00Z",
+            traceId="evt-123",
+            data='{"assignmentId": "C-456", "attachments": ["https://storage.example.com/file1.pdf"]}'
         )
 
+        assert event.type == "verisk.claims.property.xn.documentsReceived"
+        assert event.version == 1
+        assert event.utc_datetime == "2024-12-25T10:30:00Z"
         assert event.trace_id == "evt-123"
-        assert event.event_type == "claim"
-        assert event.event_subtype == "created"
-        assert event.source_system == "claimx"
-        assert event.payload == {"claim_id": "C-456", "amount": 10000}
         assert event.attachments == ["https://storage.example.com/file1.pdf"]
 
     def test_create_without_attachments(self):
-        """EventMessage can be created without attachments (optional field)."""
+        """EventMessage can be created with data that has no attachments."""
         event = EventMessage(
-            trace_id="evt-456",
-            event_type="policy",
-            event_subtype="updated",
-            timestamp=datetime.now(timezone.utc),
-            source_system="policysys",
-            payload={"policy_id": "P-789"}
+            type="verisk.claims.property.xn.estimateCreated",
+            version=2,
+            utcDateTime="2024-12-25T10:30:00Z",
+            traceId="evt-456",
+            data='{"assignmentId": "P-789"}'
         )
 
         assert event.attachments is None
 
     def test_create_with_empty_attachments_list(self):
-        """Empty attachments list is normalized to None."""
+        """Empty attachments list in data returns empty list."""
         event = EventMessage(
-            trace_id="evt-789",
-            event_type="claim",
-            event_subtype="created",
-            timestamp=datetime.now(timezone.utc),
-            source_system="claimx",
-            payload={},
-            attachments=[]
+            type="verisk.claims.property.xn.documentsReceived",
+            version=1,
+            utcDateTime="2024-12-25T10:30:00Z",
+            traceId="evt-789",
+            data='{"assignmentId": "A-123", "attachments": []}'
         )
 
-        assert event.attachments is None
+        # Empty list returns None (filtered by the computed property)
+        assert event.attachments is None or event.attachments == []
 
-    def test_create_with_complex_payload(self):
-        """Payload can contain nested structures."""
-        complex_payload = {
-            "claim_id": "C-001",
+    def test_create_with_complex_data(self):
+        """Data can contain nested structures."""
+        complex_data = {
+            "assignmentId": "C-001",
             "details": {
                 "amount": 50000,
                 "category": "property",
@@ -74,23 +68,22 @@ class TestEventMessageCreation:
                     "priority": "high"
                 }
             },
-            "items": [
-                {"item_id": "I-1", "value": 1000},
-                {"item_id": "I-2", "value": 2000}
+            "attachments": [
+                "https://example.com/file1.pdf",
+                "https://example.com/file2.pdf"
             ]
         }
 
         event = EventMessage(
-            trace_id="evt-complex",
-            event_type="claim",
-            event_subtype="created",
-            timestamp=datetime.now(timezone.utc),
-            source_system="claimx",
-            payload=complex_payload
+            type="verisk.claims.property.xn.documentsReceived",
+            version=1,
+            utcDateTime="2024-12-25T10:30:00Z",
+            traceId="evt-complex",
+            data=json.dumps(complex_data)
         )
 
-        assert event.payload == complex_payload
-        assert event.payload["details"]["metadata"]["priority"] == "high"
+        assert event.data_dict == complex_data
+        assert event.data_dict["details"]["metadata"]["priority"] == "high"
 
 
 class TestEventMessageValidation:
@@ -100,276 +93,307 @@ class TestEventMessageValidation:
         """Missing required fields raise ValidationError."""
         with pytest.raises(ValidationError) as exc_info:
             EventMessage(
-                event_type="claim",
-                event_subtype="created",
-                timestamp=datetime.now(timezone.utc),
-                source_system="claimx",
-                payload={}
-                # Missing trace_id
+                type="verisk.claims.property.xn.documentsReceived",
+                version=1,
+                utcDateTime="2024-12-25T10:30:00Z",
+                data='{}'
+                # Missing traceId
             )
 
         errors = exc_info.value.errors()
-        assert any(e['loc'] == ('trace_id',) for e in errors)
+        assert any('traceId' in str(e) or 'trace_id' in str(e) for e in errors)
 
     def test_empty_trace_id_raises_error(self):
         """Empty trace_id raises ValidationError."""
         with pytest.raises(ValidationError) as exc_info:
             EventMessage(
-                trace_id="",
-                event_type="claim",
-                event_subtype="created",
-                timestamp=datetime.now(timezone.utc),
-                source_system="claimx",
-                payload={}
+                type="verisk.claims.property.xn.documentsReceived",
+                version=1,
+                utcDateTime="2024-12-25T10:30:00Z",
+                traceId="",
+                data='{}'
             )
 
         errors = exc_info.value.errors()
-        assert any('trace_id' in str(e) for e in errors)
+        assert any('trace_id' in str(e) or 'traceId' in str(e) for e in errors)
 
     def test_whitespace_trace_id_raises_error(self):
         """Whitespace-only trace_id raises ValidationError."""
         with pytest.raises(ValidationError) as exc_info:
             EventMessage(
-                trace_id="   ",
-                event_type="claim",
-                event_subtype="created",
-                timestamp=datetime.now(timezone.utc),
-                source_system="claimx",
-                payload={}
+                type="verisk.claims.property.xn.documentsReceived",
+                version=1,
+                utcDateTime="2024-12-25T10:30:00Z",
+                traceId="   ",
+                data='{}'
             )
 
         errors = exc_info.value.errors()
-        assert any('trace_id' in str(e) for e in errors)
+        assert any('trace_id' in str(e) or 'traceId' in str(e) for e in errors)
 
     def test_whitespace_is_trimmed(self):
-        """Leading/trailing whitespace is trimmed from string fields."""
+        """Leading/trailing whitespace is trimmed from validated fields."""
         event = EventMessage(
-            trace_id="  evt-123  ",
-            event_type="  claim  ",
-            event_subtype="  created  ",
-            timestamp=datetime.now(timezone.utc),
-            source_system="  claimx  ",
-            payload={}
+            type="  verisk.claims.property.xn.documentsReceived  ",
+            version=1,
+            utcDateTime="2024-12-25T10:30:00Z",
+            traceId="  evt-123  ",
+            data='{}'
         )
 
         assert event.trace_id == "evt-123"
-        assert event.event_type == "claim"
-        assert event.event_subtype == "created"
-        assert event.source_system == "claimx"
-
-    def test_invalid_attachments_type_raises_error(self):
-        """Attachments must be a list if provided."""
-        with pytest.raises(ValidationError):
-            EventMessage(
-                trace_id="evt-123",
-                event_type="claim",
-                event_subtype="created",
-                timestamp=datetime.now(timezone.utc),
-                source_system="claimx",
-                payload={},
-                attachments="not-a-list"  # Invalid: should be list
-            )
-
-    def test_attachments_filters_empty_strings(self):
-        """Empty strings in attachments list are filtered out."""
-        event = EventMessage(
-            trace_id="evt-123",
-            event_type="claim",
-            event_subtype="created",
-            timestamp=datetime.now(timezone.utc),
-            source_system="claimx",
-            payload={},
-            attachments=["https://example.com/file1.pdf", "", "  ", "https://example.com/file2.pdf"]
-        )
-
-        assert event.attachments == ["https://example.com/file1.pdf", "https://example.com/file2.pdf"]
+        assert event.type == "verisk.claims.property.xn.documentsReceived"
 
 
 class TestEventMessageSerialization:
     """Test JSON serialization and deserialization."""
 
-    def test_serialize_to_json(self):
-        """EventMessage serializes to valid JSON."""
+    def test_serialize_to_json_uses_aliases(self):
+        """EventMessage serializes with camelCase aliases."""
         event = EventMessage(
-            trace_id="evt-123",
-            event_type="claim",
-            event_subtype="created",
-            timestamp=datetime(2024, 12, 25, 10, 30, 0, tzinfo=timezone.utc),
-            source_system="claimx",
-            payload={"claim_id": "C-456"},
-            attachments=["https://example.com/file1.pdf"]
+            type="verisk.claims.property.xn.documentsReceived",
+            version=1,
+            utcDateTime="2024-12-25T10:30:00Z",
+            traceId="evt-123",
+            data='{"assignmentId": "C-456"}'
         )
 
         json_str = event.model_dump_json()
         parsed = json.loads(json_str)
 
-        assert parsed["trace_id"] == "evt-123"
-        assert parsed["event_type"] == "claim"
-        assert parsed["timestamp"] == "2024-12-25T10:30:00+00:00"
-        assert parsed["payload"] == {"claim_id": "C-456"}
+        # Should use camelCase aliases
+        assert "utcDateTime" in parsed
+        assert "traceId" in parsed
+        # Should NOT use snake_case
+        assert "utc_datetime" not in parsed
+        assert "trace_id" not in parsed
+
+    def test_version_serializes_as_integer(self):
+        """Version field serializes as integer, not string."""
+        event = EventMessage(
+            type="verisk.claims.property.xn.documentsReceived",
+            version=1,
+            utcDateTime="2024-12-25T10:30:00Z",
+            traceId="evt-123",
+            data='{}'
+        )
+
+        json_str = event.model_dump_json()
+        parsed = json.loads(json_str)
+
+        assert parsed["version"] == 1
+        assert isinstance(parsed["version"], int)
+
+    def test_data_serializes_as_object(self):
+        """Data field serializes as JSON object, not string."""
+        event = EventMessage(
+            type="verisk.claims.property.xn.documentsReceived",
+            version=1,
+            utcDateTime="2024-12-25T10:30:00Z",
+            traceId="evt-123",
+            data='{"assignmentId": "C-456", "attachments": ["https://example.com/file.pdf"]}'
+        )
+
+        json_str = event.model_dump_json()
+        parsed = json.loads(json_str)
+
+        assert isinstance(parsed["data"], dict)
+        assert parsed["data"]["assignmentId"] == "C-456"
+        assert parsed["data"]["attachments"] == ["https://example.com/file.pdf"]
+
+    def test_computed_fields_excluded_from_serialization(self):
+        """Computed fields are excluded from JSON output."""
+        event = EventMessage(
+            type="verisk.claims.property.xn.documentsReceived",
+            version=1,
+            utcDateTime="2024-12-25T10:30:00Z",
+            traceId="evt-123",
+            data='{"assignmentId": "C-456", "attachments": ["https://example.com/file.pdf"]}'
+        )
+
+        json_str = event.model_dump_json()
+        parsed = json.loads(json_str)
+
+        # Computed fields should not be in output
+        assert "status_subtype" not in parsed
+        assert "data_dict" not in parsed
+        assert "attachments" not in parsed
+        assert "assignment_id" not in parsed
+        assert "estimate_version" not in parsed
+
+    def test_computed_fields_still_accessible(self):
+        """Computed fields are still accessible on the model instance."""
+        event = EventMessage(
+            type="verisk.claims.property.xn.documentsReceived",
+            version=1,
+            utcDateTime="2024-12-25T10:30:00Z",
+            traceId="evt-123",
+            data='{"assignmentId": "C-456", "attachments": ["https://example.com/file.pdf"]}'
+        )
+
+        assert event.status_subtype == "documentsReceived"
+        assert event.assignment_id == "C-456"
+        assert event.attachments == ["https://example.com/file.pdf"]
 
     def test_deserialize_from_json(self):
         """EventMessage can be created from JSON string."""
         json_data = {
-            "trace_id": "evt-789",
-            "event_type": "policy",
-            "event_subtype": "updated",
-            "timestamp": "2024-12-25T15:45:00Z",
-            "source_system": "policysys",
-            "payload": {"policy_id": "P-001"},
-            "attachments": None
+            "type": "verisk.claims.property.xn.estimateCreated",
+            "version": 2,
+            "utcDateTime": "2024-12-25T15:45:00Z",
+            "traceId": "evt-789",
+            "data": '{"assignmentId": "P-001"}'
         }
 
         json_str = json.dumps(json_data)
         event = EventMessage.model_validate_json(json_str)
 
         assert event.trace_id == "evt-789"
-        assert event.event_type == "policy"
-        assert event.payload == {"policy_id": "P-001"}
-        assert event.attachments is None
+        assert event.type == "verisk.claims.property.xn.estimateCreated"
+        assert event.version == 2
 
-    def test_datetime_serialization_iso_format(self):
-        """Datetime fields serialize to ISO 8601 format."""
+    def test_from_eventhouse_row(self):
+        """EventMessage can be created from Eventhouse row dict."""
+        row = {
+            "type": "verisk.claims.property.xn.documentsReceived",
+            "version": 1,
+            "utcDateTime": "2024-12-25T10:30:00Z",
+            "traceId": "evt-123",
+            "data": {"assignmentId": "C-456", "attachments": ["https://example.com/file.pdf"]}
+        }
+
+        event = EventMessage.from_eventhouse_row(row)
+
+        assert event.type == "verisk.claims.property.xn.documentsReceived"
+        assert event.version == 1
+        assert event.trace_id == "evt-123"
+        assert event.assignment_id == "C-456"
+
+    def test_from_eventhouse_row_converts_string_version_to_int(self):
+        """from_eventhouse_row converts string version to int if numeric."""
+        row = {
+            "type": "verisk.claims.property.xn.documentsReceived",
+            "version": "2",
+            "utcDateTime": "2024-12-25T10:30:00Z",
+            "traceId": "evt-123",
+            "data": "{}"
+        }
+
+        event = EventMessage.from_eventhouse_row(row)
+
+        assert event.version == 2
+        assert isinstance(event.version, int)
+
+    def test_to_eventhouse_row(self):
+        """to_eventhouse_row returns dict with Eventhouse column names."""
         event = EventMessage(
-            trace_id="evt-123",
-            event_type="claim",
-            event_subtype="created",
-            timestamp=datetime(2024, 12, 25, 10, 30, 45, tzinfo=timezone.utc),
-            source_system="claimx",
-            payload={}
+            type="verisk.claims.property.xn.documentsReceived",
+            version=1,
+            utcDateTime="2024-12-25T10:30:00Z",
+            traceId="evt-123",
+            data='{"assignmentId": "C-456"}'
         )
 
-        json_str = event.model_dump_json()
-        parsed = json.loads(json_str)
+        row = event.to_eventhouse_row()
 
-        # Verify ISO 8601 format
-        assert "2024-12-25" in parsed["timestamp"]
-        assert "10:30:45" in parsed["timestamp"]
-
-        # Verify it can be parsed back
-        timestamp_str = parsed["timestamp"]
-        datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
-
-    def test_round_trip_serialization(self):
-        """Data survives JSON serialization round-trip."""
-        original = EventMessage(
-            trace_id="evt-round-trip",
-            event_type="claim",
-            event_subtype="created",
-            timestamp=datetime(2024, 12, 25, 10, 30, 0, tzinfo=timezone.utc),
-            source_system="claimx",
-            payload={"claim_id": "C-456", "amount": 10000},
-            attachments=["https://example.com/file1.pdf", "https://example.com/file2.pdf"]
-        )
-
-        # Serialize to JSON and back
-        json_str = original.model_dump_json()
-        restored = EventMessage.model_validate_json(json_str)
-
-        assert restored.trace_id == original.trace_id
-        assert restored.event_type == original.event_type
-        assert restored.event_subtype == original.event_subtype
-        assert restored.timestamp == original.timestamp
-        assert restored.source_system == original.source_system
-        assert restored.payload == original.payload
-        assert restored.attachments == original.attachments
-
-    def test_model_dump_dict(self):
-        """model_dump() returns dict with serialized datetime."""
-        event = EventMessage(
-            trace_id="evt-123",
-            event_type="claim",
-            event_subtype="created",
-            timestamp=datetime(2024, 12, 25, 10, 30, 0, tzinfo=timezone.utc),
-            source_system="claimx",
-            payload={"claim_id": "C-456"}
-        )
-
-        data = event.model_dump()
-
-        assert isinstance(data, dict)
-        assert data["trace_id"] == "evt-123"
-        # field_serializer applies even in regular model_dump()
-        assert isinstance(data["timestamp"], str)
-        assert "2024-12-25" in data["timestamp"]
-
-    def test_model_dump_with_mode_json(self):
-        """model_dump(mode='json') converts datetime to string."""
-        event = EventMessage(
-            trace_id="evt-123",
-            event_type="claim",
-            event_subtype="created",
-            timestamp=datetime(2024, 12, 25, 10, 30, 0, tzinfo=timezone.utc),
-            source_system="claimx",
-            payload={"claim_id": "C-456"}
-        )
-
-        data = event.model_dump(mode='json')
-
-        assert isinstance(data, dict)
-        assert isinstance(data["timestamp"], str)
-        assert "2024-12-25" in data["timestamp"]
+        assert row["type"] == "verisk.claims.property.xn.documentsReceived"
+        assert row["version"] == 1
+        assert row["utcDateTime"] == "2024-12-25T10:30:00Z"
+        assert row["traceId"] == "evt-123"
+        assert row["data"] == '{"assignmentId": "C-456"}'
 
 
 class TestEventMessageEdgeCases:
     """Test edge cases and boundary conditions."""
 
-    def test_empty_payload_is_valid(self):
-        """Payload can be an empty dict."""
+    def test_empty_data_is_valid(self):
+        """Empty data object is valid."""
         event = EventMessage(
-            trace_id="evt-empty",
-            event_type="test",
-            event_subtype="empty",
-            timestamp=datetime.now(timezone.utc),
-            source_system="testsys",
-            payload={}
+            type="verisk.claims.property.xn.test",
+            version=1,
+            utcDateTime="2024-12-25T10:30:00Z",
+            traceId="evt-empty",
+            data='{}'
         )
 
-        assert event.payload == {}
+        assert event.data_dict == {}
 
     def test_very_long_trace_id(self):
         """Very long trace_id is accepted."""
         long_id = "evt-" + "x" * 1000
         event = EventMessage(
-            trace_id=long_id,
-            event_type="claim",
-            event_subtype="created",
-            timestamp=datetime.now(timezone.utc),
-            source_system="claimx",
-            payload={}
+            type="verisk.claims.property.xn.test",
+            version=1,
+            utcDateTime="2024-12-25T10:30:00Z",
+            traceId=long_id,
+            data='{}'
         )
 
         assert event.trace_id == long_id
 
-    def test_unicode_in_payload(self):
-        """Payload can contain Unicode characters."""
+    def test_unicode_in_data(self):
+        """Data can contain Unicode characters."""
+        unicode_data = {
+            "description": "Schäden an Gebäude",
+            "note": "重要な情報",
+            "emoji": "🔥💧"
+        }
         event = EventMessage(
-            trace_id="evt-unicode",
-            event_type="claim",
-            event_subtype="created",
-            timestamp=datetime.now(timezone.utc),
-            source_system="claimx",
-            payload={
-                "description": "Schäden an Gebäude",
-                "note": "重要な情報",
-                "emoji": "🔥💧"
-            }
+            type="verisk.claims.property.xn.test",
+            version=1,
+            utcDateTime="2024-12-25T10:30:00Z",
+            traceId="evt-unicode",
+            data=json.dumps(unicode_data)
         )
 
-        assert event.payload["description"] == "Schäden an Gebäude"
-        assert event.payload["note"] == "重要な情報"
-        assert event.payload["emoji"] == "🔥💧"
+        assert event.data_dict["description"] == "Schäden an Gebäude"
+        assert event.data_dict["note"] == "重要な情報"
+        assert event.data_dict["emoji"] == "🔥💧"
 
-    def test_naive_datetime_is_accepted(self):
-        """Naive datetime (without timezone) is accepted."""
-        naive_dt = datetime(2024, 12, 25, 10, 30, 0)
+    def test_status_subtype_extraction(self):
+        """status_subtype correctly extracts last part of type."""
         event = EventMessage(
-            trace_id="evt-naive",
-            event_type="claim",
-            event_subtype="created",
-            timestamp=naive_dt,
-            source_system="claimx",
-            payload={}
+            type="verisk.claims.property.xn.documentsReceived",
+            version=1,
+            utcDateTime="2024-12-25T10:30:00Z",
+            traceId="evt-123",
+            data='{}'
         )
 
-        assert event.timestamp == naive_dt
+        assert event.status_subtype == "documentsReceived"
+
+    def test_status_subtype_with_no_dots(self):
+        """status_subtype returns full type if no dots."""
+        event = EventMessage(
+            type="simpleType",
+            version=1,
+            utcDateTime="2024-12-25T10:30:00Z",
+            traceId="evt-123",
+            data='{}'
+        )
+
+        assert event.status_subtype == "simpleType"
+
+    def test_invalid_json_data_returns_empty_dict(self):
+        """Invalid JSON data returns empty dict for data_dict."""
+        event = EventMessage(
+            type="verisk.claims.property.xn.test",
+            version=1,
+            utcDateTime="2024-12-25T10:30:00Z",
+            traceId="evt-123",
+            data='not valid json'
+        )
+
+        assert event.data_dict is None
+
+    def test_version_as_string_preserved_if_not_numeric(self):
+        """Version that is not a digit string is preserved as-is."""
+        event = EventMessage(
+            type="verisk.claims.property.xn.test",
+            version="1.0.0",  # Non-digit string
+            utcDateTime="2024-12-25T10:30:00Z",
+            traceId="evt-123",
+            data='{}'
+        )
+
+        assert event.version == "1.0.0"

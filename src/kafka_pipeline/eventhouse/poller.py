@@ -552,8 +552,8 @@ class KQLEventPoller:
         # Extract full event type
         full_type = row.get("type", "")
 
-        # Extract version
-        version = str(row.get("version", ""))
+        # Extract version - preserve original type (int preferred)
+        version = row.get("version", 1)
 
         # Extract timestamp as string
         timestamp_val = row.get("utcDateTime", row.get("timestamp", ""))
