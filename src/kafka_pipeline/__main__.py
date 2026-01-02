@@ -122,6 +122,7 @@ async def run_event_ingester(
     eventhub_config,
     local_kafka_config,
     enable_delta_writes: bool = True,
+    events_table_path: str = "",
 ):
     """Run the Event Ingester worker.
 
@@ -140,6 +141,7 @@ async def run_event_ingester(
     worker = EventIngesterWorker(
         config=eventhub_config,
         enable_delta_writes=enable_delta_writes,
+        events_table_path=events_table_path,
     )
 
     await worker.start()
@@ -247,6 +249,7 @@ async def run_result_processor(kafka_config, enable_delta_writes: bool = True):
 async def run_local_event_ingester(
     local_kafka_config,
     enable_delta_writes: bool = True,
+    events_table_path: str = "",
 ):
     """Run EventIngester consuming from local Kafka events.raw topic.
 
@@ -260,6 +263,7 @@ async def run_local_event_ingester(
     worker = EventIngesterWorker(
         config=local_kafka_config,
         enable_delta_writes=enable_delta_writes,
+        events_table_path=events_table_path,
     )
 
     await worker.start()
@@ -295,7 +299,11 @@ async def run_all_workers(
         )
         tasks.append(
             asyncio.create_task(
-                run_local_event_ingester(local_kafka_config, enable_delta_writes),
+                run_local_event_ingester(
+                    local_kafka_config,
+                    enable_delta_writes,
+                    events_table_path=pipeline_config.events_table_path,
+                ),
                 name="event-ingester",
             )
         )
@@ -305,7 +313,12 @@ async def run_all_workers(
         eventhub_config = pipeline_config.eventhub.to_kafka_config()
         tasks.append(
             asyncio.create_task(
-                run_event_ingester(eventhub_config, local_kafka_config, enable_delta_writes),
+                run_event_ingester(
+                    eventhub_config,
+                    local_kafka_config,
+                    enable_delta_writes,
+                    events_table_path=pipeline_config.events_table_path,
+                ),
                 name="event-ingester",
             )
         )
@@ -451,7 +464,12 @@ def main():
                 loop.run_until_complete(run_eventhouse_poller(pipeline_config))
             else:
                 loop.run_until_complete(
-                    run_event_ingester(eventhub_config, local_kafka_config, enable_delta_writes)
+                    run_event_ingester(
+                        eventhub_config,
+                        local_kafka_config,
+                        enable_delta_writes,
+                        events_table_path=pipeline_config.events_table_path,
+                    )
                 )
         elif args.worker == "download":
             loop.run_until_complete(run_download_worker(local_kafka_config))
