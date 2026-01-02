@@ -49,6 +49,9 @@ class PollerConfig:
     # Deduplication configuration
     dedup: DedupConfig
 
+    # Domain identifier for OneLake routing (e.g., "xact", "claimx")
+    domain: str = "xact"
+
     # Polling settings
     poll_interval_seconds: int = 30  # Seconds between poll cycles
     batch_size: int = 1000  # Max events per poll cycle
@@ -116,6 +119,8 @@ class PollerConfig:
             poller_data["batch_size"] = os.getenv("POLL_BATCH_SIZE")
         if os.getenv("EVENTHOUSE_SOURCE_TABLE"):
             poller_data["source_table"] = os.getenv("EVENTHOUSE_SOURCE_TABLE")
+        if os.getenv("PIPELINE_DOMAIN"):
+            poller_data["domain"] = os.getenv("PIPELINE_DOMAIN")
         if os.getenv("XACT_EVENTS_TABLE_PATH"):
             poller_data["events_table_path"] = os.getenv("XACT_EVENTS_TABLE_PATH")
         if os.getenv("MAX_KAFKA_LAG"):
@@ -168,6 +173,7 @@ class PollerConfig:
             eventhouse=eventhouse_config,
             kafka=kafka_config,
             dedup=dedup_config,
+            domain=poller_data.get("domain", "xact"),
             poll_interval_seconds=int(poller_data.get("poll_interval_seconds", 30)),
             batch_size=int(poller_data.get("batch_size", 1000)),
             source_table=poller_data.get("source_table", "Events"),
@@ -218,6 +224,7 @@ class PollerConfig:
             eventhouse=eventhouse_config,
             kafka=kafka_config,
             dedup=dedup_config,
+            domain=os.getenv("PIPELINE_DOMAIN", "xact"),
             poll_interval_seconds=int(os.getenv("POLL_INTERVAL_SECONDS", "30")),
             batch_size=int(os.getenv("POLL_BATCH_SIZE", "1000")),
             source_table=os.getenv("EVENTHOUSE_SOURCE_TABLE", "Events"),
@@ -662,6 +669,12 @@ class KQLEventPoller:
             )
             return
 
+        # Parse original timestamp from event
+        from datetime import datetime
+        original_timestamp = datetime.fromisoformat(
+            event.utc_datetime.replace("Z", "+00:00")
+        )
+
         # Create download task matching verisk_pipeline Task schema
         download_task = DownloadTaskMessage(
             trace_id=event.trace_id,
@@ -672,6 +685,9 @@ class KQLEventPoller:
             assignment_id=assignment_id,
             estimate_version=event.estimate_version,
             retry_count=0,
+            event_type=self.config.domain,  # Use configured domain for OneLake routing
+            event_subtype=event.status_subtype,
+            original_timestamp=original_timestamp,
         )
 
         # Produce to Kafka
