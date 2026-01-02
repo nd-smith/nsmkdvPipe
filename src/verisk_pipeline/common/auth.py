@@ -94,6 +94,7 @@ class AzureAuth:
 
     def __init__(self, cache: Optional[TokenCache] = None):
         self._cache = cache or TokenCache()
+        self._token_file_mtime: Optional[float] = None  # Track file modification time
         self._load_config()
 
     def _load_config(self) -> None:
@@ -119,6 +120,43 @@ class AzureAuth:
         if self.has_spn_credentials:
             return "spn"
         return "none"
+
+    def _is_token_file_modified(self) -> bool:
+        """Check if token file has been modified since last read.
+
+        Returns True if the file has been modified (or if we haven't read it yet),
+        which means we should invalidate the cache and re-read.
+        """
+        if not self.token_file:
+            return False
+
+        try:
+            current_mtime = os.path.getmtime(self.token_file)
+            if self._token_file_mtime is None:
+                # First read - file is "modified" relative to no previous state
+                return True
+            if current_mtime > self._token_file_mtime:
+                log_with_context(
+                    logger,
+                    logging.DEBUG,
+                    "Token file modified, will re-read",
+                    token_file=self.token_file,
+                    previous_mtime=self._token_file_mtime,
+                    current_mtime=current_mtime,
+                )
+                return True
+            return False
+        except OSError:
+            # File doesn't exist or can't be accessed - let read handle it
+            return True
+
+    def _update_token_file_mtime(self) -> None:
+        """Update the cached file modification time after successful read."""
+        if self.token_file:
+            try:
+                self._token_file_mtime = os.path.getmtime(self.token_file)
+            except OSError:
+                pass
 
     def _read_token_file(self, resource: Optional[str] = None) -> str:
         """Read token from file.
@@ -418,6 +456,9 @@ class AzureAuth:
     def get_storage_token(self, force_refresh: bool = False) -> Optional[str]:
         """Get token for OneLake/ADLS storage operations."""
         if self.token_file:
+            # Check if file was modified - if so, clear cache to force re-read
+            if self._is_token_file_modified():
+                self._cache.clear()  # Clear all cached tokens since file changed
             # Check cache first to avoid repeated file reads
             if not force_refresh:
                 cached = self._cache.get(self.STORAGE_RESOURCE)
@@ -432,6 +473,7 @@ class AzureAuth:
             try:
                 token = self._read_token_file(resource=self.STORAGE_RESOURCE)
                 self._cache.set(self.STORAGE_RESOURCE, token)
+                self._update_token_file_mtime()  # Track file mtime after successful read
                 return token
             except AzureAuthError as e:
                 # Log warning but don't fail - return None to trigger fallback
@@ -474,6 +516,9 @@ class AzureAuth:
     def get_kusto_token(self, cluster_uri: str, force_refresh: bool = False) -> str:
         """Get token for Kusto/Eventhouse."""
         if self.token_file:
+            # Check if file was modified - if so, clear cache to force re-read
+            if self._is_token_file_modified():
+                self._cache.clear()  # Clear all cached tokens since file changed
             # Check cache first to avoid repeated file reads
             if not force_refresh:
                 cached = self._cache.get(cluster_uri)
@@ -488,6 +533,7 @@ class AzureAuth:
             try:
                 token = self._read_token_file(resource=cluster_uri)
                 self._cache.set(cluster_uri, token)
+                self._update_token_file_mtime()  # Track file mtime after successful read
                 return token
             except AzureAuthError as e:
                 # Log warning and try to fall back to CLI if available
