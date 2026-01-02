@@ -12,16 +12,16 @@ Uses flatten_events() from verisk_pipeline to ensure schema compatibility.
 
 import asyncio
 import json
-import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import polars as pl
 
+from core.logging.setup import get_logger
 from verisk_pipeline.storage.delta import DeltaTableWriter
 from verisk_pipeline.xact.stages.transform import flatten_events, FLATTENED_SCHEMA
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class DeltaEventsWriter:

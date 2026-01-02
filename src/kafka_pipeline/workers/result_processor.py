@@ -15,12 +15,12 @@ Features:
 
 import asyncio
 import json
-import logging
 import time
 from typing import List, Optional
 
 from aiokafka.structs import ConsumerRecord
 
+from core.logging.setup import get_logger
 from kafka_pipeline.config import KafkaConfig
 from kafka_pipeline.consumer import BaseKafkaConsumer
 from kafka_pipeline.schemas.results import DownloadResultMessage
@@ -29,7 +29,7 @@ from kafka_pipeline.writers.delta_inventory import (
     DeltaFailedAttachmentsWriter,
 )
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class ResultProcessor:

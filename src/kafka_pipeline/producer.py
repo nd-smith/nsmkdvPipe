@@ -8,7 +8,6 @@ Provides async Kafka producer functionality with:
 - Header support for message routing
 """
 
-import logging
 import time
 from typing import Dict, List, Optional, Tuple
 
@@ -17,6 +16,7 @@ from aiokafka.structs import RecordMetadata
 from pydantic import BaseModel
 
 from core.auth.kafka_oauth import create_kafka_oauth_callback
+from core.logging.setup import get_logger
 from core.resilience.circuit_breaker import (
     CircuitBreaker,
     KAFKA_CIRCUIT_CONFIG,
@@ -30,7 +30,7 @@ from kafka_pipeline.metrics import (
     batch_processing_duration_seconds,
 )
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class BaseKafkaProducer:

@@ -25,7 +25,6 @@ Concurrent Processing (WP-313):
 """
 
 import asyncio
-import logging
 import shutil
 import tempfile
 import time
@@ -39,6 +38,7 @@ from aiokafka import AIOKafkaConsumer
 from aiokafka.structs import ConsumerRecord
 
 from core.auth.kafka_oauth import create_kafka_oauth_callback
+from core.logging.setup import get_logger
 from core.download.downloader import AttachmentDownloader
 from core.download.models import DownloadTask, DownloadOutcome
 from core.errors.exceptions import CircuitOpenError
@@ -61,7 +61,7 @@ from kafka_pipeline.metrics import (
     message_processing_duration_seconds,
 )
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 @dataclass
