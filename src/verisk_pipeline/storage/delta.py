@@ -665,7 +665,7 @@ class DeltaTableWriter(LoggedClass):
         return df
 
     def _get_recent_ids(self) -> Set[str]:
-        """Get dedupe column values from recent window."""
+        """Get dedupe column values from recent window using lazy scan."""
         if not self.dedupe_column:
             return set()
 
@@ -677,16 +677,19 @@ class DeltaTableWriter(LoggedClass):
                 hours=self.dedupe_window_hours
             )
 
-            df: pl.DataFrame = self._reader.read(
-                columns=[self.dedupe_column, self.timestamp_column]
+            # Use lazy scan with predicate pushdown - only reads relevant parquet files
+            opts = get_storage_options()
+            df = (
+                pl.scan_delta(self.table_path, storage_options=opts)
+                .filter(pl.col(self.timestamp_column) > cutoff)
+                .select(self.dedupe_column)
+                .collect()
             )
 
             if df is None or df.is_empty():
                 return set()
 
-            # Use pl.lit() directly - both cutoff and column are UTC-aware
-            recent = df.filter(pl.col(self.timestamp_column) > pl.lit(cutoff))
-            return set(recent[self.dedupe_column].to_list())
+            return set(df[self.dedupe_column].to_list())
 
         except Exception as e:
             self._log_exception(

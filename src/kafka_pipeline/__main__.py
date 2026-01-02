@@ -188,6 +188,7 @@ async def run_eventhouse_poller(pipeline_config):
         poll_interval_seconds=eventhouse_source.poll_interval_seconds,
         batch_size=eventhouse_source.batch_size,
         source_table=eventhouse_source.source_table,
+        events_table_path=eventhouse_source.xact_events_table_path,
     )
 
     async with KQLEventPoller(poller_config) as poller:
@@ -295,6 +296,11 @@ async def run_all_workers(
     # Create event source task based on configuration
     if pipeline_config.event_source == EventSourceType.EVENTHOUSE:
         # Eventhouse mode: Poller → events.raw → EventIngester → downloads.pending
+        # Use Eventhouse-specific path, fall back to generic path for consistency
+        eventhouse_events_path = (
+            pipeline_config.eventhouse.xact_events_table_path
+            or pipeline_config.events_table_path
+        )
         tasks.append(
             asyncio.create_task(
                 run_eventhouse_poller(pipeline_config),
@@ -306,7 +312,7 @@ async def run_all_workers(
                 run_local_event_ingester(
                     local_kafka_config,
                     enable_delta_writes,
-                    events_table_path=pipeline_config.events_table_path,
+                    events_table_path=eventhouse_events_path,
                     domain=pipeline_config.domain,
                 ),
                 name="event-ingester",
