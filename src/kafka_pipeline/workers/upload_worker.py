@@ -177,14 +177,23 @@ class UploadWorker:
             client = OneLakeClient(path)
             await client.__aenter__()
             self.onelake_clients[domain] = client
-            logger.info(f"Initialized OneLake client for domain '{domain}'")
+            logger.info(
+                "Initialized OneLake client for domain",
+                extra={
+                    "domain": domain,
+                    "onelake_base_path": path,
+                },
+            )
 
         # Initialize fallback client if base_path is configured
         if self.config.onelake_base_path:
             fallback_client = OneLakeClient(self.config.onelake_base_path)
             await fallback_client.__aenter__()
             self.onelake_clients["_fallback"] = fallback_client
-            logger.info("Initialized fallback OneLake client")
+            logger.info(
+                "Initialized fallback OneLake client",
+                extra={"onelake_base_path": self.config.onelake_base_path},
+            )
 
         # Create Kafka consumer
         await self._create_consumer()
@@ -385,8 +394,21 @@ class UploadWorker:
                 raise FileNotFoundError(f"Cached file not found: {cache_path}")
 
             # Get domain from event_type to route to correct OneLake path
-            # event_type is extracted from event.type (e.g., "xact" from "xact.documentsReceived")
-            domain = cached_message.event_type.lower()
+            # event_type should be the domain (e.g., "xact", "claimx") set by EventIngester
+            raw_event_type = cached_message.event_type
+            domain = raw_event_type.lower()
+
+            # Log domain lookup for debugging
+            available_domains = list(self.onelake_clients.keys())
+            logger.debug(
+                "Domain lookup for upload",
+                extra={
+                    "trace_id": trace_id,
+                    "raw_event_type": raw_event_type,
+                    "domain": domain,
+                    "available_domains": available_domains,
+                },
+            )
 
             # Get appropriate OneLake client for this domain
             onelake_client = self.onelake_clients.get(domain)
@@ -396,12 +418,17 @@ class UploadWorker:
                 if onelake_client is None:
                     raise ValueError(
                         f"No OneLake client configured for domain '{domain}' "
-                        f"and no fallback configured. "
-                        f"Available domains: {list(self.onelake_clients.keys())}"
+                        f"(event_type='{raw_event_type}') and no fallback configured. "
+                        f"Available domains: {available_domains}"
                     )
-                logger.debug(
-                    f"Using fallback OneLake client for domain '{domain}'",
-                    extra={"trace_id": trace_id},
+                logger.warning(
+                    "Using fallback OneLake client - domain not found",
+                    extra={
+                        "trace_id": trace_id,
+                        "raw_event_type": raw_event_type,
+                        "domain": domain,
+                        "available_domains": available_domains,
+                    },
                 )
 
             # Upload to OneLake (domain-specific path)
@@ -416,7 +443,9 @@ class UploadWorker:
                 extra={
                     "trace_id": trace_id,
                     "domain": domain,
+                    "raw_event_type": raw_event_type,
                     "destination_path": cached_message.destination_path,
+                    "onelake_base_path": onelake_client.base_path,
                     "blob_path": blob_path,
                     "bytes": cached_message.bytes_downloaded,
                 },

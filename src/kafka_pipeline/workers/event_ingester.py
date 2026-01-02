@@ -113,6 +113,7 @@ class EventIngesterWorker:
                 "events_topic": config.events_topic,
                 "pending_topic": config.downloads_pending_topic,
                 "delta_writes_enabled": self.enable_delta_writes,
+                "pipeline_domain": self.domain,
             },
         )
 
