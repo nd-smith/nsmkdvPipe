@@ -14,8 +14,8 @@ from typing import Any, Dict, List, Optional
 import yaml
 
 
-# Default config path: config.yaml in project root (4 levels up from this file)
-DEFAULT_CONFIG_PATH = Path(__file__).parent.parent.parent / "config.yaml"
+# Default config path: config.yaml in src/ directory
+DEFAULT_CONFIG_PATH = Path(__file__).parent.parent / "config.yaml"
 
 
 @dataclass

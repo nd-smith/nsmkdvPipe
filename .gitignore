@@ -47,8 +47,8 @@ src/logs/
 .watermark*
 token_refresh.bat
 
-# Configuration files with secrets
-config.yaml
+# Configuration files with secrets (src/config.yaml contains local settings)
+src/config.yaml
 tokens.json
 *.env
 .env

@@ -11,8 +11,10 @@ import os
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Optional
+from pathlib import Path
+from typing import Any, Dict, Optional
 
+import yaml
 from azure.identity import DefaultAzureCredential
 from azure.kusto.data import KustoClient, KustoConnectionStringBuilder
 from azure.kusto.data.exceptions import KustoServiceError
@@ -23,6 +25,9 @@ from core.errors.classifiers import StorageErrorClassifier
 from core.errors.exceptions import KustoError, KustoQueryError
 
 logger = logging.getLogger(__name__)
+
+# Default config path: config.yaml in src/ directory
+DEFAULT_CONFIG_PATH = Path(__file__).parent.parent.parent / "config.yaml"
 
 
 @dataclass
@@ -46,8 +51,81 @@ class EventhouseConfig:
     max_connections: int = 10  # Connection pool size
 
     @classmethod
+    def load_config(
+        cls,
+        config_path: Optional[Path] = None,
+    ) -> "EventhouseConfig":
+        """Load configuration from YAML file with environment variable overrides.
+
+        Configuration priority (highest to lowest):
+        1. Environment variables
+        2. config.yaml file (under 'eventhouse:' key)
+        3. Dataclass defaults
+
+        Args:
+            config_path: Path to YAML config file. Defaults to src/config.yaml.
+
+        Returns:
+            EventhouseConfig instance
+
+        Raises:
+            ValueError: If required fields are missing
+        """
+        config_path = config_path or DEFAULT_CONFIG_PATH
+
+        # Load YAML
+        data: Dict[str, Any] = {}
+        if config_path.exists():
+            with open(config_path, "r") as f:
+                yaml_data = yaml.safe_load(f) or {}
+            # Extract eventhouse section
+            data = yaml_data.get("eventhouse", {})
+
+        # Apply environment variable overrides
+        env_overrides = {
+            "cluster_url": os.getenv("EVENTHOUSE_CLUSTER_URL"),
+            "database": os.getenv("EVENTHOUSE_DATABASE"),
+            "query_timeout_seconds": os.getenv("EVENTHOUSE_QUERY_TIMEOUT"),
+            "max_retries": os.getenv("EVENTHOUSE_MAX_RETRIES"),
+            "retry_base_delay_seconds": os.getenv("EVENTHOUSE_RETRY_BASE_DELAY"),
+            "retry_max_delay_seconds": os.getenv("EVENTHOUSE_RETRY_MAX_DELAY"),
+            "max_connections": os.getenv("EVENTHOUSE_MAX_CONNECTIONS"),
+        }
+        for key, value in env_overrides.items():
+            if value is not None:
+                data[key] = value
+
+        # Validate required fields
+        cluster_url = data.get("cluster_url", "")
+        database = data.get("database", "")
+
+        if not cluster_url:
+            raise ValueError(
+                "eventhouse.cluster_url is required. "
+                "Set in config.yaml or via EVENTHOUSE_CLUSTER_URL env var."
+            )
+        if not database:
+            raise ValueError(
+                "eventhouse.database is required. "
+                "Set in config.yaml or via EVENTHOUSE_DATABASE env var."
+            )
+
+        return cls(
+            cluster_url=cluster_url,
+            database=database,
+            query_timeout_seconds=int(data.get("query_timeout_seconds", 120)),
+            max_retries=int(data.get("max_retries", 3)),
+            retry_base_delay_seconds=float(data.get("retry_base_delay_seconds", 1.0)),
+            retry_max_delay_seconds=float(data.get("retry_max_delay_seconds", 30.0)),
+            max_connections=int(data.get("max_connections", 10)),
+        )
+
+    @classmethod
     def from_env(cls) -> "EventhouseConfig":
         """Load configuration from environment variables.
+
+        DEPRECATED: Use load_config() instead.
+        This method is kept for backwards compatibility.
 
         Required environment variables:
             EVENTHOUSE_CLUSTER_URL: Kusto cluster URL

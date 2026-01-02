@@ -4,7 +4,8 @@ from pathlib import Path
 from typing import Any, Dict
 
 
-# Default config file location
+# Default config file location: config.yaml in src/ directory
+# Path: src/verisk_pipeline/common/config/base.py → 4 parents up → src/
 DEFAULT_CONFIG_PATH = Path(__file__).parent.parent.parent.parent / "config.yaml"
 
 

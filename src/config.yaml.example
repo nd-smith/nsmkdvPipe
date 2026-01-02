@@ -1,176 +1,246 @@
-# Verisk Pipeline Configuration - Example Template
-# Copy this file to config.yaml and replace placeholders with your actual values
-# Multi-domain format - each domain under its own key
+# =============================================================================
+# Unified Pipeline Configuration
+# =============================================================================
+# This file configures both the Kafka pipeline and Verisk (xact) pipeline.
+# Environment variables override these values.
+# =============================================================================
 
-# IMPORTANT: Never commit config.yaml with real credentials to version control!
-# Use environment variables for sensitive values (see docs/configuration.md)
 
+# =============================================================================
+# KAFKA PIPELINE
+# =============================================================================
+kafka:
+  # ---------------------------------------------------------------------------
+  # Connection Settings
+  # ---------------------------------------------------------------------------
+  bootstrap_servers: "localhost:9092"       # KAFKA_BOOTSTRAP_SERVERS
+  security_protocol: "PLAINTEXT"            # KAFKA_SECURITY_PROTOCOL
+  sasl_mechanism: "OAUTHBEARER"             # KAFKA_SASL_MECHANISM
+  sasl_plain_username: ""                   # KAFKA_SASL_PLAIN_USERNAME
+  sasl_plain_password: ""                   # KAFKA_SASL_PLAIN_PASSWORD
+
+  # ---------------------------------------------------------------------------
+  # Consumer Settings
+  # ---------------------------------------------------------------------------
+  auto_offset_reset: "earliest"
+  enable_auto_commit: false
+  max_poll_records: 100                     # KAFKA_MAX_POLL_RECORDS
+  max_poll_interval_ms: 300000              # 5 minutes
+  session_timeout_ms: 30000                 # KAFKA_SESSION_TIMEOUT_MS
+
+  # ---------------------------------------------------------------------------
+  # Producer Settings
+  # ---------------------------------------------------------------------------
+  acks: "all"
+  retries: 3
+  retry_backoff_ms: 1000
+
+  # ---------------------------------------------------------------------------
+  # Topic Names
+  # ---------------------------------------------------------------------------
+  events_topic: "xact.events.raw"                     # KAFKA_EVENTS_TOPIC
+  downloads_pending_topic: "xact.downloads.pending"   # KAFKA_DOWNLOADS_PENDING_TOPIC
+  downloads_cached_topic: "xact.downloads.cached"     # KAFKA_DOWNLOADS_CACHED_TOPIC
+  downloads_results_topic: "xact.downloads.results"   # KAFKA_DOWNLOADS_RESULTS_TOPIC
+  dlq_topic: "xact.downloads.dlq"                     # KAFKA_DLQ_TOPIC
+
+  # ---------------------------------------------------------------------------
+  # Consumer Groups
+  # ---------------------------------------------------------------------------
+  consumer_group_prefix: "xact"             # KAFKA_CONSUMER_GROUP_PREFIX
+
+  # ---------------------------------------------------------------------------
+  # Retry Configuration
+  # ---------------------------------------------------------------------------
+  retry_delays: [300, 600, 1200, 2400]      # RETRY_DELAYS (seconds: 5m, 10m, 20m, 40m)
+  max_retries: 4                            # MAX_RETRIES
+
+  # ---------------------------------------------------------------------------
+  # Storage Configuration
+  # ---------------------------------------------------------------------------
+  onelake_base_path: ""                     # ONELAKE_BASE_PATH (abfss://)
+  cache_dir: "/tmp/kafka_pipeline_cache"    # CACHE_DIR
+
+  # ---------------------------------------------------------------------------
+  # Concurrency Settings
+  # ---------------------------------------------------------------------------
+  download_concurrency: 10                  # DOWNLOAD_CONCURRENCY (1-50)
+  download_batch_size: 20                   # DOWNLOAD_BATCH_SIZE
+  upload_concurrency: 10                    # UPLOAD_CONCURRENCY (1-50)
+  upload_batch_size: 20                     # UPLOAD_BATCH_SIZE
+
+
+# =============================================================================
+# EVENTHOUSE INTEGRATION (for Kafka pipeline)
+# =============================================================================
+eventhouse:
+  # ---------------------------------------------------------------------------
+  # Connection Settings
+  # ---------------------------------------------------------------------------
+  cluster_url: ""                           # EVENTHOUSE_CLUSTER_URL
+  database: ""                              # EVENTHOUSE_DATABASE
+
+  # ---------------------------------------------------------------------------
+  # Query Settings
+  # ---------------------------------------------------------------------------
+  query_timeout_seconds: 120                # EVENTHOUSE_QUERY_TIMEOUT
+  max_retries: 3                            # EVENTHOUSE_MAX_RETRIES
+  retry_base_delay_seconds: 1.0             # EVENTHOUSE_RETRY_BASE_DELAY
+  retry_max_delay_seconds: 30.0             # EVENTHOUSE_RETRY_MAX_DELAY
+  max_connections: 10                       # EVENTHOUSE_MAX_CONNECTIONS
+
+  # ---------------------------------------------------------------------------
+  # Poller Settings
+  # ---------------------------------------------------------------------------
+  poller:
+    poll_interval_seconds: 30               # POLL_INTERVAL_SECONDS
+    batch_size: 1000                        # POLL_BATCH_SIZE
+    source_table: "Events"                  # EVENTHOUSE_SOURCE_TABLE
+    events_table_path: ""                   # XACT_EVENTS_TABLE_PATH
+
+    # Backpressure settings
+    max_kafka_lag: 10000                    # MAX_KAFKA_LAG
+    lag_check_interval_seconds: 60
+
+    # Column mapping (Eventhouse column -> EventMessage field)
+    column_mapping:
+      trace_id: "trace_id"
+      event_type: "event_type"
+      event_subtype: "event_subtype"
+      timestamp: "timestamp"
+      source_system: "source_system"
+      payload: "payload"
+      attachments: "attachments"
+
+  # ---------------------------------------------------------------------------
+  # Deduplication Settings
+  # ---------------------------------------------------------------------------
+  dedup:
+    xact_events_table_path: ""              # XACT_EVENTS_TABLE_PATH
+    xact_events_window_hours: 24            # DEDUP_XACT_EVENTS_WINDOW_HOURS
+    eventhouse_query_window_hours: 1        # DEDUP_EVENTHOUSE_WINDOW_HOURS
+    overlap_minutes: 5                      # DEDUP_OVERLAP_MINUTES
+    max_trace_ids_per_query: 50000
+
+
+# =============================================================================
+# XACT PIPELINE (Verisk legacy pipeline)
+# =============================================================================
 xact:
-  # Xact domain configuration
+  # ---------------------------------------------------------------------------
+  # Kusto/Eventhouse Connection
+  # ---------------------------------------------------------------------------
   kusto:
-    # EVENTHOUSE_CLUSTER_URI env var overrides
-    # Replace <YOUR_CLUSTER> with your actual Kusto cluster name
-    cluster_uri: "https://<YOUR_CLUSTER>.z8.kusto.fabric.microsoft.com"
-    # KQL_DATABASE env var overrides
-    database: "VERISK_XACTANALYSIS_DB"
-    table_name: "tbl_VERISK_XACTANALYSIS_STATUS_EXPORT"
+    cluster_uri: ""                         # EVENTHOUSE_CLUSTER_URI
+    database: ""                            # KQL_DATABASE
+    table_name: "events"
 
+  # ---------------------------------------------------------------------------
+  # Lakehouse/OneLake Settings
+  # ---------------------------------------------------------------------------
   lakehouse:
-    # LAKEHOUSE_ABFSS_PATH env var overrides
-    # Replace <WORKSPACE_ID> and <LAKEHOUSE_ID> with your Azure Fabric workspace and lakehouse GUIDs
-    abfss_path: "abfss://<WORKSPACE_ID>@onelake.dfs.fabric.microsoft.com/<LAKEHOUSE_ID>/Tables/dbo"
+    abfss_path: ""                          # LAKEHOUSE_ABFSS_PATH
     events_table: "xact_events"
-    attachments_table: "xact_attachments"  # Success-only inventory
-    retry_table: "xact_retry"  # Active retry queue
-    # FILES_BASE_PATH env var overrides (defaults to {abfss_path}/Files)
-    files_path: "abfss://<WORKSPACE_ID>@onelake.dfs.fabric.microsoft.com/<LAKEHOUSE_ID>/Files/veriskPipeline/xact"
+    attachments_table: "xact_attachments"
+    retry_table: "xact_retry"
+    files_path: ""                          # FILES_BASE_PATH
 
+    # Batch size limits for memory management
+    max_batch_size_retry_queue: 1000
+    max_batch_size_inventory: 10000
+    max_batch_size_merge: 100000
+    max_batch_size_read: 50000
+
+    # Upload concurrency parameters
+    upload_max_concurrency: 16
+    upload_block_size_mb: 4
+    upload_max_single_put_mb: 64
+
+    # Cache limits
+    max_cache_size_completed_ids: 1000000
+
+  # ---------------------------------------------------------------------------
+  # Event Processing
+  # ---------------------------------------------------------------------------
   processing:
     event_types:
-      - "verisk.claims.property.xn.assignmentNoteAdded"
-      - "verisk.claims.property.xn.status.*"
-      - "verisk.claims.property.xn.documentsReceived"
-      - "verisk.claims.property.xn.estimatePackageReceived"
-      - "verisk.claims.property.xn.firstNoticeOfLossReceived"
+      - "xact.assignment.*"
     status_subtypes:
       - "documentsReceived"
       - "firstNoticeOfLossReceived"
       - "estimatePackageReceived"
-    start_date: "2025-11-28T00:00:00"
-    batch_size: 10
-    max_events_to_scan: 10
-    lookback_days: 3
+    start_date: "2024-01-01T00:00:00"
+    batch_size: 100
+    max_events_to_scan: 5000
+    lookback_days: 7
 
+  # ---------------------------------------------------------------------------
+  # Download Settings
+  # ---------------------------------------------------------------------------
   download:
-    max_concurrent: 20
+    max_concurrent: 10
     timeout_seconds: 60
     max_retries: 3
 
-  schedule:
-    interval_seconds: 45
-    enabled_stages:
-      - "ingest"
-      - "download"
-      - "retry"
-
+  # ---------------------------------------------------------------------------
+  # Retry Stage Settings
+  # ---------------------------------------------------------------------------
   retry:
     enabled: true
-    batch_size: 100
-    min_retry_age_seconds: 300
-    max_retries: 4
-    backoff_base_seconds: 300
+    batch_size: 50
+    min_retry_age_seconds: 300              # 5 minutes
+    max_retries: 3
+    backoff_base_seconds: 300               # 5 minutes
     backoff_multiplier: 2.0
     max_concurrent: 5
-    retention_days: 7  # Delete retry records older than this
-    cleanup_on_start: true  # Run cleanup when retry stage starts
+    retention_days: 30
+    cleanup_on_start: true
 
-  security:
-    allowed_attachment_domains:
-      - "usw2-prod-xn-exportreceiver-publish.s3.us-west-2.amazonaws.com"
-    audit_logging_enabled: true
-    audit_log_path: "logs/xact_audit.log"
-
-claimx:
-  # ClaimX domain configuration
-  kusto:
-    # CLAIMX_KUSTO_URI env var overrides
-    # Replace <YOUR_CLUSTER> with your actual Kusto cluster name
-    cluster_uri: "https://<YOUR_CLUSTER>.z8.kusto.fabric.microsoft.com"
-    # CLAIMX_DATABASE env var overrides
-    database: "VERISK_CLAIMXPERIENCE_DB"
-    events_table: "tbl_CLAIMXPERIENCE_EVENTS"
-
-  api:
-    # CLAIMX_API_URL env var overrides
-    base_url: "https://www.claimxperience.com/service/cxedirest"
-    # Name of env var containing Basic auth token
-    auth_token_env: "CLAIMX_API_TOKEN"
-    # CRITICAL: DO NOT hardcode auth tokens here!
-    # Set CLAIMX_API_TOKEN environment variable with your base64-encoded credentials
-    # Example: export CLAIMX_API_TOKEN="<your_base64_token>"
-    _auth_token: ""
-    timeout_seconds: 120
-    max_concurrent: 100
-
-  lakehouse:
-    # CLAIMX_LAKEHOUSE_PATH env var overrides
-    # Replace <WORKSPACE_ID> and <LAKEHOUSE_ID> with your Azure Fabric workspace and lakehouse GUIDs
-    abfss_path: "abfss://<WORKSPACE_ID>@onelake.dfs.fabric.microsoft.com/<LAKEHOUSE_ID>/Tables/dbo"
-    # CLAIMX_FILES_PATH env var overrides (defaults to {abfss_path}/Files)
-    files_path: "abfss://<WORKSPACE_ID>@onelake.dfs.fabric.microsoft.com/<LAKEHOUSE_ID>/Files/veriskPipeline"
-    # Table names (defaults shown)
-    events_table: "claimx_events"
-    projects_table: "claimx_projects"
-    contacts_table: "claimx_contacts"
-    media_metadata_table: "claimx_attachment_metadata"  # API metadata source
-    tasks_table: "claimx_tasks"
-    task_templates_table: "claimx_task_templates"
-    external_links_table: "claimx_external_links"
-    video_collab_table: "claimx_video_collab"
-    event_log_table: "claimx_event_log"
-    attachments_table: "claimx_attachments"  # Success-only inventory
-    retry_table: "claimx_retry"  # Active retry queue
-
-  processing:
-    event_types:
-      - "PROJECT_CREATED"
-      - "PROJECT_FILE_ADDED"
-      - "PROJECT_MFN_ADDED"
-      - "CUSTOM_TASK_ASSIGNED"
-      - "CUSTOM_TASK_COMPLETED"
-      - "POLICYHOLDER_INVITED"
-      - "POLICYHOLDER_JOINED"
-      - "VIDEO_COLLABORATION_INVITE_SENT"
-      - "VIDEO_COLLABORATION_COMPLETED"
-      - "PROJECT_CONVERSATION_UPDATED"
-      - "PERSONAL_PROPERTY_TASK_SHARED"
-      - "PROJECT_AUTO_XA_LINKING_UNSUCCESSFUL"
-
-    batch_size: 500
-    max_events_to_scan: 500
-    lookback_days: 7
-    start_date: "2025-12-01T00:00:00"
-    skip_dedup_check: true
-
-  download:
-    max_concurrent: 10
-    timeout_seconds: 338
-    # If using a corporate proxy, replace with your proxy URL
-    # Otherwise, remove this line or set to empty string
-    proxy: "http://proxy.internal.company.com:8080"
-
-  retry:
-    enabled: true
-    batch_size: 100
-    min_retry_age_seconds: 5
-    max_retries: 3
-    backoff_base_seconds: 1
-    backoff_multiplier: 2.0
-    max_concurrent: 10
-    retention_days: 7  # Delete retry records older than this
-    cleanup_on_start: true  # Run cleanup when retry stage starts
-
+  # ---------------------------------------------------------------------------
+  # Scheduling
+  # ---------------------------------------------------------------------------
   schedule:
-    interval_seconds: 5
+    interval_seconds: 60
     enabled_stages:
       - "ingest"
-      - "enrich"
       - "download"
       - "retry"
 
+  # ---------------------------------------------------------------------------
+  # Security
+  # ---------------------------------------------------------------------------
   security:
     allowed_download_domains:
-      - "claimxperience.s3.amazonaws.com"
-      - "claimxperience.s3.us-east-1.amazonaws.com"
-      - "www.claimxperience.com"
-      - "xactware-claimx-us-prod.s3.us-west-1.amazonaws.com"
+      - "usw2-prod-xn-exportreceiver-publish.s3.us-west-2.amazonaws.com"
+    encrypt_temp_files: false
     audit_logging_enabled: true
-    audit_log_path: "logs/claimx_audit.log"
+    audit_log_path: "/var/log/verisk_pipeline/audit.log"
+    key_vault_url: ""
+    service_principal_secret_name: "service-principal-secret"
+    subscription_id: ""
+    resource_group: ""
+    client_id: ""
+    tenant_id: ""
 
-# Shared settings (apply to all domains)
+  # ---------------------------------------------------------------------------
+  # Timeouts (seconds)
+  # ---------------------------------------------------------------------------
+  timeouts:
+    kusto_query_timeout: 300
+    kusto_request_timeout: 30
+    onelake_connection_timeout: 300
+    onelake_request_timeout: 300
+    onelake_read_timeout: 300
+    http_connection_timeout: 30
+    http_read_timeout: 300
+
+
+# =============================================================================
+# SHARED SETTINGS
+# =============================================================================
 health:
-  enabled: false
-  host: "0.0.0.0"
+  enabled: true
+  host: "127.0.0.1"
   port: 8080
 
 logging:
@@ -180,30 +250,15 @@ logging:
 
 observability:
   json_logs: true
-  log_upload_enabled: false
+  log_upload_enabled: true
   log_upload_interval_cycles: 10
   log_retention_days: 7
   memory_checkpoints_enabled: true
-  memory_checkpoint_level: DEBUG
+  memory_checkpoint_level: "DEBUG"
+  memory_profiling_enabled: true
+  memory_snapshot_interval: 5
+  memory_alert_threshold_mb: 4096
 
-security:
-  audit_logging_enabled: true
-  audit_log_path: "logs/audit.log"
-
-# Required Environment Variables:
-# ================================
-# Authentication (choose one method):
-#   - Azure CLI: Set AZURE_AUTH_INTERACTIVE=true
-#   - Service Principal: Set AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_TENANT_ID
-#   - Token File: Set AZURE_TOKEN_FILE=/path/to/tokens.json
-#
-# ClaimX API:
-#   - CLAIMX_API_TOKEN: Base64-encoded credentials for ClaimX API
-#
-# Optional Overrides:
-#   - EVENTHOUSE_CLUSTER_URI: Override xact.kusto.cluster_uri
-#   - CLAIMX_KUSTO_URI: Override claimx.kusto.cluster_uri
-#   - LAKEHOUSE_ABFSS_PATH: Override xact.lakehouse.abfss_path
-#   - CLAIMX_LAKEHOUSE_PATH: Override claimx.lakehouse.abfss_path
-#
-# See docs/configuration.md for complete environment variable documentation
+# Runtime metadata
+worker_id: "worker-01"                      # WORKER_ID
+test_mode: false                            # TEST_MODE

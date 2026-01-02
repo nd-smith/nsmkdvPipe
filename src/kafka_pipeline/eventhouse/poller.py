@@ -11,11 +11,15 @@ import os
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Optional
+from pathlib import Path
+from typing import Any, Callable, Dict, Optional
 
-from kafka_pipeline.config import KafkaConfig
+import yaml
+
+from kafka_pipeline.config import KafkaConfig, load_config as load_kafka_config
 from kafka_pipeline.eventhouse.dedup import DedupConfig, EventhouseDeduplicator
 from kafka_pipeline.eventhouse.kql_client import (
+    DEFAULT_CONFIG_PATH,
     EventhouseConfig,
     KQLClient,
     KQLQueryResult,
@@ -72,8 +76,115 @@ class PollerConfig:
     lag_check_interval_seconds: int = 60  # How often to check lag
 
     @classmethod
+    def load_config(
+        cls,
+        config_path: Optional[Path] = None,
+    ) -> "PollerConfig":
+        """Load configuration from YAML file with environment variable overrides.
+
+        Configuration priority (highest to lowest):
+        1. Environment variables
+        2. config.yaml file (under 'eventhouse.poller:' key)
+        3. Dataclass defaults
+
+        Args:
+            config_path: Path to YAML config file. Defaults to src/config.yaml.
+
+        Returns:
+            PollerConfig instance
+        """
+        config_path = config_path or DEFAULT_CONFIG_PATH
+
+        # Load sub-configs
+        eventhouse_config = EventhouseConfig.load_config(config_path)
+        kafka_config = load_kafka_config(config_path)
+
+        # Load YAML for poller-specific settings
+        poller_data: Dict[str, Any] = {}
+        dedup_data: Dict[str, Any] = {}
+        if config_path.exists():
+            with open(config_path, "r") as f:
+                yaml_data = yaml.safe_load(f) or {}
+            eventhouse_section = yaml_data.get("eventhouse", {})
+            poller_data = eventhouse_section.get("poller", {})
+            dedup_data = eventhouse_section.get("dedup", {})
+
+        # Apply environment variable overrides for poller
+        if os.getenv("POLL_INTERVAL_SECONDS"):
+            poller_data["poll_interval_seconds"] = os.getenv("POLL_INTERVAL_SECONDS")
+        if os.getenv("POLL_BATCH_SIZE"):
+            poller_data["batch_size"] = os.getenv("POLL_BATCH_SIZE")
+        if os.getenv("EVENTHOUSE_SOURCE_TABLE"):
+            poller_data["source_table"] = os.getenv("EVENTHOUSE_SOURCE_TABLE")
+        if os.getenv("XACT_EVENTS_TABLE_PATH"):
+            poller_data["events_table_path"] = os.getenv("XACT_EVENTS_TABLE_PATH")
+        if os.getenv("MAX_KAFKA_LAG"):
+            poller_data["max_kafka_lag"] = os.getenv("MAX_KAFKA_LAG")
+
+        # Apply environment variable overrides for dedup
+        if os.getenv("XACT_EVENTS_TABLE_PATH"):
+            dedup_data["xact_events_table_path"] = os.getenv("XACT_EVENTS_TABLE_PATH")
+        if os.getenv("DEDUP_XACT_EVENTS_WINDOW_HOURS"):
+            dedup_data["xact_events_window_hours"] = os.getenv(
+                "DEDUP_XACT_EVENTS_WINDOW_HOURS"
+            )
+        if os.getenv("DEDUP_EVENTHOUSE_WINDOW_HOURS"):
+            dedup_data["eventhouse_query_window_hours"] = os.getenv(
+                "DEDUP_EVENTHOUSE_WINDOW_HOURS"
+            )
+        if os.getenv("DEDUP_OVERLAP_MINUTES"):
+            dedup_data["overlap_minutes"] = os.getenv("DEDUP_OVERLAP_MINUTES")
+
+        xact_events_path = poller_data.get("events_table_path", "")
+
+        dedup_config = DedupConfig(
+            xact_events_table_path=dedup_data.get(
+                "xact_events_table_path", xact_events_path
+            ),
+            xact_events_window_hours=int(
+                dedup_data.get("xact_events_window_hours", 24)
+            ),
+            eventhouse_query_window_hours=int(
+                dedup_data.get("eventhouse_query_window_hours", 1)
+            ),
+            overlap_minutes=int(dedup_data.get("overlap_minutes", 5)),
+            max_trace_ids_per_query=int(
+                dedup_data.get("max_trace_ids_per_query", 50_000)
+            ),
+        )
+
+        # Handle column_mapping from YAML
+        column_mapping = poller_data.get("column_mapping", {
+            "trace_id": "trace_id",
+            "event_type": "event_type",
+            "event_subtype": "event_subtype",
+            "timestamp": "timestamp",
+            "source_system": "source_system",
+            "payload": "payload",
+            "attachments": "attachments",
+        })
+
+        return cls(
+            eventhouse=eventhouse_config,
+            kafka=kafka_config,
+            dedup=dedup_config,
+            poll_interval_seconds=int(poller_data.get("poll_interval_seconds", 30)),
+            batch_size=int(poller_data.get("batch_size", 1000)),
+            source_table=poller_data.get("source_table", "Events"),
+            column_mapping=column_mapping,
+            events_table_path=xact_events_path,
+            max_kafka_lag=int(poller_data.get("max_kafka_lag", 10_000)),
+            lag_check_interval_seconds=int(
+                poller_data.get("lag_check_interval_seconds", 60)
+            ),
+        )
+
+    @classmethod
     def from_env(cls) -> "PollerConfig":
         """Load configuration from environment variables.
+
+        DEPRECATED: Use load_config() instead.
+        This method is kept for backwards compatibility.
 
         Required environment variables:
             EVENTHOUSE_CLUSTER_URL: Kusto cluster URL
