@@ -107,6 +107,10 @@ class BaseKafkaProducer:
             "bootstrap_servers": self.config.bootstrap_servers,
             "acks": self.config.acks,
             "value_serializer": lambda v: v,  # We'll handle serialization in send()
+            # Connection timeout settings
+            "request_timeout_ms": self.config.request_timeout_ms,
+            "metadata_max_age_ms": self.config.metadata_max_age_ms,
+            "connections_max_idle_ms": self.config.connections_max_idle_ms,
         }
 
         # Note: aiokafka handles retries internally - we don't pass explicit retry config

@@ -257,6 +257,10 @@ class DownloadWorker:
             "max_poll_records": self.config.download_batch_size,
             "max_poll_interval_ms": self.config.max_poll_interval_ms,
             "session_timeout_ms": self.config.session_timeout_ms,
+            # Connection timeout settings
+            "request_timeout_ms": self.config.request_timeout_ms,
+            "metadata_max_age_ms": self.config.metadata_max_age_ms,
+            "connections_max_idle_ms": self.config.connections_max_idle_ms,
         }
 
         # Configure security based on protocol
