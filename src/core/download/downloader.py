@@ -204,7 +204,7 @@ class AttachmentDownloader:
             async with session.head(
                 url,
                 timeout=aiohttp.ClientTimeout(total=timeout),
-                allow_redirects=False,
+                allow_redirects=True,
             ) as response:
                 return response.content_length
         except Exception:
@@ -228,7 +228,6 @@ class AttachmentDownloader:
             url=task.url,
             session=session,
             timeout=task.timeout,
-            allow_redirects=False,
         )
 
         if error:
@@ -311,7 +310,7 @@ class AttachmentDownloader:
             async with session.head(
                 url,
                 timeout=aiohttp.ClientTimeout(total=timeout),
-                allow_redirects=False,
+                allow_redirects=True,
             ) as response:
                 return response.headers.get("Content-Type")
         except Exception:

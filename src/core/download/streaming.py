@@ -64,7 +64,7 @@ async def stream_download_url(
     session: aiohttp.ClientSession,
     timeout: int = 60,
     chunk_size: int = CHUNK_SIZE,
-    allow_redirects: bool = False,
+    allow_redirects: bool = True,
 ) -> tuple[Optional[StreamDownloadResponse], Optional[StreamDownloadError]]:
     """
     Stream download content from URL using async HTTP with chunked reading.
@@ -84,7 +84,7 @@ async def stream_download_url(
         session: aiohttp ClientSession (caller manages lifecycle)
         timeout: Timeout in seconds (default: 60)
         chunk_size: Size of chunks in bytes (default: 8MB)
-        allow_redirects: Whether to follow redirects (default: False for security)
+        allow_redirects: Whether to follow redirects (default: True for S3 presigned URLs)
 
     Returns:
         Tuple of (StreamDownloadResponse, None) on success
