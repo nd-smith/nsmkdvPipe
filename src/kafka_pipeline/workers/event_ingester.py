@@ -21,6 +21,7 @@ Delta table: xact_events (with all 28 flattened columns)
 
 import asyncio
 import json
+from datetime import datetime
 from typing import List, Optional
 
 from aiokafka.structs import ConsumerRecord
@@ -285,6 +286,11 @@ class EventIngesterWorker:
             )
             raise
 
+        # Parse original timestamp from event
+        original_timestamp = datetime.fromisoformat(
+            event.utc_datetime.replace("Z", "+00:00")
+        )
+
         # Create download task message matching verisk_pipeline Task schema
         download_task = DownloadTaskMessage(
             trace_id=event.trace_id,
@@ -295,6 +301,9 @@ class EventIngesterWorker:
             assignment_id=assignment_id,
             estimate_version=event.estimate_version,
             retry_count=0,
+            event_type=event.type.split(".")[0] if "." in event.type else event.type,
+            event_subtype=event.status_subtype,
+            original_timestamp=original_timestamp,
         )
 
         # Produce download task to pending topic
