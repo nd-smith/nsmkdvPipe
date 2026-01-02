@@ -255,46 +255,91 @@ class EventhouseSourceConfig:
     overlap_minutes: int = 5
 
     @classmethod
-    def from_env(cls) -> "EventhouseSourceConfig":
-        """Load Eventhouse configuration from environment variables.
+    def from_env(cls, config_path: Optional[Path] = None) -> "EventhouseSourceConfig":
+        """Load Eventhouse configuration from config.yaml and environment variables.
 
-        Required:
+        Configuration priority (highest to lowest):
+        1. Environment variables
+        2. config.yaml file (under 'eventhouse:' key)
+        3. Dataclass defaults
+
+        Optional env var overrides:
             EVENTHOUSE_CLUSTER_URL: Kusto cluster URL
             EVENTHOUSE_DATABASE: Database name
-
-        Optional:
             EVENTHOUSE_SOURCE_TABLE: Table name (default: Events)
             POLL_INTERVAL_SECONDS: Poll interval (default: 30)
             POLL_BATCH_SIZE: Max events per poll (default: 1000)
             EVENTHOUSE_QUERY_TIMEOUT: Query timeout (default: 120)
             XACT_EVENTS_TABLE_PATH: Path to xact_events Delta table
-            DEDUP_XACT_EVENTS_WINDOW_HOURS: Hours to look back (default: 24)
-            DEDUP_EVENTHOUSE_WINDOW_HOURS: Hours to query (default: 1)
-            DEDUP_OVERLAP_MINUTES: Overlap window (default: 5)
         """
-        cluster_url = os.getenv("EVENTHOUSE_CLUSTER_URL")
-        database = os.getenv("EVENTHOUSE_DATABASE")
+        config_path = config_path or DEFAULT_CONFIG_PATH
+
+        # Load from config.yaml
+        eventhouse_data: Dict[str, Any] = {}
+        poller_data: Dict[str, Any] = {}
+        dedup_data: Dict[str, Any] = {}
+        if config_path.exists():
+            with open(config_path, "r") as f:
+                yaml_data = yaml.safe_load(f) or {}
+            eventhouse_data = yaml_data.get("eventhouse", {})
+            poller_data = eventhouse_data.get("poller", {})
+            dedup_data = eventhouse_data.get("dedup", {})
+
+        cluster_url = os.getenv(
+            "EVENTHOUSE_CLUSTER_URL",
+            eventhouse_data.get("cluster_url", "")
+        )
+        database = os.getenv(
+            "EVENTHOUSE_DATABASE",
+            eventhouse_data.get("database", "")
+        )
 
         if not cluster_url:
-            raise ValueError("EVENTHOUSE_CLUSTER_URL is required when EVENT_SOURCE=eventhouse")
+            raise ValueError(
+                "Eventhouse cluster_url is required. "
+                "Set in config.yaml under 'eventhouse:' or via EVENTHOUSE_CLUSTER_URL env var."
+            )
         if not database:
-            raise ValueError("EVENTHOUSE_DATABASE is required when EVENT_SOURCE=eventhouse")
+            raise ValueError(
+                "Eventhouse database is required. "
+                "Set in config.yaml under 'eventhouse:' or via EVENTHOUSE_DATABASE env var."
+            )
 
         return cls(
             cluster_url=cluster_url,
             database=database,
-            source_table=os.getenv("EVENTHOUSE_SOURCE_TABLE", "Events"),
-            poll_interval_seconds=int(os.getenv("POLL_INTERVAL_SECONDS", "30")),
-            batch_size=int(os.getenv("POLL_BATCH_SIZE", "1000")),
-            query_timeout_seconds=int(os.getenv("EVENTHOUSE_QUERY_TIMEOUT", "120")),
-            xact_events_table_path=os.getenv("XACT_EVENTS_TABLE_PATH", ""),
-            xact_events_window_hours=int(
-                os.getenv("DEDUP_XACT_EVENTS_WINDOW_HOURS", "24")
+            source_table=os.getenv(
+                "EVENTHOUSE_SOURCE_TABLE",
+                poller_data.get("source_table", "Events")
             ),
-            eventhouse_query_window_hours=int(
-                os.getenv("DEDUP_EVENTHOUSE_WINDOW_HOURS", "1")
+            poll_interval_seconds=int(os.getenv(
+                "POLL_INTERVAL_SECONDS",
+                str(poller_data.get("poll_interval_seconds", 30))
+            )),
+            batch_size=int(os.getenv(
+                "POLL_BATCH_SIZE",
+                str(poller_data.get("batch_size", 1000))
+            )),
+            query_timeout_seconds=int(os.getenv(
+                "EVENTHOUSE_QUERY_TIMEOUT",
+                str(eventhouse_data.get("query_timeout_seconds", 120))
+            )),
+            xact_events_table_path=os.getenv(
+                "XACT_EVENTS_TABLE_PATH",
+                poller_data.get("events_table_path", "")
             ),
-            overlap_minutes=int(os.getenv("DEDUP_OVERLAP_MINUTES", "5")),
+            xact_events_window_hours=int(os.getenv(
+                "DEDUP_XACT_EVENTS_WINDOW_HOURS",
+                str(dedup_data.get("xact_events_window_hours", 24))
+            )),
+            eventhouse_query_window_hours=int(os.getenv(
+                "DEDUP_EVENTHOUSE_WINDOW_HOURS",
+                str(dedup_data.get("eventhouse_query_window_hours", 1))
+            )),
+            overlap_minutes=int(os.getenv(
+                "DEDUP_OVERLAP_MINUTES",
+                str(dedup_data.get("overlap_minutes", 5))
+            )),
         )
 
 
@@ -324,27 +369,41 @@ class PipelineConfig:
     failed_table_path: str = ""  # Optional: for tracking permanent failures
 
     @classmethod
-    def from_env(cls) -> "PipelineConfig":
-        """Load complete pipeline configuration from environment.
+    def from_env(cls, config_path: Optional[Path] = None) -> "PipelineConfig":
+        """Load complete pipeline configuration from config.yaml and environment.
 
-        The EVENT_SOURCE environment variable determines which source is used:
-        - eventhub (default): Use Azure Event Hub via Kafka protocol
+        Configuration priority (highest to lowest):
+        1. Environment variables
+        2. config.yaml file
+        3. Dataclass defaults
+
+        The event_source field in config.yaml (or EVENT_SOURCE env var) determines
+        which source is used:
+        - eventhub: Use Azure Event Hub via Kafka protocol
         - eventhouse: Poll Microsoft Fabric Eventhouse
-
-        Required environment variables depend on the source:
-        - eventhub: EVENTHUB_BOOTSTRAP_SERVERS, EVENTHUB_CONNECTION_STRING
-        - eventhouse: EVENTHOUSE_CLUSTER_URL, EVENTHOUSE_DATABASE
         """
-        source_str = os.getenv("EVENT_SOURCE", "eventhub").lower()
+        config_path = config_path or DEFAULT_CONFIG_PATH
+
+        # Load from config.yaml
+        yaml_data: Dict[str, Any] = {}
+        if config_path.exists():
+            with open(config_path, "r") as f:
+                yaml_data = yaml.safe_load(f) or {}
+
+        # Get event source from config.yaml first, then env var override
+        source_str = os.getenv(
+            "EVENT_SOURCE",
+            yaml_data.get("event_source", "eventhub")
+        ).lower()
 
         try:
             event_source = EventSourceType(source_str)
         except ValueError:
             raise ValueError(
-                f"Invalid EVENT_SOURCE '{source_str}'. Must be 'eventhub' or 'eventhouse'"
+                f"Invalid event_source '{source_str}'. Must be 'eventhub' or 'eventhouse'"
             )
 
-        local_kafka = LocalKafkaConfig.from_env()
+        local_kafka = LocalKafkaConfig.from_env(config_path)
 
         eventhub_config = None
         eventhouse_config = None
@@ -352,7 +411,7 @@ class PipelineConfig:
         if event_source == EventSourceType.EVENTHUB:
             eventhub_config = EventHubConfig.from_env()
         else:
-            eventhouse_config = EventhouseSourceConfig.from_env()
+            eventhouse_config = EventhouseSourceConfig.from_env(config_path)
 
         return cls(
             event_source=event_source,
@@ -376,18 +435,28 @@ class PipelineConfig:
         return self.event_source == EventSourceType.EVENTHOUSE
 
 
-def get_pipeline_config() -> PipelineConfig:
-    """Get pipeline configuration from environment.
+def get_pipeline_config(config_path: Optional[Path] = None) -> PipelineConfig:
+    """Get pipeline configuration from config.yaml and environment.
 
     This is the main entry point for loading configuration.
     """
-    return PipelineConfig.from_env()
+    return PipelineConfig.from_env(config_path)
 
 
-def get_event_source_type() -> EventSourceType:
+def get_event_source_type(config_path: Optional[Path] = None) -> EventSourceType:
     """Get the configured event source type.
 
-    Quick check without loading full config.
+    Quick check without loading full config. Reads from config.yaml first,
+    then checks EVENT_SOURCE env var for override.
     """
-    source_str = os.getenv("EVENT_SOURCE", "eventhub").lower()
+    config_path = config_path or DEFAULT_CONFIG_PATH
+
+    # Load from config.yaml first
+    yaml_source = "eventhub"
+    if config_path.exists():
+        with open(config_path, "r") as f:
+            yaml_data = yaml.safe_load(f) or {}
+        yaml_source = yaml_data.get("event_source", "eventhub")
+
+    source_str = os.getenv("EVENT_SOURCE", yaml_source).lower()
     return EventSourceType(source_str)

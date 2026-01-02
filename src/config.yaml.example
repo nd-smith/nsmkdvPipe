@@ -5,6 +5,12 @@
 # Environment variables override these values.
 # =============================================================================
 
+# =============================================================================
+# PIPELINE EVENT SOURCE
+# =============================================================================
+# Determines which event source the Kafka pipeline uses.
+# Options: "eventhouse" or "eventhub"
+event_source: "eventhouse"                        # EVENT_SOURCE
 
 # =============================================================================
 # KAFKA PIPELINE
