@@ -202,9 +202,11 @@ class AttachmentDownloader:
             Content-Length in bytes, or None if unavailable
         """
         try:
+            # Use shorter timeout for HEAD since it should be fast
+            # sock_read ensures we don't hang on stalled connections
             async with session.head(
                 url,
-                timeout=aiohttp.ClientTimeout(total=timeout),
+                timeout=aiohttp.ClientTimeout(total=min(timeout, 30), sock_read=10),
                 allow_redirects=True,
             ) as response:
                 return response.content_length
@@ -325,9 +327,11 @@ class AttachmentDownloader:
             Content-Type header value, or None if unavailable
         """
         try:
+            # Use shorter timeout for HEAD since it should be fast
+            # sock_read ensures we don't hang on stalled connections
             async with session.head(
                 url,
-                timeout=aiohttp.ClientTimeout(total=timeout),
+                timeout=aiohttp.ClientTimeout(total=min(timeout, 30), sock_read=10),
                 allow_redirects=True,
             ) as response:
                 return response.headers.get("Content-Type")
