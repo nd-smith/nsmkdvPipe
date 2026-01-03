@@ -405,7 +405,7 @@ Phase 5: Remove verisk_pipeline/
 - Size: Medium
 - Dependencies: REORG-101
 
-**REORG-107: Move eventhouse/ Module to common/** (P2) - `pending`
+**REORG-107: Move eventhouse/ Module to common/** (P2) - `38c393d`
 - Moved `eventhouse/kql_client.py` → `common/eventhouse/kql_client.py`
 - Moved `eventhouse/dedup.py` → `common/eventhouse/dedup.py`
 - Moved `eventhouse/poller.py` → `common/eventhouse/poller.py`
