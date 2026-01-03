@@ -72,12 +72,6 @@
 - Document any intentional exceptions with comments
 - Size: Medium (codebase-wide)
 
-**TECH-005: Review Dev Mode Necessity**
-- Location: `kafka_pipeline/__main__.py:512`
-- TODO asks: "Do we need dev mode?"
-- Evaluate if `--dev` flag is still useful or if config.yaml approach replaces it
-- If redundant, remove; if needed, document the use case
-- Size: Small
 
 **TECH-007: Confirm Consistent CTRL+C / Graceful Shutdown Behavior**
 - Verify all workers handle KeyboardInterrupt consistently
@@ -153,14 +147,6 @@
 - Increase readability
 - Size: Medium
 
-**TECH-016: Review producer.py Structure and Remove Dead Code**
-- Location: `kafka_pipeline/producer.py`
-- Review overall code structure and organization
-- Remove dead/unreachable code paths
-- Apply best practices (single responsibility, reduce complexity)
-- Increase readability
-- Size: Medium
-
 **TECH-017: Review delta_events.py Structure and Remove Dead Code**
 - Location: `kafka_pipeline/writers/delta_events.py`
 - Review overall code structure and organization
@@ -205,6 +191,27 @@
 ## Completed
 
 <!-- Done tasks with commit references -->
+
+**TECH-016: Review producer.py Structure and Remove Dead Code** ✓
+- Reviewed `kafka_pipeline/producer.py` (416 lines, single class `BaseKafkaProducer`)
+- **Finding**: No dead code found - file is already well-structured
+- All methods in use:
+  - `start()`, `stop()`, `send()`, `is_started` - used in production code
+  - `send_batch()`, `flush()` - tested API, used in performance/integration tests
+- Code quality is good: clear docstrings, type hints, circuit breaker pattern, metrics
+- No changes required
+- Size: Small (review only)
+
+**TECH-005: Review Dev Mode Necessity** ✓
+- Evaluated `--dev` flag usage in `kafka_pipeline/__main__.py`
+- **Finding**: The `--dev` flag IS needed and should be kept
+- **Rationale**:
+  - Production mode requires Event Hub credentials (`EVENTHUB_BOOTSTRAP_SERVERS`, `EVENTHUB_CONNECTION_STRING`)
+    or Eventhouse credentials (`cluster_url`, `database`)
+  - Dev mode bypasses these requirements, allowing local-only Kafka testing
+  - Adding a `event_source: local` option to config.yaml would require more invasive changes
+- Updated help text and added clarifying comments in code
+- Size: Small
 
 **TECH-006: Verify Logger Usage in run_eventhouse_poller** ✓
 - Verified logger scoping: module-level `logger` is correct (context attached at format time via `ContextVar`)

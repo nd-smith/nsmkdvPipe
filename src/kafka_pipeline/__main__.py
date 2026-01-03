@@ -101,7 +101,7 @@ Examples:
     parser.add_argument(
         "--dev",
         action="store_true",
-        help="Development mode: use local Kafka for all connections (no Event Hub)",
+        help="Development mode: use local Kafka only (no Event Hub/Eventhouse credentials required)",
     )
 
     parser.add_argument(
@@ -500,8 +500,9 @@ def main():
     start_http_server(args.metrics_port)
 
     # Load configuration
+    # Dev mode bypasses Event Hub/Eventhouse requirements for local testing.
+    # Production mode requires either Event Hub or Eventhouse credentials.
     if args.dev:
-        # Development mode: use local Kafka for everything
         logger.info("Running in DEVELOPMENT mode (local Kafka only)")
         from kafka_pipeline.pipeline_config import (
             EventSourceType,
