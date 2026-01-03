@@ -47,17 +47,22 @@ print("TEST 2: Query Delta table for trace_ids")
 print("-" * 70)
 try:
     import polars as pl
+    from deltalake import DeltaTable
 
     since = datetime(2026, 1, 2, 0, 0, 0, tzinfo=timezone.utc)
 
     start = time.perf_counter()
-    df = (
-        pl.scan_delta(TABLE_PATH, storage_options=storage_opts)
-        .filter(pl.col("event_date") >= since.date())
-        .filter(pl.col("ingested_at") >= since)
-        .select("trace_id", "ingested_at")
-        .collect()
-    )
+
+    # Use deltalake directly to avoid polars version mismatch
+    dt = DeltaTable(TABLE_PATH, storage_options=storage_opts)
+    df = pl.from_arrow(dt.to_pyarrow_table(columns=["trace_id", "ingested_at", "event_date"]))
+
+    # Filter in polars
+    df = df.filter(
+        (pl.col("event_date") >= since.date()) &
+        (pl.col("ingested_at") >= since)
+    ).select("trace_id", "ingested_at")
+
     duration = (time.perf_counter() - start) * 1000
 
     total = len(df)
