@@ -1,0 +1,194 @@
+"""
+Base class for Delta table writers.
+
+Provides common functionality for all Delta writers:
+- Async wrapper methods for non-blocking operations
+- Common error handling and logging patterns
+- Initialization of underlying DeltaTableWriter
+
+Subclasses should inherit from BaseDeltaWriter and implement domain-specific
+data transformation methods.
+"""
+
+import asyncio
+from typing import List, Optional
+
+import polars as pl
+
+from core.logging.setup import get_logger
+from verisk_pipeline.storage.delta import DeltaTableWriter
+
+
+class BaseDeltaWriter:
+    """
+    Base class for Delta table writers with async support.
+
+    Wraps verisk_pipeline.storage.delta.DeltaTableWriter to provide:
+    - Async/non-blocking writes via asyncio.to_thread
+    - Common error handling patterns
+    - Logging integration
+
+    Subclasses should:
+    1. Call super().__init__() with table_path and optional DeltaTableWriter params
+    2. Implement domain-specific data transformation methods
+    3. Use _async_append() or _async_merge() for non-blocking writes
+
+    Example:
+        class MyDomainWriter(BaseDeltaWriter):
+            def __init__(self, table_path: str):
+                super().__init__(
+                    table_path=table_path,
+                    dedupe_column="id",
+                    dedupe_window_hours=24
+                )
+
+            async def write_records(self, records: List[Dict]) -> bool:
+                df = self._records_to_dataframe(records)
+                return await self._async_append(df, dedupe=True)
+    """
+
+    def __init__(
+        self,
+        table_path: str,
+        dedupe_column: Optional[str] = None,
+        dedupe_window_hours: int = 24,
+        timestamp_column: str = "ingested_at",
+        partition_column: str = "event_date",
+        z_order_columns: Optional[List[str]] = None,
+    ):
+        """
+        Initialize base Delta writer.
+
+        Args:
+            table_path: Full abfss:// path to Delta table
+            dedupe_column: Column name for deduplication (optional)
+            dedupe_window_hours: Hours to check for duplicates (default: 24)
+            timestamp_column: Column used for time-based operations (default: "ingested_at")
+            partition_column: Column used for partitioning (default: "event_date")
+            z_order_columns: Columns for Z-ordering optimization (optional)
+        """
+        self.table_path = table_path
+        self.logger = get_logger(self.__class__.__name__)
+
+        # Initialize underlying Delta writer
+        self._delta_writer = DeltaTableWriter(
+            table_path=table_path,
+            dedupe_column=dedupe_column,
+            dedupe_window_hours=dedupe_window_hours,
+            timestamp_column=timestamp_column,
+            partition_column=partition_column,
+            z_order_columns=z_order_columns or [],
+        )
+
+        self.logger.info(
+            f"Initialized {self.__class__.__name__}",
+            extra={
+                "table_path": table_path,
+                "dedupe_column": dedupe_column,
+                "z_order_columns": z_order_columns,
+            },
+        )
+
+    async def _async_append(
+        self,
+        df: pl.DataFrame,
+        dedupe: bool = True,
+    ) -> bool:
+        """
+        Append DataFrame to Delta table (non-blocking).
+
+        Uses asyncio.to_thread to avoid blocking the event loop.
+
+        Args:
+            df: Polars DataFrame to append
+            dedupe: Whether to deduplicate against existing data
+
+        Returns:
+            True if write succeeded, False otherwise
+        """
+        if df.is_empty():
+            return True
+
+        try:
+            rows_written = await asyncio.to_thread(
+                self._delta_writer.append,
+                df,
+                dedupe=dedupe,
+            )
+
+            self.logger.info(
+                "Successfully appended to Delta table",
+                extra={
+                    "rows_written": rows_written,
+                    "table_path": self.table_path,
+                },
+            )
+            return True
+
+        except Exception as e:
+            self.logger.error(
+                "Failed to append to Delta table",
+                extra={
+                    "table_path": self.table_path,
+                    "error": str(e),
+                    "row_count": len(df),
+                },
+                exc_info=True,
+            )
+            return False
+
+    async def _async_merge(
+        self,
+        df: pl.DataFrame,
+        merge_keys: List[str],
+        preserve_columns: Optional[List[str]] = None,
+    ) -> bool:
+        """
+        Merge DataFrame into Delta table (non-blocking upsert).
+
+        Uses asyncio.to_thread to avoid blocking the event loop.
+
+        Args:
+            df: Polars DataFrame to merge
+            merge_keys: Columns forming primary key for merge
+            preserve_columns: Columns to preserve on update (default: ["created_at"])
+
+        Returns:
+            True if merge succeeded, False otherwise
+        """
+        if df.is_empty():
+            return True
+
+        try:
+            rows_affected = await asyncio.to_thread(
+                self._delta_writer.merge,
+                df,
+                merge_keys=merge_keys,
+                preserve_columns=preserve_columns,
+            )
+
+            self.logger.info(
+                "Successfully merged into Delta table",
+                extra={
+                    "rows_affected": rows_affected,
+                    "merge_keys": merge_keys,
+                    "table_path": self.table_path,
+                },
+            )
+            return True
+
+        except Exception as e:
+            self.logger.error(
+                "Failed to merge into Delta table",
+                extra={
+                    "table_path": self.table_path,
+                    "merge_keys": merge_keys,
+                    "error": str(e),
+                    "row_count": len(df),
+                },
+                exc_info=True,
+            )
+            return False
+
+
+__all__ = ["BaseDeltaWriter"]

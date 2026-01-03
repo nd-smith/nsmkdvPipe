@@ -11,7 +11,7 @@
 
 | Phase | Status | Progress |
 |-------|--------|----------|
-| Phase 1: common/ | In Progress | 2/9 |
+| Phase 1: common/ | In Progress | 3/9 |
 | Phase 2: xact/ | Not Started | 0/7 |
 | Phase 3: claimx/ | Not Started | 0/11 |
 | Phase 4: Config | Not Started | 0/4 |
@@ -21,17 +21,7 @@
 
 ## Phase 1: Create common/ Infrastructure
 
-**REORG-102: Move Core Infrastructure to common/** [ASSIGNED] (P2)
-- Move `consumer.py` → `common/consumer.py`
-- Move `producer.py` → `common/producer.py`
-- Move `metrics.py` → `common/metrics.py`
-- Move `monitoring.py` → `common/monitoring.py`
-- Update all imports in moved files
-- Add re-exports from old locations for backward compatibility (temporary)
-- Size: Medium
-- Dependencies: REORG-101
-
-**REORG-104: Move dlq/ Module to common/** (P2)
+**REORG-104: Move dlq/ Module to common/** [ASSIGNED] (P2)
 - Move `dlq/handler.py` → `common/dlq/handler.py`
 - Move `dlq/cli.py` → `common/dlq/cli.py`
 - Update imports
@@ -39,14 +29,14 @@
 - Size: Small
 - Dependencies: REORG-101
 
-**REORG-105: Move storage/ Module to common/** (P2)
+**REORG-105: Move storage/ Module to common/** [ASSIGNED] (P2)
 - Move `storage/onelake_client.py` → `common/storage/onelake_client.py`
 - Update imports
 - Add re-exports from old location
 - Size: Small
 - Dependencies: REORG-101
 
-**REORG-106: Create common/writers/base.py** (P2)
+**REORG-106: Create common/writers/base.py** [ASSIGNED] (P2)
 - Extract base Delta writer functionality from existing writers
 - Create `common/writers/base.py` with `BaseDeltaWriter` class
 - Create `common/writers/delta_writer.py` for generic operations
@@ -391,6 +381,17 @@ Phase 5: Remove verisk_pipeline/
 - No code moves - structure only
 - Size: Small
 - Dependencies: None
+
+**REORG-102: Move Core Infrastructure to common/** (P2) - `c70d8f5`
+- Moved `consumer.py` → `common/consumer.py`
+- Moved `producer.py` → `common/producer.py`
+- Moved `metrics.py` → `common/metrics.py`
+- Moved `monitoring.py` → `common/monitoring.py`
+- Updated all imports in moved files to reference new `common/` paths
+- Added re-exports from old locations for backward compatibility (temporary)
+- Updated `common/__init__.py` to expose BaseKafkaConsumer and BaseKafkaProducer
+- Size: Medium
+- Dependencies: REORG-101
 
 **REORG-103: Move retry/ Module to common/** (P2) - `c70d8f5`
 - Moved `retry/handler.py` → `common/retry/handler.py`

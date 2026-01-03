@@ -1,6 +1,13 @@
-"""Dead-letter queue (DLQ) handler for manual review and replay."""
+"""
+Dead-letter queue (DLQ) handler for manual review and replay.
 
-from kafka_pipeline.dlq.handler import DLQHandler
+DEPRECATED: This module has moved to kafka_pipeline.common.dlq
+Import from kafka_pipeline.common.dlq instead.
+These re-exports are for backward compatibility only.
+"""
+
+# Re-export from new location in common/
+from kafka_pipeline.common.dlq.handler import DLQHandler
 
 __all__ = [
     "DLQHandler",
