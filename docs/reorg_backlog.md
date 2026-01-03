@@ -411,7 +411,7 @@ Phase 5: Remove verisk_pipeline/
 - Size: Medium
 - Dependencies: REORG-101
 
-**REORG-201: Create xact/ Directory Structure** (P2) - `TBD`
+**REORG-201: Create xact/ Directory Structure** (P2) - `e490b9a`
 - Created `kafka_pipeline/xact/` with `__init__.py`
 - Created subdirectories: `schemas/`, `workers/`, `writers/`
 - Added `__init__.py` to each subdirectory
