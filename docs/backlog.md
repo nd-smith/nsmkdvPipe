@@ -49,16 +49,6 @@
 
 ### P3 - Low Priority
 
-
-**TECH-001: Refactor EventIngesterWorker for Separate Consumer/Producer Configs**
-- Location: `kafka_pipeline/__main__.py:157`
-- Currently `EventIngesterWorker` accepts single `KafkaConfig` for both consumer and producer
-- In Event Hub mode, should read from Event Hub (consumer) but write to local Kafka (producer)
-- `run_event_ingester()` receives both configs but only passes `eventhub_config`
-- **Note:** Only affects `EVENT_SOURCE=eventhub` mode; Eventhouse mode works correctly
-- Size: Small
-- See: [Research Notes](#tech-001-research-notes)
-
 ---
 
 ## Blocked
@@ -72,6 +62,15 @@
 ## Completed
 
 <!-- Done tasks with commit references -->
+
+**TECH-001: Refactor EventIngesterWorker for Separate Consumer/Producer Configs** ✓
+- Modified `EventIngesterWorker.__init__` to accept optional `producer_config` parameter
+- Added `consumer_config` and `producer_config` attributes (consumer_config is primary, producer_config defaults to consumer_config)
+- Updated `start()` to use `producer_config` for producer, `consumer_config` for consumer
+- Updated `run_event_ingester()` to pass `local_kafka_config` as `producer_config`
+- Added backward-compatible `config` property returning `consumer_config`
+- **Impact**: Event Hub mode now correctly writes to local Kafka instead of Event Hub
+- Size: Small
 
 **TECH-002: Move Inline Imports to Top of Files** ✓
 - Audited all inline imports in `kafka_pipeline/` directory
@@ -133,7 +132,7 @@
   - `WORKER_STAGES` - used in multi-worker logging setup
   - `logger` - module-level logger, properly initialized
   - `_shutdown_event` - global for graceful shutdown coordination
-- One TODO comment (line 150) documents TECH-001 for future work
+- TECH-001 TODO comment removed (issue fixed in separate PR)
 - Inline imports are intentional for lazy loading and circular import avoidance
 - Code quality is good: clear docstrings, well-organized sections, proper signal handling
 - No changes required

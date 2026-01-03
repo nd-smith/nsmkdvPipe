@@ -22,7 +22,7 @@ Delta table: xact_events (with all 28 flattened columns)
 import asyncio
 import json
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, Optional, Set
 
 from aiokafka.structs import ConsumerRecord
 from pydantic import ValidationError
@@ -75,17 +75,22 @@ class EventIngesterWorker:
         enable_delta_writes: bool = True,
         events_table_path: str = "",
         domain: str = "xact",
+        producer_config: Optional[KafkaConfig] = None,
     ):
         """
         Initialize event ingester worker.
 
         Args:
-            config: Kafka configuration with topic names and connection settings
+            config: Kafka configuration for consumer (topic names, connection settings)
             enable_delta_writes: Whether to enable Delta Lake writes (default: True)
             events_table_path: Full abfss:// path to xact_events Delta table
             domain: Domain identifier for OneLake routing (e.g., "xact", "claimx")
+            producer_config: Optional separate Kafka config for producer. If not provided,
+                uses the consumer config. This is needed when reading from Event Hub
+                but writing to local Kafka.
         """
-        self.config = config
+        self.consumer_config = config
+        self.producer_config = producer_config if producer_config else config
         self.domain = domain
         self.producer: Optional[BaseKafkaProducer] = None
         self.consumer: Optional[BaseKafkaConsumer] = None
@@ -115,11 +120,17 @@ class EventIngesterWorker:
             extra={
                 "consumer_group": self.consumer_group,
                 "events_topic": config.events_topic,
-                "pending_topic": config.downloads_pending_topic,
+                "pending_topic": self.producer_config.downloads_pending_topic,
                 "delta_writes_enabled": self.enable_delta_writes,
                 "pipeline_domain": self.domain,
+                "separate_producer_config": producer_config is not None,
             },
         )
+
+    @property
+    def config(self) -> KafkaConfig:
+        """Backward-compatible property returning consumer_config."""
+        return self.consumer_config
 
     async def start(self) -> None:
         """
@@ -133,14 +144,14 @@ class EventIngesterWorker:
         """
         logger.info("Starting EventIngesterWorker")
 
-        # Start producer first
-        self.producer = BaseKafkaProducer(self.config)
+        # Start producer first (uses producer_config for local Kafka)
+        self.producer = BaseKafkaProducer(self.producer_config)
         await self.producer.start()
 
-        # Create and start consumer with message handler
+        # Create and start consumer with message handler (uses consumer_config)
         self.consumer = BaseKafkaConsumer(
-            config=self.config,
-            topics=[self.config.events_topic],
+            config=self.consumer_config,
+            topics=[self.consumer_config.events_topic],
             group_id=self.consumer_group,
             message_handler=self._handle_event_message,
         )
@@ -476,7 +487,7 @@ class EventIngesterWorker:
         # Produce download task to pending topic
         try:
             metadata = await self.producer.send(
-                topic=self.config.downloads_pending_topic,
+                topic=self.producer_config.downloads_pending_topic,
                 key=event.trace_id,
                 value=download_task,
                 headers={"trace_id": event.trace_id},

@@ -138,6 +138,9 @@ async def run_event_ingester(
 
     Reads events from Event Hub and produces download tasks to local Kafka.
     Uses separate configs: eventhub_config for consumer, local_kafka_config for producer.
+
+    Supports graceful shutdown: when shutdown event is set, the worker
+    finishes its current batch before exiting.
     """
     from kafka_pipeline.workers.event_ingester import EventIngesterWorker
 
@@ -151,8 +154,27 @@ async def run_event_ingester(
         domain=domain,
         producer_config=local_kafka_config,
     )
+    shutdown_event = get_shutdown_event()
 
-    await worker.start()
+    async def shutdown_watcher():
+        """Wait for shutdown signal and stop worker gracefully."""
+        await shutdown_event.wait()
+        logger.info("Shutdown signal received, stopping event ingester...")
+        await worker.stop()
+
+    # Start shutdown watcher alongside worker
+    watcher_task = asyncio.create_task(shutdown_watcher())
+
+    try:
+        await worker.start()
+    finally:
+        watcher_task.cancel()
+        try:
+            await watcher_task
+        except asyncio.CancelledError:
+            pass
+        # Clean up resources after worker exits
+        await worker.stop()
 
 
 async def run_eventhouse_poller(pipeline_config):
@@ -284,6 +306,9 @@ async def run_result_processor(kafka_config, enable_delta_writes: bool = True):
     Reads download results from local Kafka and writes to Delta Lake tables:
     - xact_attachments: successful downloads
     - xact_attachments_failed: permanent failures (optional)
+
+    Supports graceful shutdown: when shutdown event is set, the worker
+    flushes pending batches before exiting.
     """
     from kafka_pipeline.workers.result_processor import ResultProcessor
 
@@ -301,8 +326,27 @@ async def run_result_processor(kafka_config, enable_delta_writes: bool = True):
         batch_size=100,
         batch_timeout_seconds=5.0,
     )
+    shutdown_event = get_shutdown_event()
 
-    await worker.start()
+    async def shutdown_watcher():
+        """Wait for shutdown signal and stop worker gracefully."""
+        await shutdown_event.wait()
+        logger.info("Shutdown signal received, stopping result processor...")
+        await worker.stop()
+
+    # Start shutdown watcher alongside worker
+    watcher_task = asyncio.create_task(shutdown_watcher())
+
+    try:
+        await worker.start()
+    finally:
+        watcher_task.cancel()
+        try:
+            await watcher_task
+        except asyncio.CancelledError:
+            pass
+        # Clean up resources after worker exits
+        await worker.stop()
 
 
 async def run_local_event_ingester(
@@ -315,6 +359,9 @@ async def run_local_event_ingester(
 
     Used in Eventhouse mode where the poller publishes to events.raw
     and the ingester processes events to downloads.pending.
+
+    Supports graceful shutdown: when shutdown event is set, the worker
+    finishes its current batch before exiting.
     """
     from kafka_pipeline.workers.event_ingester import EventIngesterWorker
 
@@ -327,8 +374,27 @@ async def run_local_event_ingester(
         events_table_path=events_table_path,
         domain=domain,
     )
+    shutdown_event = get_shutdown_event()
 
-    await worker.start()
+    async def shutdown_watcher():
+        """Wait for shutdown signal and stop worker gracefully."""
+        await shutdown_event.wait()
+        logger.info("Shutdown signal received, stopping event ingester...")
+        await worker.stop()
+
+    # Start shutdown watcher alongside worker
+    watcher_task = asyncio.create_task(shutdown_watcher())
+
+    try:
+        await worker.start()
+    finally:
+        watcher_task.cancel()
+        try:
+            await watcher_task
+        except asyncio.CancelledError:
+            pass
+        # Clean up resources after worker exits
+        await worker.stop()
 
 
 async def run_all_workers(
