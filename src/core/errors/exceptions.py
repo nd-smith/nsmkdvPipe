@@ -5,27 +5,11 @@ Provides typed exceptions with retry classification to enable
 intelligent error handling throughout the pipeline.
 """
 
-from enum import Enum
 from typing import Optional
 
-
-class ErrorCategory(Enum):
-    """Classification of error types for handling decisions."""
-
-    # Transient - should retry with backoff
-    TRANSIENT = "transient"
-
-    # Auth - should refresh credentials and retry
-    AUTH = "auth"
-
-    # Permanent - should not retry, mark as failed
-    PERMANENT = "permanent"
-
-    # Circuit - upstream is unhealthy, reject fast
-    CIRCUIT_OPEN = "circuit_open"
-
-    # Unknown - default, may retry conservatively
-    UNKNOWN = "unknown"
+# Import ErrorCategory from canonical source to avoid duplicate enum issues
+# (comparing enums from different classes always returns False)
+from core.types import ErrorCategory
 
 
 class PipelineError(Exception):

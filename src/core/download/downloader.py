@@ -11,6 +11,7 @@ Clean interface: DownloadTask -> DownloadOutcome
 """
 
 import asyncio
+import errno
 from pathlib import Path
 from typing import Optional
 
@@ -254,9 +255,18 @@ class AttachmentDownloader:
             )
 
         except OSError as e:
+            # ENOENT (file/directory not found) is often transient:
+            # - Race condition with temp directory cleanup
+            # - Windows directory creation timing issues
+            # Other OSErrors (disk full, permissions) are permanent
+            error_category = (
+                ErrorCategory.TRANSIENT
+                if e.errno == errno.ENOENT
+                else ErrorCategory.PERMANENT
+            )
             return DownloadOutcome.download_failure(
                 error_message=f"File write error: {str(e)}",
-                error_category=ErrorCategory.PERMANENT,
+                error_category=error_category,
             )
 
     async def _download_streaming(
