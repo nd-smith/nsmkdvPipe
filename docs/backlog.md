@@ -41,6 +41,14 @@
 - Increase readability
 - Size: Medium
 
+**TECH-014: Review event_ingester.py Structure and Remove Dead Code**
+- Location: `kafka_pipeline/workers/event_ingester.py`
+- Review overall code structure and organization
+- Remove dead/unreachable code paths
+- Apply best practices (single responsibility, reduce complexity)
+- Increase readability
+- Size: Medium
+
 ---
 
 ## Ready
@@ -164,6 +172,20 @@
 - Code quality is good: clear docstrings, type hints, proper configuration precedence
 - No changes required
 - Size: Small (review only)
+
+**TECH-010: Review download_worker.py Structure and Remove Dead Code** ✓
+- Reviewed `kafka_pipeline/workers/download_worker.py` (963 lines, 1 dataclass + 1 class with 16 methods)
+- **Finding**: Minimal dead code - 3 unused imports
+- **Fixed**: Removed unused imports:
+  - `Dict` from `typing` (not used in type hints)
+  - `update_consumer_lag` from metrics (never called)
+  - `update_consumer_offset` from metrics (never called)
+- All methods are in use:
+  - Public: `start()`, `stop()`, `request_shutdown()`, `is_running`, `in_flight_count` - used in production and tests
+  - Private: `_create_consumer()`, `_consume_batch_loop()`, `_process_batch()`, etc. - all used internally
+- `TaskResult` dataclass used internally and in tests
+- Code quality is good: clear docstrings, proper error handling, concurrent batch processing
+- Size: Small (just import cleanup)
 
 **TECH-020: Ensure File Names are Logical and Descriptive** ✓
 - Audited all file names across `kafka_pipeline/` and `core/` packages

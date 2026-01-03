@@ -31,7 +31,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import List, Optional, Set
 
 import aiohttp
 from aiokafka import AIOKafkaConsumer
@@ -54,8 +54,6 @@ from kafka_pipeline.metrics import (
     record_processing_error,
     update_connection_status,
     update_assigned_partitions,
-    update_consumer_lag,
-    update_consumer_offset,
     update_downloads_concurrent,
     update_downloads_batch_size,
     message_processing_duration_seconds,
