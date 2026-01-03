@@ -118,13 +118,6 @@ Examples:
     )
 
     parser.add_argument(
-        "--json-logs",
-        action="store_true",
-        default=None,
-        help="Enable JSON formatted logs (default: from JSON_LOGS env var or True)",
-    )
-
-    parser.add_argument(
         "--log-dir",
         type=str,
         default=None,
@@ -466,11 +459,9 @@ def main():
     # Determine log configuration
     log_level = getattr(logging, args.log_level)
 
-    # JSON logs: CLI arg > env var > default True
-    if args.json_logs is not None:
-        json_logs = args.json_logs
-    else:
-        json_logs = os.getenv("JSON_LOGS", "true").lower() in ("true", "1", "yes")
+    # JSON logs: controlled via JSON_LOGS env var (default: true)
+    # Set JSON_LOGS=false for human-readable logs during local development
+    json_logs = os.getenv("JSON_LOGS", "true").lower() in ("true", "1", "yes")
 
     # Log directory: CLI arg > env var > default ./logs
     log_dir_str = args.log_dir or os.getenv("LOG_DIR", "logs")
