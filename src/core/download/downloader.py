@@ -239,7 +239,11 @@ class AttachmentDownloader:
 
         # Write content to file
         try:
-            task.destination.parent.mkdir(parents=True, exist_ok=True)
+            # Use asyncio.to_thread for mkdir to ensure proper synchronization
+            # on Windows, where synchronous mkdir may not be immediately visible
+            await asyncio.to_thread(
+                task.destination.parent.mkdir, parents=True, exist_ok=True
+            )
             await asyncio.to_thread(task.destination.write_bytes, response.content)
 
             return DownloadOutcome.success_outcome(
@@ -269,7 +273,11 @@ class AttachmentDownloader:
             DownloadOutcome
         """
         # Ensure parent directory exists
-        task.destination.parent.mkdir(parents=True, exist_ok=True)
+        # Use asyncio.to_thread for mkdir to ensure proper synchronization
+        # on Windows, where synchronous mkdir may not be immediately visible
+        await asyncio.to_thread(
+            task.destination.parent.mkdir, parents=True, exist_ok=True
+        )
 
         result, error = await download_to_file(
             url=task.url,
