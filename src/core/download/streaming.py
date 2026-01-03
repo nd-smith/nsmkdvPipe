@@ -66,6 +66,7 @@ async def stream_download_url(
     timeout: int = 60,
     chunk_size: int = CHUNK_SIZE,
     allow_redirects: bool = True,
+    sock_read_timeout: int = 30,
 ) -> tuple[Optional[StreamDownloadResponse], Optional[StreamDownloadError]]:
     """
     Stream download content from URL using async HTTP with chunked reading.
@@ -86,6 +87,9 @@ async def stream_download_url(
         timeout: Timeout in seconds (default: 60)
         chunk_size: Size of chunks in bytes (default: 8MB)
         allow_redirects: Whether to follow redirects (default: True for S3 presigned URLs)
+        sock_read_timeout: Timeout for individual socket read operations in seconds
+            (default: 30). Prevents hanging on stalled connections where the server
+            stops sending data but keeps the connection open.
 
     Returns:
         Tuple of (StreamDownloadResponse, None) on success
@@ -109,9 +113,11 @@ async def stream_download_url(
     """
     try:
         # Create the HTTP request context
+        # sock_read timeout ensures we don't hang on stalled connections
+        # where the server stops sending data mid-stream
         response_ctx = session.get(
             url,
-            timeout=aiohttp.ClientTimeout(total=timeout),
+            timeout=aiohttp.ClientTimeout(total=timeout, sock_read=sock_read_timeout),
             allow_redirects=allow_redirects,
         )
 
@@ -194,6 +200,7 @@ async def download_to_file(
     session: aiohttp.ClientSession,
     timeout: int = 120,
     chunk_size: int = CHUNK_SIZE,
+    sock_read_timeout: int = 30,
 ) -> tuple[Optional[DownloadToFileResult], Optional[StreamDownloadError]]:
     """
     Download URL content directly to file using streaming.
@@ -207,6 +214,8 @@ async def download_to_file(
         session: aiohttp ClientSession (caller manages lifecycle)
         timeout: Timeout in seconds (default: 120 for large files)
         chunk_size: Size of chunks in bytes (default: 8MB)
+        sock_read_timeout: Timeout for individual socket read operations in seconds
+            (default: 30). Prevents hanging on stalled connections.
 
     Returns:
         Tuple of (DownloadToFileResult, None) on success
@@ -229,6 +238,7 @@ async def download_to_file(
         session=session,
         timeout=timeout,
         chunk_size=chunk_size,
+        sock_read_timeout=sock_read_timeout,
     )
 
     if error:

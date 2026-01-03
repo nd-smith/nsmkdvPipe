@@ -62,6 +62,7 @@ async def download_url(
     session: aiohttp.ClientSession,
     timeout: int = 60,
     allow_redirects: bool = True,
+    sock_read_timeout: int = 30,
 ) -> tuple[Optional[DownloadResponse], Optional[DownloadError]]:
     """
     Download content from URL using async HTTP.
@@ -77,6 +78,9 @@ async def download_url(
         session: aiohttp ClientSession (caller manages lifecycle)
         timeout: Timeout in seconds (default: 60)
         allow_redirects: Whether to follow redirects (default: True for S3 presigned URLs)
+        sock_read_timeout: Timeout for individual socket read operations in seconds
+            (default: 30). Prevents hanging on stalled connections where the server
+            stops sending data but keeps the connection open.
 
     Returns:
         Tuple of (DownloadResponse, None) on success
@@ -99,9 +103,11 @@ async def download_url(
                 pass
     """
     try:
+        # sock_read timeout ensures we don't hang on stalled connections
+        # where the server stops sending data mid-transfer
         async with session.get(
             url,
-            timeout=aiohttp.ClientTimeout(total=timeout),
+            timeout=aiohttp.ClientTimeout(total=timeout, sock_read=sock_read_timeout),
             allow_redirects=allow_redirects,
         ) as response:
             # Check status code
