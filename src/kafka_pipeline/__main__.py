@@ -5,11 +5,17 @@ Usage:
     # Run all workers
     python -m kafka_pipeline
 
-    # Run specific worker
-    python -m kafka_pipeline --worker event-ingester
-    python -m kafka_pipeline --worker download
-    python -m kafka_pipeline --worker upload
-    python -m kafka_pipeline --worker result-processor
+    # Run specific xact worker
+    python -m kafka_pipeline --worker xact-event-ingester
+    python -m kafka_pipeline --worker xact-download
+    python -m kafka_pipeline --worker xact-upload
+    python -m kafka_pipeline --worker xact-result-processor
+
+    # Run specific claimx worker
+    python -m kafka_pipeline --worker claimx-ingester
+    python -m kafka_pipeline --worker claimx-enricher
+    python -m kafka_pipeline --worker claimx-downloader
+    python -m kafka_pipeline --worker claimx-uploader
 
     # Run with metrics server
     python -m kafka_pipeline --metrics-port 8000
@@ -23,10 +29,14 @@ Event Source Configuration:
     - eventhouse: Poll Microsoft Fabric Eventhouse
 
 Architecture:
-    Download and Upload workers are decoupled for independent scaling:
-    - Event Source: Event Hub or Eventhouse → downloads.pending
-    - Download Worker: downloads.pending → local cache → downloads.cached
-    - Upload Worker: downloads.cached → OneLake → downloads.results
+    xact Domain:
+        Event Source → xact events → downloads.pending → download worker →
+        downloads.cached → upload worker → downloads.results → result processor
+
+    claimx Domain:
+        Event Source → claimx events → enrichment.pending → enrichment worker →
+        entity tables + downloads.pending → download worker → downloads.cached →
+        upload worker → downloads.results
 """
 
 import argparse
@@ -44,7 +54,10 @@ from core.logging.context import set_log_context
 from core.logging.setup import get_logger, setup_logging, setup_multi_worker_logging
 
 # Worker stages for multi-worker logging
-WORKER_STAGES = ["event-ingester", "download", "upload", "result-processor"]
+WORKER_STAGES = [
+    "xact-event-ingester", "xact-download", "xact-upload", "xact-result-processor",
+    "claimx-ingester", "claimx-enricher", "claimx-downloader", "claimx-uploader"
+]
 
 # Placeholder logger until setup_logging() is called in main()
 # This allows module-level logging before full initialization
@@ -73,8 +86,11 @@ Examples:
     # Run all workers (Event Hub → Local Kafka pipeline)
     python -m kafka_pipeline
 
-    # Run only the download worker
-    python -m kafka_pipeline --worker download
+    # Run specific xact worker
+    python -m kafka_pipeline --worker xact-download
+
+    # Run specific claimx worker
+    python -m kafka_pipeline --worker claimx-enricher
 
     # Run in development mode (local Kafka only)
     python -m kafka_pipeline --dev
@@ -86,7 +102,11 @@ Examples:
 
     parser.add_argument(
         "--worker",
-        choices=["event-ingester", "download", "upload", "result-processor", "all"],
+        choices=[
+            "xact-event-ingester", "xact-download", "xact-upload", "xact-result-processor",
+            "claimx-ingester", "claimx-enricher", "claimx-downloader", "claimx-uploader",
+            "all"
+        ],
         default="all",
         help="Which worker(s) to run (default: all)",
     )
@@ -142,10 +162,10 @@ async def run_event_ingester(
     Supports graceful shutdown: when shutdown event is set, the worker
     finishes its current batch before exiting.
     """
-    from kafka_pipeline.workers.event_ingester import EventIngesterWorker
+    from kafka_pipeline.xact.workers.event_ingester import EventIngesterWorker
 
-    set_log_context(stage="event-ingester")
-    logger.info("Starting Event Ingester worker...")
+    set_log_context(stage="xact-event-ingester")
+    logger.info("Starting xact Event Ingester worker...")
 
     worker = EventIngesterWorker(
         config=eventhub_config,
@@ -254,10 +274,10 @@ async def run_download_worker(kafka_config):
     Supports graceful shutdown: when shutdown event is set, the worker
     finishes its current batch before exiting.
     """
-    from kafka_pipeline.workers.download_worker import DownloadWorker
+    from kafka_pipeline.xact.workers.download_worker import DownloadWorker
 
-    set_log_context(stage="download")
-    logger.info("Starting Download worker...")
+    set_log_context(stage="xact-download")
+    logger.info("Starting xact Download worker...")
 
     worker = DownloadWorker(config=kafka_config)
     shutdown_event = get_shutdown_event()
@@ -292,10 +312,10 @@ async def run_upload_worker(kafka_config):
     Supports graceful shutdown: when shutdown event is set, the worker
     finishes its current batch before exiting.
     """
-    from kafka_pipeline.workers.upload_worker import UploadWorker
+    from kafka_pipeline.xact.workers.upload_worker import UploadWorker
 
-    set_log_context(stage="upload")
-    logger.info("Starting Upload worker...")
+    set_log_context(stage="xact-upload")
+    logger.info("Starting xact Upload worker...")
 
     worker = UploadWorker(config=kafka_config)
     shutdown_event = get_shutdown_event()
@@ -331,10 +351,10 @@ async def run_result_processor(kafka_config, enable_delta_writes: bool = True):
     Supports graceful shutdown: when shutdown event is set, the worker
     flushes pending batches before exiting.
     """
-    from kafka_pipeline.workers.result_processor import ResultProcessor
+    from kafka_pipeline.xact.workers.result_processor import ResultProcessor
 
-    set_log_context(stage="result-processor")
-    logger.info("Starting Result Processor worker...")
+    set_log_context(stage="xact-result-processor")
+    logger.info("Starting xact Result Processor worker...")
 
     # Get table paths from environment
     inventory_table_path = os.getenv("DELTA_INVENTORY_TABLE_PATH", "")
@@ -384,10 +404,10 @@ async def run_local_event_ingester(
     Supports graceful shutdown: when shutdown event is set, the worker
     finishes its current batch before exiting.
     """
-    from kafka_pipeline.workers.event_ingester import EventIngesterWorker
+    from kafka_pipeline.xact.workers.event_ingester import EventIngesterWorker
 
-    set_log_context(stage="event-ingester")
-    logger.info("Starting Event Ingester (local Kafka mode)...")
+    set_log_context(stage="xact-event-ingester")
+    logger.info("Starting xact Event Ingester (local Kafka mode)...")
 
     worker = EventIngesterWorker(
         config=local_kafka_config,
@@ -401,6 +421,165 @@ async def run_local_event_ingester(
         """Wait for shutdown signal and stop worker gracefully."""
         await shutdown_event.wait()
         logger.info("Shutdown signal received, stopping event ingester...")
+        await worker.stop()
+
+    # Start shutdown watcher alongside worker
+    watcher_task = asyncio.create_task(shutdown_watcher())
+
+    try:
+        await worker.start()
+    finally:
+        watcher_task.cancel()
+        try:
+            await watcher_task
+        except asyncio.CancelledError:
+            pass
+        # Clean up resources after worker exits
+        await worker.stop()
+
+
+async def run_claimx_event_ingester(
+    kafka_config,
+    enable_delta_writes: bool = True,
+    events_table_path: str = "",
+):
+    """Run the ClaimX Event Ingester worker.
+
+    Reads ClaimX events from events topic and produces enrichment tasks to local Kafka.
+
+    Supports graceful shutdown: when shutdown event is set, the worker
+    finishes its current batch before exiting.
+    """
+    from kafka_pipeline.claimx.workers.event_ingester import ClaimXEventIngesterWorker
+
+    set_log_context(stage="claimx-ingester")
+    logger.info("Starting ClaimX Event Ingester worker...")
+
+    worker = ClaimXEventIngesterWorker(
+        config=kafka_config,
+        enable_delta_writes=enable_delta_writes,
+        events_table_path=events_table_path,
+    )
+    shutdown_event = get_shutdown_event()
+
+    async def shutdown_watcher():
+        """Wait for shutdown signal and stop worker gracefully."""
+        await shutdown_event.wait()
+        logger.info("Shutdown signal received, stopping claimx event ingester...")
+        await worker.stop()
+
+    # Start shutdown watcher alongside worker
+    watcher_task = asyncio.create_task(shutdown_watcher())
+
+    try:
+        await worker.start()
+    finally:
+        watcher_task.cancel()
+        try:
+            await watcher_task
+        except asyncio.CancelledError:
+            pass
+        # Clean up resources after worker exits
+        await worker.stop()
+
+
+async def run_claimx_enrichment_worker(kafka_config):
+    """Run the ClaimX Enrichment Worker.
+
+    Reads enrichment tasks from local Kafka, calls ClaimX API to fetch entity data,
+    writes to Delta Lake entity tables, and produces download tasks for media files.
+
+    Supports graceful shutdown: when shutdown event is set, the worker
+    finishes its current batch before exiting.
+    """
+    from kafka_pipeline.claimx.workers.enrichment_worker import ClaimXEnrichmentWorker
+
+    set_log_context(stage="claimx-enricher")
+    logger.info("Starting ClaimX Enrichment worker...")
+
+    worker = ClaimXEnrichmentWorker(config=kafka_config)
+    shutdown_event = get_shutdown_event()
+
+    async def shutdown_watcher():
+        """Wait for shutdown signal and stop worker gracefully."""
+        await shutdown_event.wait()
+        logger.info("Shutdown signal received, stopping enrichment worker...")
+        await worker.stop()
+
+    # Start shutdown watcher alongside worker
+    watcher_task = asyncio.create_task(shutdown_watcher())
+
+    try:
+        await worker.start()
+    finally:
+        watcher_task.cancel()
+        try:
+            await watcher_task
+        except asyncio.CancelledError:
+            pass
+        # Clean up resources after worker exits
+        await worker.stop()
+
+
+async def run_claimx_download_worker(kafka_config):
+    """Run the ClaimX Download Worker.
+
+    Reads download tasks from local Kafka, downloads files from presigned URLs
+    to local cache, and produces CachedDownloadMessage for the upload worker.
+
+    Supports graceful shutdown: when shutdown event is set, the worker
+    finishes its current batch before exiting.
+    """
+    from kafka_pipeline.claimx.workers.download_worker import ClaimXDownloadWorker
+
+    set_log_context(stage="claimx-downloader")
+    logger.info("Starting ClaimX Download worker...")
+
+    worker = ClaimXDownloadWorker(config=kafka_config)
+    shutdown_event = get_shutdown_event()
+
+    async def shutdown_watcher():
+        """Wait for shutdown signal and stop worker gracefully."""
+        await shutdown_event.wait()
+        logger.info("Shutdown signal received, stopping claimx download worker...")
+        await worker.stop()
+
+    # Start shutdown watcher alongside worker
+    watcher_task = asyncio.create_task(shutdown_watcher())
+
+    try:
+        await worker.start()
+    finally:
+        watcher_task.cancel()
+        try:
+            await watcher_task
+        except asyncio.CancelledError:
+            pass
+        # Clean up resources after worker exits
+        await worker.stop()
+
+
+async def run_claimx_upload_worker(kafka_config):
+    """Run the ClaimX Upload Worker.
+
+    Reads cached downloads from local Kafka, uploads files to OneLake,
+    and produces UploadResultMessage.
+
+    Supports graceful shutdown: when shutdown event is set, the worker
+    finishes its current batch before exiting.
+    """
+    from kafka_pipeline.claimx.workers.upload_worker import ClaimXUploadWorker
+
+    set_log_context(stage="claimx-uploader")
+    logger.info("Starting ClaimX Upload worker...")
+
+    worker = ClaimXUploadWorker(config=kafka_config)
+    shutdown_event = get_shutdown_event()
+
+    async def shutdown_watcher():
+        """Wait for shutdown signal and stop worker gracefully."""
+        await shutdown_event.wait()
+        logger.info("Shutdown signal received, stopping claimx upload worker...")
         await worker.stop()
 
     # Start shutdown watcher alongside worker
@@ -459,7 +638,7 @@ async def run_all_workers(
                     events_table_path=eventhouse_events_path,
                     domain=pipeline_config.domain,
                 ),
-                name="event-ingester",
+                name="xact-event-ingester",
             )
         )
         logger.info("Using Eventhouse as event source (Delta writes handled by poller)")
@@ -475,7 +654,7 @@ async def run_all_workers(
                     events_table_path=pipeline_config.events_table_path,
                     domain=pipeline_config.domain,
                 ),
-                name="event-ingester",
+                name="xact-event-ingester",
             )
         )
         logger.info("Using Event Hub as event source")
@@ -484,15 +663,15 @@ async def run_all_workers(
     tasks.extend([
         asyncio.create_task(
             run_download_worker(local_kafka_config),
-            name="download-worker",
+            name="xact-download",
         ),
         asyncio.create_task(
             run_upload_worker(local_kafka_config),
-            name="upload-worker",
+            name="xact-upload",
         ),
         asyncio.create_task(
             run_result_processor(local_kafka_config, enable_delta_writes),
-            name="result-processor",
+            name="xact-result-processor",
         ),
     ])
 
@@ -645,7 +824,7 @@ def main():
     setup_signal_handlers(loop)
 
     try:
-        if args.worker == "event-ingester":
+        if args.worker == "xact-event-ingester":
             # Event ingester uses Event Hub or Eventhouse based on config
             if pipeline_config.event_source == EventSourceType.EVENTHOUSE:
                 loop.run_until_complete(run_eventhouse_poller(pipeline_config))
@@ -659,14 +838,30 @@ def main():
                         domain=pipeline_config.domain,
                     )
                 )
-        elif args.worker == "download":
+        elif args.worker == "xact-download":
             loop.run_until_complete(run_download_worker(local_kafka_config))
-        elif args.worker == "upload":
+        elif args.worker == "xact-upload":
             loop.run_until_complete(run_upload_worker(local_kafka_config))
-        elif args.worker == "result-processor":
+        elif args.worker == "xact-result-processor":
             loop.run_until_complete(
                 run_result_processor(local_kafka_config, enable_delta_writes)
             )
+        elif args.worker == "claimx-ingester":
+            # ClaimX event ingester
+            claimx_events_table_path = os.getenv("CLAIMX_EVENTS_TABLE_PATH", "")
+            loop.run_until_complete(
+                run_claimx_event_ingester(
+                    local_kafka_config,
+                    enable_delta_writes,
+                    events_table_path=claimx_events_table_path,
+                )
+            )
+        elif args.worker == "claimx-enricher":
+            loop.run_until_complete(run_claimx_enrichment_worker(local_kafka_config))
+        elif args.worker == "claimx-downloader":
+            loop.run_until_complete(run_claimx_download_worker(local_kafka_config))
+        elif args.worker == "claimx-uploader":
+            loop.run_until_complete(run_claimx_upload_worker(local_kafka_config))
         else:  # all
             loop.run_until_complete(
                 run_all_workers(pipeline_config, enable_delta_writes)

@@ -1,0 +1,485 @@
+"""
+ClaimX Event Ingester Worker - Consumes events and produces enrichment tasks.
+
+This worker is the entry point to the ClaimX pipeline:
+1. Consumes ClaimXEventMessage from claimx events topic
+2. Produces ClaimXEnrichmentTask to enrichment pending topic
+3. Writes events to Delta Lake (claimx_events table)
+
+Different from xact pipeline:
+- Produces enrichment tasks (not download tasks)
+- No URL validation at this stage (URLs come from API enrichment)
+- All events trigger enrichment (not just ones with attachments)
+
+Consumer group: {prefix}-claimx-event-ingester
+Input topic: claimx.events.raw
+Output topic: claimx.enrichment.pending
+Delta table: claimx_events
+"""
+
+import asyncio
+import json
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional, Set
+
+from aiokafka.structs import ConsumerRecord
+from pydantic import ValidationError
+
+from core.logging.setup import get_logger
+from kafka_pipeline.config import KafkaConfig
+from kafka_pipeline.common.consumer import BaseKafkaConsumer
+from kafka_pipeline.common.metrics import record_delta_write
+from kafka_pipeline.common.producer import BaseKafkaProducer
+from kafka_pipeline.claimx.schemas.events import ClaimXEventMessage
+from kafka_pipeline.claimx.schemas.tasks import ClaimXEnrichmentTask
+from kafka_pipeline.claimx.writers import ClaimXEventsDeltaWriter
+
+logger = get_logger(__name__)
+
+
+class ClaimXEventIngesterWorker:
+    """
+    Worker to consume ClaimX events and produce enrichment tasks.
+
+    Processes ClaimXEventMessage records from the claimx events topic
+    and produces ClaimXEnrichmentTask records to the enrichment pending
+    topic for processing by enrichment workers.
+
+    Unlike xact pipeline (which directly downloads attachments), claimx
+    requires API enrichment first to get entity data and download URLs.
+
+    Also writes events to Delta Lake claimx_events table for analytics
+    and deduplication tracking.
+
+    Features:
+    - Event deduplication ready (event_id preservation)
+    - All events trigger enrichment (not just file events)
+    - Non-blocking Delta Lake writes for analytics
+    - Graceful shutdown with background task tracking
+
+    Usage:
+        >>> config = KafkaConfig.from_env()
+        >>> worker = ClaimXEventIngesterWorker(config)
+        >>> await worker.start()
+        >>> # Worker runs until stopped
+        >>> await worker.stop()
+    """
+
+    def __init__(
+        self,
+        config: KafkaConfig,
+        enable_delta_writes: bool = True,
+        events_table_path: str = "",
+        enrichment_topic: str = "",
+        producer_config: Optional[KafkaConfig] = None,
+    ):
+        """
+        Initialize ClaimX event ingester worker.
+
+        Args:
+            config: Kafka configuration for consumer (topic names, connection settings)
+            enable_delta_writes: Whether to enable Delta Lake writes (default: True)
+            events_table_path: Full abfss:// path to claimx_events Delta table
+            enrichment_topic: Topic name for enrichment tasks (e.g., "claimx.enrichment.pending")
+            producer_config: Optional separate Kafka config for producer. If not provided,
+                uses the consumer config. This is needed when reading from Event Hub
+                but writing to local Kafka.
+        """
+        self.consumer_config = config
+        self.producer_config = producer_config if producer_config else config
+        self.enrichment_topic = enrichment_topic or "claimx.enrichment.pending"
+        self.producer: Optional[BaseKafkaProducer] = None
+        self.consumer: Optional[BaseKafkaConsumer] = None
+        self.delta_writer: Optional[ClaimXEventsDeltaWriter] = None
+        self.enable_delta_writes = enable_delta_writes
+
+        # Consumer group for ClaimX event ingestion
+        self.consumer_group = f"{config.consumer_group_prefix}-claimx-event-ingester"
+
+        # Initialize Delta writer if enabled and path provided
+        if self.enable_delta_writes and events_table_path:
+            self.delta_writer = ClaimXEventsDeltaWriter(
+                table_path=events_table_path,
+                dedupe_window_hours=24,
+            )
+        elif self.enable_delta_writes:
+            logger.warning(
+                "Delta writes enabled but no events_table_path provided, skipping"
+            )
+
+        # Background task tracking for graceful shutdown
+        self._pending_tasks: Set[asyncio.Task] = set()
+        self._task_counter = 0  # For unique task naming
+
+        logger.info(
+            "Initialized ClaimXEventIngesterWorker",
+            extra={
+                "consumer_group": self.consumer_group,
+                "events_topic": config.events_topic,
+                "enrichment_topic": self.enrichment_topic,
+                "delta_writes_enabled": self.enable_delta_writes,
+                "separate_producer_config": producer_config is not None,
+            },
+        )
+
+    @property
+    def config(self) -> KafkaConfig:
+        """Backward-compatible property returning consumer_config."""
+        return self.consumer_config
+
+    async def start(self) -> None:
+        """
+        Start the ClaimX event ingester worker.
+
+        Initializes producer and consumer, then begins consuming events
+        from the claimx events topic. This method runs until stop() is called.
+
+        Raises:
+            Exception: If producer or consumer fails to start
+        """
+        logger.info("Starting ClaimXEventIngesterWorker")
+
+        # Start producer first (uses producer_config for local Kafka)
+        self.producer = BaseKafkaProducer(self.producer_config)
+        await self.producer.start()
+
+        # Create and start consumer with message handler (uses consumer_config)
+        self.consumer = BaseKafkaConsumer(
+            config=self.consumer_config,
+            topics=[self.consumer_config.events_topic],
+            group_id=self.consumer_group,
+            message_handler=self._handle_event_message,
+        )
+
+        # Start consumer (this blocks until stopped)
+        await self.consumer.start()
+
+    async def stop(self) -> None:
+        """
+        Stop the ClaimX event ingester worker.
+
+        Waits for pending background tasks (with timeout), then gracefully
+        shuts down consumer and producer, committing any pending offsets
+        and flushing pending messages.
+        """
+        logger.info("Stopping ClaimXEventIngesterWorker")
+
+        # Wait for pending background tasks with timeout
+        await self._wait_for_pending_tasks(timeout_seconds=30)
+
+        # Stop consumer first (stops receiving new messages)
+        if self.consumer:
+            await self.consumer.stop()
+
+        # Then stop producer (flushes pending messages)
+        if self.producer:
+            await self.producer.stop()
+
+        logger.info("ClaimXEventIngesterWorker stopped successfully")
+
+    def _create_tracked_task(
+        self,
+        coro,
+        task_name: str,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> asyncio.Task:
+        """
+        Create a background task with tracking and lifecycle logging.
+
+        The task is added to _pending_tasks and automatically removed on completion.
+        Task lifecycle events (creation, completion, error) are logged.
+
+        Args:
+            coro: Coroutine to run as a task
+            task_name: Descriptive name for the task (e.g., "delta_write")
+            context: Optional dict of context info for logging
+
+        Returns:
+            The created asyncio.Task
+        """
+        self._task_counter += 1
+        full_name = f"{task_name}-{self._task_counter}"
+        context = context or {}
+
+        task = asyncio.create_task(coro, name=full_name)
+        self._pending_tasks.add(task)
+
+        logger.debug(
+            "Background task created",
+            extra={
+                "task_name": full_name,
+                "pending_tasks": len(self._pending_tasks),
+                **context,
+            },
+        )
+
+        def _on_task_done(t: asyncio.Task) -> None:
+            """Callback when task completes (success, error, or cancelled)."""
+            self._pending_tasks.discard(t)
+
+            if t.cancelled():
+                logger.debug(
+                    "Background task cancelled",
+                    extra={
+                        "task_name": t.get_name(),
+                        "pending_tasks": len(self._pending_tasks),
+                    },
+                )
+            elif t.exception() is not None:
+                exc = t.exception()
+                logger.error(
+                    "Background task failed",
+                    extra={
+                        "task_name": t.get_name(),
+                        "error": str(exc)[:200],
+                        "pending_tasks": len(self._pending_tasks),
+                        **context,
+                    },
+                )
+            else:
+                logger.debug(
+                    "Background task completed",
+                    extra={
+                        "task_name": t.get_name(),
+                        "pending_tasks": len(self._pending_tasks),
+                    },
+                )
+
+        task.add_done_callback(_on_task_done)
+        return task
+
+    async def _wait_for_pending_tasks(self, timeout_seconds: float = 30) -> None:
+        """
+        Wait for pending background tasks to complete with timeout.
+
+        Logs task information and handles cancellation of tasks that
+        don't complete within the timeout.
+
+        Args:
+            timeout_seconds: Maximum time to wait for tasks (default: 30s)
+        """
+        if not self._pending_tasks:
+            logger.debug("No pending background tasks to wait for")
+            return
+
+        pending_count = len(self._pending_tasks)
+        task_names = [t.get_name() for t in self._pending_tasks]
+
+        logger.info(
+            "Waiting for pending background tasks to complete",
+            extra={
+                "pending_count": pending_count,
+                "task_names": task_names,
+                "timeout_seconds": timeout_seconds,
+            },
+        )
+
+        # Copy the set since it may be modified by callbacks during gather
+        tasks_to_wait = list(self._pending_tasks)
+
+        try:
+            # Wait with timeout
+            done, pending = await asyncio.wait(
+                tasks_to_wait,
+                timeout=timeout_seconds,
+                return_when=asyncio.ALL_COMPLETED,
+            )
+
+            if pending:
+                # Log and cancel tasks that didn't complete
+                pending_names = [t.get_name() for t in pending]
+                logger.warning(
+                    "Cancelling background tasks that did not complete in time",
+                    extra={
+                        "pending_count": len(pending),
+                        "pending_task_names": pending_names,
+                        "timeout_seconds": timeout_seconds,
+                    },
+                )
+
+                for task in pending:
+                    task.cancel()
+                    logger.warning(
+                        "Cancelled pending task",
+                        extra={"task_name": task.get_name()},
+                    )
+
+                # Wait briefly for cancellations to propagate
+                await asyncio.gather(*pending, return_exceptions=True)
+
+            # Log summary of completed tasks
+            completed_count = len(done)
+            failed_count = sum(1 for t in done if t.exception() is not None)
+
+            logger.info(
+                "Background task cleanup complete",
+                extra={
+                    "completed": completed_count,
+                    "failed": failed_count,
+                    "cancelled": len(pending),
+                },
+            )
+
+        except Exception as e:
+            logger.error(
+                "Error waiting for pending tasks",
+                extra={"error": str(e)[:200]},
+                exc_info=True,
+            )
+
+    async def _handle_event_message(self, record: ConsumerRecord) -> None:
+        """
+        Process a single ClaimX event message from Kafka.
+
+        Parses the ClaimXEventMessage, creates an enrichment task, and produces
+        it to the enrichment pending topic. Also writes event to Delta Lake for
+        analytics.
+
+        Args:
+            record: ConsumerRecord containing ClaimXEventMessage JSON
+
+        Raises:
+            Exception: If message processing fails (will be handled by consumer error routing)
+        """
+        # Decode and parse ClaimXEventMessage
+        try:
+            message_data = json.loads(record.value.decode("utf-8"))
+            event = ClaimXEventMessage.from_eventhouse_row(message_data)
+        except (json.JSONDecodeError, ValidationError) as e:
+            logger.error(
+                "Failed to parse ClaimXEventMessage",
+                extra={
+                    "topic": record.topic,
+                    "partition": record.partition,
+                    "offset": record.offset,
+                    "error": str(e),
+                },
+                exc_info=True,
+            )
+            raise
+
+        logger.info(
+            "Processing ClaimX event",
+            extra={
+                "event_id": event.event_id,
+                "event_type": event.event_type,
+                "project_id": event.project_id,
+                "media_id": event.media_id,
+                "task_assignment_id": event.task_assignment_id,
+            },
+        )
+
+        # Write event to Delta Lake for analytics (non-blocking)
+        # Tracked for graceful shutdown
+        if self.delta_writer:
+            self._create_tracked_task(
+                self._write_event_to_delta(event),
+                task_name="delta_write",
+                context={"event_id": event.event_id},
+            )
+
+        # Create enrichment task for this event
+        # All events need enrichment (to fetch entity data from API)
+        await self._create_enrichment_task(event)
+
+    async def _create_enrichment_task(self, event: ClaimXEventMessage) -> None:
+        """
+        Create and produce an enrichment task for a ClaimX event.
+
+        Enrichment tasks trigger the enrichment worker to call the ClaimX API
+        to fetch entity data (projects, contacts, media, tasks, etc.) and
+        generate download tasks for any attachments.
+
+        Args:
+            event: Source ClaimXEventMessage to create enrichment task from
+        """
+        # Create enrichment task
+        enrichment_task = ClaimXEnrichmentTask(
+            event_id=event.event_id,
+            event_type=event.event_type,
+            project_id=event.project_id,
+            retry_count=0,
+            created_at=datetime.now(timezone.utc),
+            media_id=event.media_id,
+            task_assignment_id=event.task_assignment_id,
+            video_collaboration_id=event.video_collaboration_id,
+            master_file_name=event.master_file_name,
+        )
+
+        # Produce enrichment task to pending topic
+        try:
+            metadata = await self.producer.send(
+                topic=self.enrichment_topic,
+                key=event.event_id,
+                value=enrichment_task,
+                headers={"event_id": event.event_id},
+            )
+
+            logger.info(
+                "Created ClaimX enrichment task",
+                extra={
+                    "event_id": event.event_id,
+                    "event_type": event.event_type,
+                    "project_id": event.project_id,
+                    "partition": metadata.partition,
+                    "offset": metadata.offset,
+                },
+            )
+        except Exception as e:
+            logger.error(
+                "Failed to produce ClaimX enrichment task",
+                extra={
+                    "event_id": event.event_id,
+                    "event_type": event.event_type,
+                    "error": str(e),
+                },
+                exc_info=True,
+            )
+            raise
+
+    async def _write_event_to_delta(self, event: ClaimXEventMessage) -> None:
+        """
+        Write ClaimX event to Delta Lake table (background task).
+
+        This method runs as a background task and doesn't block Kafka processing.
+        Failures are logged but don't affect the main event processing flow.
+
+        Args:
+            event: ClaimXEventMessage to write to Delta
+        """
+        try:
+            # Convert to dict for writer
+            event_dict = event.model_dump()
+
+            # Write using ClaimXEventsDeltaWriter
+            success = await self.delta_writer.write_events([event_dict])
+            record_delta_write(
+                table="claimx_events",
+                event_count=1,
+                success=success,
+            )
+
+            if not success:
+                logger.warning(
+                    "Delta write failed for ClaimX event",
+                    extra={"event_id": event.event_id},
+                )
+
+        except Exception as e:
+            # Catch all exceptions to prevent background task from crashing
+            logger.error(
+                "Unexpected error writing ClaimX event to Delta",
+                extra={
+                    "event_id": event.event_id,
+                    "error": str(e),
+                },
+                exc_info=True,
+            )
+            record_delta_write(
+                table="claimx_events",
+                event_count=1,
+                success=False,
+            )
+
+
+__all__ = ["ClaimXEventIngesterWorker"]

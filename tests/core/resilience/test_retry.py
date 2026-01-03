@@ -22,7 +22,7 @@ from core.resilience.retry import (
     with_retry,
 )
 from core.types import ErrorCategory
-from verisk_pipeline.common.exceptions import (
+from kafka_pipeline.common.exceptions import (
     AuthError,
     PermanentError,
     PipelineError,

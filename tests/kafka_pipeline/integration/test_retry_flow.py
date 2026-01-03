@@ -19,8 +19,8 @@ from kafka_pipeline.config import KafkaConfig
 from kafka_pipeline.common.consumer import BaseKafkaConsumer
 from kafka_pipeline.common.producer import BaseKafkaProducer
 from kafka_pipeline.common.retry.handler import RetryHandler
-from kafka_pipeline.schemas.results import FailedDownloadMessage
-from kafka_pipeline.schemas.tasks import DownloadTaskMessage
+from kafka_pipeline.xact.schemas.results import FailedDownloadMessage
+from kafka_pipeline.xact.schemas.tasks import DownloadTaskMessage
 
 
 @pytest.mark.asyncio

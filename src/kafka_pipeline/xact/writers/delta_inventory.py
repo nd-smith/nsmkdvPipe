@@ -4,9 +4,9 @@ Delta Lake writer for attachment inventory table.
 Writes download results to the xact_attachments Delta table with:
 - Idempotency via merge on (trace_id, attachment_url)
 - Async/non-blocking writes
-- Schema compatibility with verisk_pipeline xact_attachments table
+- Schema compatibility with legacy xact_attachments table
 
-Schema aligned with verisk_pipeline Task.to_tracking_row() for compatibility.
+Schema aligned with legacy Task.to_tracking_row() format for compatibility.
 """
 
 import time
@@ -16,11 +16,11 @@ from typing import List
 import polars as pl
 
 from kafka_pipeline.common.writers.base import BaseDeltaWriter
-from kafka_pipeline.schemas.results import DownloadResultMessage
-from verisk_pipeline.xact.xact_models import XACT_PRIMARY_KEYS
+from kafka_pipeline.xact.schemas.models import XACT_PRIMARY_KEYS
+from kafka_pipeline.xact.schemas.results import DownloadResultMessage
 
 
-# Schema for xact_attachments table (matches verisk_pipeline)
+# Schema for xact_attachments table (matches legacy format)
 INVENTORY_SCHEMA = {
     "trace_id": pl.Utf8,
     "attachment_url": pl.Utf8,

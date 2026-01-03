@@ -11,7 +11,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from verisk_pipeline.storage.onelake import OneLakeClient as LegacyOneLakeClient
+from kafka_pipeline.common.storage.onelake import OneLakeClient as SyncOneLakeClient
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,7 @@ class OneLakeClient:
             connection_timeout: Connection timeout in seconds (default: 300s/5min)
         """
         self.base_path = base_path
-        self._legacy_client: Optional[LegacyOneLakeClient] = None
+        self._sync_client: Optional[SyncOneLakeClient] = None
         self._max_pool_size = max_pool_size
         self._connection_timeout = connection_timeout
 
@@ -67,11 +67,11 @@ class OneLakeClient:
         return False
 
     async def _ensure_client(self) -> None:
-        """Ensure legacy client is initialized (runs in thread pool)."""
-        if self._legacy_client is None:
+        """Ensure sync client is initialized (runs in thread pool)."""
+        if self._sync_client is None:
             # Create client in thread pool since it may do blocking I/O
             def _create():
-                client = LegacyOneLakeClient(
+                client = SyncOneLakeClient(
                     base_path=self.base_path,
                     max_pool_size=self._max_pool_size,
                     connection_timeout=self._connection_timeout,
@@ -80,16 +80,16 @@ class OneLakeClient:
                 client.__enter__()
                 return client
 
-            self._legacy_client = await asyncio.to_thread(_create)
+            self._sync_client = await asyncio.to_thread(_create)
 
-            logger.debug("Legacy OneLake client initialized")
+            logger.debug("Sync OneLake client initialized")
 
     async def close(self) -> None:
         """Close the client and release resources."""
-        if self._legacy_client is not None:
+        if self._sync_client is not None:
             # Run close in thread pool since it may do blocking I/O
-            await asyncio.to_thread(self._legacy_client.close)
-            self._legacy_client = None
+            await asyncio.to_thread(self._sync_client.close)
+            self._sync_client = None
             logger.debug("OneLake client closed")
 
     async def upload_file(
@@ -120,7 +120,7 @@ class OneLakeClient:
 
         # Run blocking upload in thread pool
         result_path = await asyncio.to_thread(
-            self._legacy_client.upload_file,  # type: ignore
+            self._sync_client.upload_file,  # type: ignore
             relative_path,
             str(local_path),
             overwrite,
@@ -161,7 +161,7 @@ class OneLakeClient:
 
         # Run blocking upload in thread pool
         result_path = await asyncio.to_thread(
-            self._legacy_client.upload_bytes,  # type: ignore
+            self._sync_client.upload_bytes,  # type: ignore
             relative_path,
             data,
             overwrite,
@@ -192,7 +192,7 @@ class OneLakeClient:
 
         # Run blocking check in thread pool
         result = await asyncio.to_thread(
-            self._legacy_client.exists,  # type: ignore
+            self._sync_client.exists,  # type: ignore
             relative_path,
         )
 
@@ -212,7 +212,7 @@ class OneLakeClient:
 
         # Run blocking delete in thread pool
         result = await asyncio.to_thread(
-            self._legacy_client.delete,  # type: ignore
+            self._sync_client.delete,  # type: ignore
             relative_path,
         )
 

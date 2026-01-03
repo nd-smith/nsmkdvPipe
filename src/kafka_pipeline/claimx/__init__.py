@@ -8,4 +8,9 @@ This module contains all ClaimX-specific logic including:
 - Delta table writers for ClaimX entities
 """
 
-__all__ = []
+from kafka_pipeline.claimx.api_client import ClaimXApiClient, ClaimXApiError
+
+__all__ = [
+    "ClaimXApiClient",
+    "ClaimXApiError",
+]

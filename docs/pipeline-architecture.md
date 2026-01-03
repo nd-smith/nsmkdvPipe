@@ -1,6 +1,112 @@
 # Kafka Pipeline Architecture
 
-## Overview: Pipeline Startup & Event Ingestion
+## Domain-Based Architecture
+
+The pipeline is organized into two independent processing domains:
+
+### Domain Structure
+
+```mermaid
+flowchart TB
+    subgraph Main["kafka_pipeline/"]
+        common["common/<br/>Shared infrastructure"]
+        xact_dir["xact/<br/>Transaction domain"]
+        claimx_dir["claimx/<br/>Claims domain"]
+    end
+
+    subgraph Common["common/ (Shared)"]
+        consumer["consumer.py<br/>producer.py"]
+        retry["retry/<br/>handler, scheduler"]
+        dlq["dlq/<br/>handler, cli"]
+        storage["storage/<br/>onelake_client"]
+        writers["writers/<br/>base.py"]
+        eventhouse["eventhouse/<br/>poller, kql_client, dedup"]
+    end
+
+    subgraph Xact["xact/ Domain"]
+        xact_workers["workers/<br/>event_ingester<br/>download_worker<br/>upload_worker<br/>result_processor"]
+        xact_schemas["schemas/<br/>events, tasks<br/>cached, results"]
+        xact_writers["writers/<br/>delta_events<br/>delta_inventory"]
+    end
+
+    subgraph ClaimX["claimx/ Domain"]
+        claimx_workers["workers/<br/>event_ingester<br/>enrichment_worker<br/>download_worker<br/>upload_worker"]
+        claimx_handlers["handlers/<br/>base, project<br/>media, task<br/>contact, video"]
+        claimx_api["api_client.py"]
+        claimx_schemas["schemas/<br/>events, tasks<br/>entities, cached, results"]
+        claimx_writers["writers/<br/>delta_events<br/>delta_entities"]
+    end
+
+    common --> xact_dir
+    common --> claimx_dir
+    xact_dir --> Xact
+    claimx_dir --> ClaimX
+```
+
+### Domain Comparison
+
+| Aspect | xact Domain | claimx Domain |
+|--------|-------------|---------------|
+| **Purpose** | Direct file downloads from transaction events | API enrichment then media file downloads |
+| **Workers** | event-ingester → download → upload → result-processor | ingester → enricher → download → upload |
+| **Topics** | `xact.events.raw`<br/>`xact.downloads.*` | `claimx.events.raw`<br/>`claimx.enrichment.pending`<br/>`claimx.downloads.*` |
+| **Data Flow** | Event → Download Task → File | Event → Enrichment Task → Entity Data + Download Task → File |
+| **External API** | None (direct downloads) | ClaimX API (projects, contacts, media, tasks, video) |
+| **Delta Tables** | `xact_events`<br/>`xact_attachments` | `claimx_events`<br/>7 entity tables<br/>(projects, contacts, media, etc.) |
+| **CLI Commands** | `xact-event-ingester`<br/>`xact-download`<br/>`xact-upload`<br/>`xact-result-processor` | `claimx-ingester`<br/>`claimx-enricher`<br/>`claimx-downloader`<br/>`claimx-uploader` |
+
+### claimx Unique Components
+
+The claimx domain includes additional components not present in xact:
+
+**Enrichment Worker**
+- Consumes `claimx.enrichment.pending` topic
+- Routes events to specialized handlers based on event type
+- Calls ClaimX API to fetch entity data (projects, contacts, media, tasks, video)
+- Writes entity data to 7 Delta tables
+- Produces download tasks for media files
+
+**Event Handlers**
+- `ProjectHandler`: Fetches project and contact data
+- `MediaHandler`: Fetches media metadata with presigned URLs (batched by project)
+- `TaskHandler`: Fetches task assignments and templates
+- `VideoCollabHandler`: Fetches video collaboration data
+- `PolicyholderHandler`: No-op handler for policyholder events
+
+**API Client**
+- `ClaimXApiClient`: HTTP client with rate limiting, circuit breaker, and retry logic
+- Configurable concurrency, timeout, and authentication (Basic auth)
+
+### Topic Naming Convention
+
+Both domains use consistent topic naming: `{domain}.{workflow}.{stage}`
+
+**xact Topics:**
+- `xact.events.raw`
+- `xact.downloads.pending`
+- `xact.downloads.cached`
+- `xact.downloads.results`
+- `xact.downloads.retry.*`
+- `xact.downloads.dlq`
+
+**claimx Topics:**
+- `claimx.events.raw`
+- `claimx.enrichment.pending`
+- `claimx.downloads.pending`
+- `claimx.downloads.cached`
+- `claimx.downloads.results`
+- `claimx.downloads.retry.*`
+- `claimx.downloads.dlq`
+
+---
+
+## Detailed Component Documentation
+
+> **Note:** The detailed architecture diagrams below focus on the xact domain implementation.
+> The claimx domain follows similar patterns with the addition of the enrichment workflow.
+> See the Domain Comparison table above for key differences.
+
+## Overview: Pipeline Startup & Event Ingestion (xact Domain)
 
 ```mermaid
 flowchart TB

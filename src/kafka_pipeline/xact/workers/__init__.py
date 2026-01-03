@@ -8,4 +8,12 @@ Contains worker implementations for the xact event processing pipeline:
 - Result processor: Processes upload results and writes to Delta tables
 """
 
-__all__ = []
+from kafka_pipeline.xact.workers.event_ingester import EventIngesterWorker
+from kafka_pipeline.xact.workers.result_processor import ResultProcessor
+from kafka_pipeline.xact.workers.upload_worker import UploadWorker
+
+__all__ = [
+    "EventIngesterWorker",
+    "ResultProcessor",
+    "UploadWorker",
+]

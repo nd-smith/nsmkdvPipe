@@ -1,14 +1,21 @@
 """
 Retry handling for Kafka pipeline.
 
-Provides retry routing logic with exponential backoff topics,
-delayed redelivery scheduling, and dead-letter queue (DLQ) handling.
+Provides:
+- Retry routing logic with exponential backoff topics
+- Delayed redelivery scheduling and dead-letter queue (DLQ) handling
+- Retry decorator with intelligent backoff for transient failures
 """
 
 from kafka_pipeline.common.retry.handler import RetryHandler
 from kafka_pipeline.common.retry.scheduler import DelayedRedeliveryScheduler
+from kafka_pipeline.common.retry.decorators import RetryConfig, with_retry, DEFAULT_RETRY, AUTH_RETRY
 
 __all__ = [
     "RetryHandler",
     "DelayedRedeliveryScheduler",
+    "RetryConfig",
+    "with_retry",
+    "DEFAULT_RETRY",
+    "AUTH_RETRY",
 ]

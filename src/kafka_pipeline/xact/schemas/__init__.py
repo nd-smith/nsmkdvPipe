@@ -18,6 +18,7 @@ Design Decisions:
 
 from kafka_pipeline.xact.schemas.cached import CachedDownloadMessage
 from kafka_pipeline.xact.schemas.events import EventMessage
+from kafka_pipeline.xact.schemas.models import EventRecord, Task, XACT_PRIMARY_KEYS
 from kafka_pipeline.xact.schemas.results import DownloadResultMessage, FailedDownloadMessage
 from kafka_pipeline.xact.schemas.tasks import DownloadTaskMessage
 
@@ -27,4 +28,7 @@ __all__ = [
     "CachedDownloadMessage",
     "DownloadResultMessage",
     "FailedDownloadMessage",
+    "EventRecord",
+    "Task",
+    "XACT_PRIMARY_KEYS",
 ]

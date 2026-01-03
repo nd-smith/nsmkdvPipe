@@ -16,7 +16,7 @@ from typing import List, Optional
 import polars as pl
 
 from core.logging.setup import get_logger
-from verisk_pipeline.storage.delta import DeltaTableWriter
+from kafka_pipeline.common.storage.delta import DeltaTableWriter
 
 
 class BaseDeltaWriter:

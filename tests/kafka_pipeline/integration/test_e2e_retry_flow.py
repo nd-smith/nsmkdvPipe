@@ -34,8 +34,8 @@ from core.download.models import DownloadOutcome
 from core.types import ErrorCategory
 from kafka_pipeline.config import KafkaConfig
 from kafka_pipeline.common.retry.scheduler import DelayedRedeliveryScheduler
-from kafka_pipeline.schemas.results import DownloadResultMessage, FailedDownloadMessage
-from kafka_pipeline.schemas.tasks import DownloadTaskMessage
+from kafka_pipeline.xact.schemas.results import DownloadResultMessage, FailedDownloadMessage
+from kafka_pipeline.xact.schemas.tasks import DownloadTaskMessage
 
 from .fixtures.generators import create_download_task_message
 from .helpers import (

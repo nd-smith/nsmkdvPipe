@@ -111,50 +111,6 @@ class ClaimXEventMessage(BaseModel):
             raise ValueError(f"{info.field_name} cannot be empty or whitespace")
         return v.strip()
 
-    def to_verisk_claimx_event(self) -> "ClaimXEvent":
-        """
-        Convert to verisk_pipeline ClaimXEvent dataclass for compatibility.
-
-        Returns:
-            verisk_pipeline.claimx.claimx_models.ClaimXEvent instance
-        """
-        # Inline import avoids circular dependency
-        from verisk_pipeline.claimx.claimx_models import ClaimXEvent
-        return ClaimXEvent(
-            event_id=self.event_id,
-            event_type=self.event_type,
-            project_id=self.project_id,
-            ingested_at=self.ingested_at,
-            media_id=self.media_id,
-            task_assignment_id=self.task_assignment_id,
-            video_collaboration_id=self.video_collaboration_id,
-            master_file_name=self.master_file_name,
-            raw_data=self.raw_data,
-        )
-
-    @classmethod
-    def from_verisk_claimx_event(cls, event: "ClaimXEvent") -> "ClaimXEventMessage":
-        """
-        Create from verisk_pipeline ClaimXEvent dataclass.
-
-        Args:
-            event: verisk_pipeline.claimx.claimx_models.ClaimXEvent instance
-
-        Returns:
-            ClaimXEventMessage instance
-        """
-        return cls(
-            event_id=event.event_id,
-            event_type=event.event_type,
-            project_id=event.project_id,
-            ingested_at=event.ingested_at,
-            media_id=event.media_id,
-            task_assignment_id=event.task_assignment_id,
-            video_collaboration_id=event.video_collaboration_id,
-            master_file_name=event.master_file_name,
-            raw_data=event.raw_data,
-        )
-
     @classmethod
     def from_eventhouse_row(cls, row: Dict[str, Any]) -> "ClaimXEventMessage":
         """

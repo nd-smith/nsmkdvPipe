@@ -37,7 +37,7 @@ from core.errors.exceptions import (
 )
 from core.resilience.circuit_breaker import CircuitState
 from kafka_pipeline.config import KafkaConfig
-from kafka_pipeline.schemas.events import EventMessage
+from kafka_pipeline.xact.schemas.events import EventMessage
 
 from .fixtures.generators import create_event_message
 from .helpers import (
@@ -102,7 +102,7 @@ async def test_circuit_breaker_open_no_offset_commit(
         await producer.start()
 
         try:
-            from kafka_pipeline.schemas.tasks import DownloadTaskMessage
+            from kafka_pipeline.xact.schemas.tasks import DownloadTaskMessage
             task = DownloadTaskMessage(
                 trace_id="circuit-test-001",
                 attachment_url="https://example.com/file.pdf",
@@ -219,7 +219,7 @@ async def test_auth_failure_no_offset_commit(
         await producer.start()
 
         try:
-            from kafka_pipeline.schemas.tasks import DownloadTaskMessage
+            from kafka_pipeline.xact.schemas.tasks import DownloadTaskMessage
             task = DownloadTaskMessage(
                 trace_id="auth-test-001",
                 attachment_url="https://example.com/secure-file.pdf",
@@ -353,7 +353,7 @@ async def test_onelake_unavailable_retry_backoff(
         await producer.start()
 
         try:
-            from kafka_pipeline.schemas.tasks import DownloadTaskMessage
+            from kafka_pipeline.xact.schemas.tasks import DownloadTaskMessage
             task = DownloadTaskMessage(
                 trace_id="onelake-retry-001",
                 attachment_url="https://example.com/document.pdf",
@@ -479,7 +479,7 @@ async def test_delta_write_failure_doesnt_block_kafka(
 
         assert len(pending_messages) > 0, "Download task should be produced despite Delta failure"
 
-        from kafka_pipeline.schemas.tasks import DownloadTaskMessage
+        from kafka_pipeline.xact.schemas.tasks import DownloadTaskMessage
         task = DownloadTaskMessage.model_validate_json(pending_messages[0]["value"])
         assert task.trace_id == test_event.trace_id, "Download task should have correct trace_id"
 
@@ -588,7 +588,7 @@ async def test_invalid_event_schema_logged_and_skipped(
 
         assert len(pending_messages) == 1, "Only valid event should produce download task"
 
-        from kafka_pipeline.schemas.tasks import DownloadTaskMessage
+        from kafka_pipeline.xact.schemas.tasks import DownloadTaskMessage
         task = DownloadTaskMessage.model_validate_json(pending_messages[0]["value"])
         assert task.trace_id == "valid-after-invalid-001"
 
@@ -677,7 +677,7 @@ async def test_missing_required_fields_validation_error(
         # Should only have download task for valid event
         assert len(pending_messages) == 1, "Only valid event should produce download task"
 
-        from kafka_pipeline.schemas.tasks import DownloadTaskMessage
+        from kafka_pipeline.xact.schemas.tasks import DownloadTaskMessage
         task = DownloadTaskMessage.model_validate_json(pending_messages[0]["value"])
         assert task.trace_id == "valid-after-missing-fields-001"
 
@@ -755,7 +755,7 @@ async def test_large_file_streaming_memory_bounds(
         await producer.start()
 
         try:
-            from kafka_pipeline.schemas.tasks import DownloadTaskMessage
+            from kafka_pipeline.xact.schemas.tasks import DownloadTaskMessage
             task = DownloadTaskMessage(
                 trace_id=test_event.trace_id,
                 attachment_url=test_event.attachments[0],
@@ -809,7 +809,7 @@ async def test_large_file_streaming_memory_bounds(
 
             assert len(result_messages) > 0
 
-            from kafka_pipeline.schemas.results import DownloadResultMessage
+            from kafka_pipeline.xact.schemas.results import DownloadResultMessage
             result = DownloadResultMessage.model_validate_json(result_messages[0]["value"])
             assert result.trace_id == test_event.trace_id
             assert result.status == "success"
@@ -904,7 +904,7 @@ async def test_kafka_broker_unavailable_graceful_degradation(
     to unavailable broker and verifying graceful failure.
     """
     from dataclasses import replace
-    from kafka_pipeline.workers.download_worker import DownloadWorker
+    from kafka_pipeline.xact.workers.download_worker import DownloadWorker
 
     # Create config with invalid broker
     invalid_config = replace(

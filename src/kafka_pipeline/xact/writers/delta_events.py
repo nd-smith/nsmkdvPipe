@@ -2,12 +2,12 @@
 Delta Lake writer for event analytics table.
 
 Writes events to the xact_events Delta table with:
-- Flattening of nested JSON structures using verisk_pipeline transform
+- Flattening of nested JSON structures using xact transform module
 - Deduplication by trace_id
 - Async/non-blocking writes
-- Schema compatibility with verisk_pipeline xact_events table
+- Schema compatibility with legacy xact_events table
 
-Uses flatten_events() from verisk_pipeline to ensure schema compatibility.
+Uses flatten_events() from kafka_pipeline.xact.writers.transform.
 """
 
 from datetime import datetime, timezone
@@ -16,21 +16,21 @@ from typing import Any, Dict, List
 import polars as pl
 
 from kafka_pipeline.common.writers.base import BaseDeltaWriter
-from verisk_pipeline.xact.stages.transform import flatten_events
+from kafka_pipeline.xact.writers.transform import flatten_events
 
 
 class DeltaEventsWriter(BaseDeltaWriter):
     """
     Writer for xact_events Delta table with deduplication and async support.
 
-    Uses flatten_events() from verisk_pipeline to transform raw Eventhouse rows
-    into the correct xact_events schema with all 28 columns.
+    Uses flatten_events() from kafka_pipeline.xact.writers.transform to transform
+    raw Eventhouse rows into the correct xact_events schema with all 28 columns.
 
     Features:
-    - Flattening of nested JSON using verisk_pipeline transform
+    - Flattening of nested JSON using xact transform module
     - Deduplication by trace_id within configurable time window
     - Non-blocking writes using asyncio.to_thread
-    - Schema compatibility with verisk_pipeline xact_events table
+    - Schema compatibility with legacy xact_events table
 
     Input format (raw Eventhouse rows):
         - type: Full event type string (e.g., "verisk.claims.property.xn.documentsReceived")
@@ -39,7 +39,7 @@ class DeltaEventsWriter(BaseDeltaWriter):
         - traceId: Trace identifier
         - data: JSON string with nested event data
 
-    Output schema matches verisk_pipeline FLATTENED_SCHEMA:
+    Output schema matches kafka_pipeline.xact.writers.transform.FLATTENED_SCHEMA:
         - type, status_subtype, version, ingested_at, event_date, trace_id
         - description, assignment_id, original_assignment_id, xn_address, carrier_id
         - estimate_version, note, author, sender_reviewer_name, sender_reviewer_email

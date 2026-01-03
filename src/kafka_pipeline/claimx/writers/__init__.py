@@ -5,4 +5,14 @@ This module contains Delta table writers for:
 - ClaimX entity tables (7 entity types)
 """
 
-__all__ = []
+from kafka_pipeline.claimx.writers.delta_entities import (
+    ClaimXEntityWriter,
+    MERGE_KEYS,
+)
+from kafka_pipeline.claimx.writers.delta_events import ClaimXEventsDeltaWriter
+
+__all__ = [
+    "ClaimXEventsDeltaWriter",
+    "ClaimXEntityWriter",
+    "MERGE_KEYS",
+]

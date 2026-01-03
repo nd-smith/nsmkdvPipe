@@ -20,7 +20,7 @@ from aiokafka.structs import ConsumerRecord
 
 from kafka_pipeline.config import KafkaConfig
 from kafka_pipeline.common.dlq.handler import DLQHandler
-from kafka_pipeline.schemas.results import FailedDownloadMessage
+from kafka_pipeline.xact.schemas.results import FailedDownloadMessage
 
 # Configure logging for CLI
 logging.basicConfig(

@@ -8,12 +8,18 @@ All generators support customization via keyword arguments for test-specific sce
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from kafka_pipeline.schemas.events import EventMessage
-from kafka_pipeline.schemas.results import (
+from kafka_pipeline.xact.schemas.events import EventMessage
+from kafka_pipeline.xact.schemas.results import (
     DownloadResultMessage,
     FailedDownloadMessage,
 )
-from kafka_pipeline.schemas.tasks import DownloadTaskMessage
+from kafka_pipeline.xact.schemas.tasks import DownloadTaskMessage
+
+# ClaimX schemas
+from kafka_pipeline.claimx.schemas.events import ClaimXEventMessage
+from kafka_pipeline.claimx.schemas.tasks import ClaimXEnrichmentTask, ClaimXDownloadTask
+from kafka_pipeline.claimx.schemas.cached import ClaimXCachedDownloadMessage
+from kafka_pipeline.claimx.schemas.results import ClaimXUploadResultMessage
 
 
 def create_event_message(
@@ -365,4 +371,394 @@ def create_failed_download_message(
         error_category=error_category,
         retry_count=retry_count,
         failed_at=failed_at,
+    )
+
+
+# ==========================================
+# ClaimX Generators
+# ==========================================
+
+
+def create_claimx_event_message(
+    event_id: Optional[str] = None,
+    event_type: str = "PROJECT_FILE_ADDED",
+    project_id: Optional[str] = None,
+    ingested_at: Optional[datetime] = None,
+    media_id: Optional[str] = None,
+    task_assignment_id: Optional[str] = None,
+    video_collaboration_id: Optional[str] = None,
+    master_file_name: Optional[str] = None,
+    raw_data: Optional[Dict[str, Any]] = None,
+) -> ClaimXEventMessage:
+    """
+    Create test ClaimXEventMessage with sensible defaults.
+
+    Args:
+        event_id: Unique event identifier (auto-generated if None)
+        event_type: Event type (default: PROJECT_FILE_ADDED)
+        project_id: ClaimX project ID (auto-generated if None)
+        ingested_at: Event ingestion timestamp (default: current UTC)
+        media_id: Media file ID (default: auto-generated for file events)
+        task_assignment_id: Task assignment ID (for task events)
+        video_collaboration_id: Video collaboration ID (for video events)
+        master_file_name: Master file name (for MFN events)
+        raw_data: Raw event payload (default: minimal data)
+
+    Returns:
+        ClaimXEventMessage: Valid ClaimX event for testing
+
+    Example:
+        >>> event = create_claimx_event_message(event_id="evt_001")
+        >>> event = create_claimx_event_message(
+        ...     event_id="evt_002",
+        ...     event_type="PROJECT_CREATED",
+        ...     project_id="proj_12345"
+        ... )
+    """
+    import uuid
+
+    # Auto-generate IDs if not provided
+    if event_id is None:
+        event_id = f"evt_{uuid.uuid4().hex[:12]}"
+
+    if project_id is None:
+        project_id = f"proj_{uuid.uuid4().hex[:8]}"
+
+    # Default ingestion timestamp
+    if ingested_at is None:
+        ingested_at = datetime.now(timezone.utc)
+
+    # Auto-generate media_id for file-related events
+    if media_id is None and event_type in ["PROJECT_FILE_ADDED"]:
+        media_id = f"media_{uuid.uuid4().hex[:8]}"
+
+    # Default raw_data
+    if raw_data is None:
+        raw_data = {
+            "projectId": project_id,
+            "eventType": event_type,
+        }
+        if media_id:
+            raw_data["mediaId"] = media_id
+            raw_data["fileName"] = "test_file.jpg"
+            raw_data["fileSize"] = 1024
+
+    return ClaimXEventMessage(
+        event_id=event_id,
+        event_type=event_type,
+        project_id=project_id,
+        ingested_at=ingested_at,
+        media_id=media_id,
+        task_assignment_id=task_assignment_id,
+        video_collaboration_id=video_collaboration_id,
+        master_file_name=master_file_name,
+        raw_data=raw_data,
+    )
+
+
+def create_claimx_enrichment_task(
+    event_id: Optional[str] = None,
+    event_type: str = "PROJECT_FILE_ADDED",
+    project_id: Optional[str] = None,
+    retry_count: int = 0,
+    created_at: Optional[datetime] = None,
+    media_id: Optional[str] = None,
+    task_assignment_id: Optional[str] = None,
+    video_collaboration_id: Optional[str] = None,
+    master_file_name: Optional[str] = None,
+) -> ClaimXEnrichmentTask:
+    """
+    Create test ClaimXEnrichmentTask with sensible defaults.
+
+    Args:
+        event_id: Event identifier (auto-generated if None)
+        event_type: Event type to process (default: PROJECT_FILE_ADDED)
+        project_id: ClaimX project ID (auto-generated if None)
+        retry_count: Retry count (default: 0)
+        created_at: Task creation timestamp (default: current UTC)
+        media_id: Media ID (for file events)
+        task_assignment_id: Task assignment ID (for task events)
+        video_collaboration_id: Video collaboration ID (for video events)
+        master_file_name: Master file name (for MFN events)
+
+    Returns:
+        ClaimXEnrichmentTask: Valid enrichment task for testing
+
+    Example:
+        >>> task = create_claimx_enrichment_task(event_id="evt_001")
+    """
+    import uuid
+
+    # Auto-generate IDs if not provided
+    if event_id is None:
+        event_id = f"evt_{uuid.uuid4().hex[:12]}"
+
+    if project_id is None:
+        project_id = f"proj_{uuid.uuid4().hex[:8]}"
+
+    # Default creation timestamp
+    if created_at is None:
+        created_at = datetime.now(timezone.utc)
+
+    # Auto-generate media_id for file-related events
+    if media_id is None and event_type in ["PROJECT_FILE_ADDED"]:
+        media_id = f"media_{uuid.uuid4().hex[:8]}"
+
+    return ClaimXEnrichmentTask(
+        event_id=event_id,
+        event_type=event_type,
+        project_id=project_id,
+        retry_count=retry_count,
+        created_at=created_at,
+        media_id=media_id,
+        task_assignment_id=task_assignment_id,
+        video_collaboration_id=video_collaboration_id,
+        master_file_name=master_file_name,
+    )
+
+
+def create_claimx_download_task(
+    media_id: Optional[str] = None,
+    project_id: Optional[str] = None,
+    download_url: str = "https://claimxperience.s3.amazonaws.com/test.jpg",
+    destination_path: Optional[str] = None,
+    file_type: Optional[str] = None,
+    file_name: Optional[str] = None,
+    source_event_id: Optional[str] = None,
+    retry_count: int = 0,
+    created_at: Optional[datetime] = None,
+) -> ClaimXDownloadTask:
+    """
+    Create test ClaimXDownloadTask with sensible defaults.
+
+    Args:
+        media_id: Media file ID (auto-generated if None)
+        project_id: Project ID (auto-generated if None)
+        download_url: S3 presigned URL (default: test S3 URL)
+        destination_path: OneLake destination path (auto-generated if None)
+        file_type: File extension (auto-detected if None)
+        file_name: File name (auto-detected if None)
+        source_event_id: Source event ID (auto-generated if None)
+        retry_count: Retry count (default: 0)
+        created_at: Task creation timestamp (default: current UTC)
+
+    Returns:
+        ClaimXDownloadTask: Valid download task for testing
+
+    Example:
+        >>> task = create_claimx_download_task(media_id="media_001")
+    """
+    import uuid
+
+    # Auto-generate IDs if not provided
+    if media_id is None:
+        media_id = f"media_{uuid.uuid4().hex[:8]}"
+
+    if project_id is None:
+        project_id = f"proj_{uuid.uuid4().hex[:8]}"
+
+    if source_event_id is None:
+        source_event_id = f"evt_{uuid.uuid4().hex[:12]}"
+
+    # Extract file info from URL
+    if file_name is None:
+        file_name = download_url.split("/")[-1].split("?")[0]  # Remove query params
+
+    if file_type is None:
+        if "." in file_name:
+            file_type = file_name.rsplit(".", 1)[-1].lower()
+        else:
+            file_type = "jpg"
+
+    # Auto-generate destination path
+    if destination_path is None:
+        destination_path = f"claimx/{project_id}/media/{file_name}"
+
+    # Default creation timestamp
+    if created_at is None:
+        created_at = datetime.now(timezone.utc)
+
+    return ClaimXDownloadTask(
+        media_id=media_id,
+        project_id=project_id,
+        download_url=download_url,
+        destination_path=destination_path,
+        file_type=file_type,
+        file_name=file_name,
+        source_event_id=source_event_id,
+        retry_count=retry_count,
+        created_at=created_at,
+    )
+
+
+def create_claimx_cached_download_message(
+    media_id: Optional[str] = None,
+    project_id: Optional[str] = None,
+    download_url: str = "https://claimxperience.s3.amazonaws.com/test.jpg",
+    destination_path: Optional[str] = None,
+    local_cache_path: Optional[str] = None,
+    bytes_downloaded: int = 2048,
+    content_type: Optional[str] = "image/jpeg",
+    file_type: Optional[str] = None,
+    file_name: Optional[str] = None,
+    source_event_id: Optional[str] = None,
+    downloaded_at: Optional[datetime] = None,
+) -> ClaimXCachedDownloadMessage:
+    """
+    Create test ClaimXCachedDownloadMessage with sensible defaults.
+
+    Args:
+        media_id: Media file ID (auto-generated if None)
+        project_id: Project ID (auto-generated if None)
+        download_url: S3 presigned URL
+        destination_path: OneLake destination path (auto-generated if None)
+        local_cache_path: Local cache file path (auto-generated if None)
+        bytes_downloaded: File size in bytes (default: 2048)
+        content_type: MIME type (default: image/jpeg)
+        file_type: File extension (auto-detected if None)
+        file_name: File name (auto-detected if None)
+        source_event_id: Source event ID (auto-generated if None)
+        downloaded_at: Download timestamp (default: current UTC)
+
+    Returns:
+        ClaimXCachedDownloadMessage: Valid cached download message for testing
+
+    Example:
+        >>> cached = create_claimx_cached_download_message(media_id="media_001")
+    """
+    import uuid
+
+    # Auto-generate IDs if not provided
+    if media_id is None:
+        media_id = f"media_{uuid.uuid4().hex[:8]}"
+
+    if project_id is None:
+        project_id = f"proj_{uuid.uuid4().hex[:8]}"
+
+    if source_event_id is None:
+        source_event_id = f"evt_{uuid.uuid4().hex[:12]}"
+
+    # Extract file info from URL
+    if file_name is None:
+        file_name = download_url.split("/")[-1].split("?")[0]
+
+    if file_type is None:
+        if "." in file_name:
+            file_type = file_name.rsplit(".", 1)[-1].lower()
+        else:
+            file_type = "jpg"
+
+    # Auto-generate paths
+    if destination_path is None:
+        destination_path = f"claimx/{project_id}/media/{file_name}"
+
+    if local_cache_path is None:
+        local_cache_path = f"/tmp/kafka_pipeline_cache/{media_id}/{file_name}"
+
+    # Default download timestamp
+    if downloaded_at is None:
+        downloaded_at = datetime.now(timezone.utc)
+
+    return ClaimXCachedDownloadMessage(
+        media_id=media_id,
+        project_id=project_id,
+        download_url=download_url,
+        destination_path=destination_path,
+        local_cache_path=local_cache_path,
+        bytes_downloaded=bytes_downloaded,
+        content_type=content_type,
+        file_type=file_type,
+        file_name=file_name,
+        source_event_id=source_event_id,
+        downloaded_at=downloaded_at,
+    )
+
+
+def create_claimx_upload_result_message(
+    media_id: Optional[str] = None,
+    project_id: Optional[str] = None,
+    download_url: str = "https://claimxperience.s3.amazonaws.com/test.jpg",
+    blob_path: Optional[str] = None,
+    file_type: Optional[str] = None,
+    file_name: Optional[str] = None,
+    source_event_id: Optional[str] = None,
+    status: str = "completed",
+    bytes_uploaded: int = 2048,
+    error_message: Optional[str] = None,
+    created_at: Optional[datetime] = None,
+) -> ClaimXUploadResultMessage:
+    """
+    Create test ClaimXUploadResultMessage with sensible defaults.
+
+    Args:
+        media_id: Media file ID (auto-generated if None)
+        project_id: Project ID (auto-generated if None)
+        download_url: S3 presigned URL
+        blob_path: OneLake blob path (auto-generated if None)
+        file_type: File extension (auto-detected if None)
+        file_name: File name (auto-detected if None)
+        source_event_id: Source event ID (auto-generated if None)
+        status: Upload status (default: completed)
+        bytes_uploaded: Bytes uploaded (default: 2048, 0 for failures)
+        error_message: Error message (for failures)
+        created_at: Result creation timestamp (default: current UTC)
+
+    Returns:
+        ClaimXUploadResultMessage: Valid upload result for testing
+
+    Example:
+        >>> result = create_claimx_upload_result_message(media_id="media_001")
+        >>> failed_result = create_claimx_upload_result_message(
+        ...     media_id="media_002",
+        ...     status="failed",
+        ...     error_message="Connection timeout",
+        ...     bytes_uploaded=0
+        ... )
+    """
+    import uuid
+
+    # Auto-generate IDs if not provided
+    if media_id is None:
+        media_id = f"media_{uuid.uuid4().hex[:8]}"
+
+    if project_id is None:
+        project_id = f"proj_{uuid.uuid4().hex[:8]}"
+
+    if source_event_id is None:
+        source_event_id = f"evt_{uuid.uuid4().hex[:12]}"
+
+    # Extract file info from URL
+    if file_name is None:
+        file_name = download_url.split("/")[-1].split("?")[0]
+
+    if file_type is None:
+        if "." in file_name:
+            file_type = file_name.rsplit(".", 1)[-1].lower()
+        else:
+            file_type = "jpg"
+
+    # Auto-generate blob path
+    if blob_path is None:
+        blob_path = f"claimx/{project_id}/media/{file_name}"
+
+    # Default creation timestamp
+    if created_at is None:
+        created_at = datetime.now(timezone.utc)
+
+    # For failures, bytes_uploaded should be 0
+    if status != "completed":
+        bytes_uploaded = 0
+
+    return ClaimXUploadResultMessage(
+        media_id=media_id,
+        project_id=project_id,
+        download_url=download_url,
+        blob_path=blob_path,
+        file_type=file_type,
+        file_name=file_name,
+        source_event_id=source_event_id,
+        status=status,
+        bytes_uploaded=bytes_uploaded,
+        error_message=error_message,
+        created_at=created_at,
     )

@@ -15,7 +15,7 @@ names extracted from the download URL.
 
 from typing import Optional, Tuple
 
-from verisk_pipeline.common.security import extract_filename_from_url
+from kafka_pipeline.common.security import extract_filename_from_url
 
 
 def generate_blob_path(

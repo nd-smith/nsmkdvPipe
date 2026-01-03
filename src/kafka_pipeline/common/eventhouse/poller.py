@@ -26,8 +26,8 @@ from kafka_pipeline.common.eventhouse.kql_client import (
     KQLQueryResult,
 )
 from kafka_pipeline.common.producer import BaseKafkaProducer
-from kafka_pipeline.schemas.events import EventMessage
-from kafka_pipeline.writers.delta_events import DeltaEventsWriter
+from kafka_pipeline.xact.schemas.events import EventMessage
+from kafka_pipeline.xact.writers.delta_events import DeltaEventsWriter
 
 logger = logging.getLogger(__name__)
 

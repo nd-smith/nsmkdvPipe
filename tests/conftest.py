@@ -20,13 +20,6 @@ sys.path.insert(0, str(src_dir))
 # This needs to happen before any application modules are imported
 def pytest_configure(config):
     """Configure pytest environment for testing."""
-    # Set audit log path to writable location for tests
-    from verisk_pipeline.common.config.xact import load_config_from_dict, set_config
-
-    test_config = load_config_from_dict({
-        "security": {
-            "audit_logging_enabled": False,  # Disable audit logging in tests
-            "audit_log_path": "/tmp/test_audit.log",
-        }
-    })
-    set_config(test_config)
+    # Audit logging is configured via AUDIT_LOG_PATH environment variable
+    # which is already set above to /tmp/test_audit.log
+    pass

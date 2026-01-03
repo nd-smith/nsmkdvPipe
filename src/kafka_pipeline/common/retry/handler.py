@@ -12,8 +12,8 @@ from typing import Optional
 from core.types import ErrorCategory
 from kafka_pipeline.config import KafkaConfig
 from kafka_pipeline.common.producer import BaseKafkaProducer
-from kafka_pipeline.schemas.results import FailedDownloadMessage
-from kafka_pipeline.schemas.tasks import DownloadTaskMessage
+from kafka_pipeline.xact.schemas.results import FailedDownloadMessage
+from kafka_pipeline.xact.schemas.tasks import DownloadTaskMessage
 
 logger = logging.getLogger(__name__)
 

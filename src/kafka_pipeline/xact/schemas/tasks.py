@@ -144,10 +144,10 @@ class DownloadTaskMessage(BaseModel):
         Convert to verisk_pipeline Task dataclass for compatibility.
 
         Returns:
-            verisk_pipeline.xact.xact_models.Task instance
+            kafka_pipeline.xact.schemas.models.Task instance
         """
-        # Inline import avoids circular dependency between kafka_pipeline and verisk_pipeline
-        from verisk_pipeline.xact.xact_models import Task
+        from kafka_pipeline.xact.schemas.models import Task
+
         return Task(
             trace_id=self.trace_id,
             attachment_url=self.attachment_url,

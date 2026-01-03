@@ -1,70 +1,72 @@
 # Source Code Structure
 
-This directory contains three packages representing different stages of the Kafka migration:
+This directory contains the Kafka-based event-driven pipeline:
 
 ```
 src/
-├── verisk_pipeline/      # LEGACY - Existing polling-based pipeline
 ├── core/                 # SHARED - Reusable, infrastructure-agnostic components
-└── kafka_pipeline/       # NEW - Kafka-based event-driven pipeline
+└── kafka_pipeline/       # Kafka-based event-driven pipeline
 ```
 
 ## Package Overview
 
-### `verisk_pipeline/` (Legacy)
-
-The existing pipeline implementation using:
-- Kusto/Eventhouse for event ingestion
-- Delta Lake for storage and retry queue
-- Polling-based orchestration (10-60s cycles)
-
-**Status:** Running in production. Will be deprecated after Kafka migration.
-
 ### `core/` (Shared Library)
 
-Reusable components extracted from the legacy pipeline, reviewed and refactored:
+Reusable components for infrastructure-agnostic functionality:
 
-| Module | Purpose | Source |
-|--------|---------|--------|
-| `auth/` | Azure AD, SPN, Kafka OAUTHBEARER | `verisk_pipeline.common.auth` |
-| `resilience/` | Circuit breaker, retry with backoff | `verisk_pipeline.common.circuit_breaker`, `retry` |
-| `logging/` | Structured JSON logging | `verisk_pipeline.common.logging` |
-| `errors/` | Error classification, exceptions | `verisk_pipeline.common.exceptions`, `storage.errors` |
-| `security/` | URL validation, SSRF prevention | `verisk_pipeline.common.security` |
-| `download/` | Async HTTP download logic | `verisk_pipeline.xact.stages.xact_download` |
+| Module | Purpose |
+|--------|---------|
+| `auth/` | Azure AD, SPN, Kafka OAUTHBEARER |
+| `resilience/` | Circuit breaker, retry with backoff |
+| `logging/` | Structured JSON logging |
+| `errors/` | Error classification, exceptions |
+| `security/` | URL validation, SSRF prevention |
+| `download/` | Async HTTP download logic |
 
 **Design Principles:**
 - No dependencies on Delta Lake, Kusto, or Kafka
 - Independently testable
 - Type hints throughout
 
-### `kafka_pipeline/` (New Implementation)
+### `kafka_pipeline/`
 
-Event-driven pipeline using Kafka:
+Event-driven pipeline using Kafka, organized by domain:
 
 | Module | Purpose |
 |--------|---------|
-| `kafka/` | Producers, consumers, retry handling |
-| `workers/` | Event ingester, download worker, result processor |
-| `schemas/` | Pydantic message schemas |
+| `common/` | Shared infrastructure (consumer, producer, retry, DLQ, storage, writers) |
+| `xact/` | Transaction domain (workers, schemas, writers) |
+| `claimx/` | Claims domain (workers, handlers, API client, schemas, writers) |
 
-**Architecture:**
+**Domain-Based Architecture:**
 ```
-Kafka Topics:
-  events.raw → downloads.pending → downloads.results
+xact Domain:
+  events.raw → downloads.pending → downloads.cached → downloads.results
                      ↓ (failure)
               downloads.retry.* → (delayed redelivery)
                      ↓ (exhausted)
               downloads.dlq
+
+claimx Domain:
+  events.raw → enrichment.pending → entity tables + downloads.pending →
+  downloads.cached → downloads.results
+                     ↓ (failure)
+              downloads.retry.* → (delayed redelivery)
+                     ↓ (exhausted)
+              downloads.dlq
+
+All topics are namespaced by domain: {domain}.{workflow}.{stage}
 ```
 
-## Migration Path
+## Implementation History
 
-1. **Phase 1:** Extract and review components → `core/`
-2. **Phase 2:** Build Kafka infrastructure → `kafka_pipeline/kafka/`
-3. **Phase 3:** Implement workers → `kafka_pipeline/workers/`
-4. **Phase 4:** Parallel run (both pipelines active)
-5. **Phase 5:** Cutover and deprecate `verisk_pipeline/`
+The Kafka pipeline was implemented through a phased reorganization:
+
+1. **Phase 1:** Created `common/` infrastructure (consumers, producers, retry, DLQ, storage, writers)
+2. **Phase 2:** Created `xact/` domain (schemas, workers, writers)
+3. **Phase 3:** Created `claimx/` domain (schemas, workers, handlers, API client, writers)
+4. **Phase 4:** Updated configuration and entry points for domain support
+5. **Phase 5:** Migrated functionality from legacy pipeline and removed `verisk_pipeline/`
 
 ## Development Guidelines
 
@@ -86,12 +88,25 @@ When extracting from legacy:
 ## Import Examples
 
 ```python
-# Using core components
+# Using core components (domain-agnostic)
 from core.resilience import CircuitBreaker, with_retry
 from core.security import validate_download_url
 from core.logging import get_logger
 
-# Using kafka_pipeline
-from kafka_pipeline.workers import DownloadWorker
-from kafka_pipeline.schemas import DownloadTaskMessage
+# Using common kafka_pipeline infrastructure
+from kafka_pipeline.common.consumer import BaseKafkaConsumer
+from kafka_pipeline.common.producer import BaseKafkaProducer
+from kafka_pipeline.common.retry import RetryHandler
+from kafka_pipeline.common.dlq import DLQHandler
+
+# Using xact domain
+from kafka_pipeline.xact.workers import DownloadWorker, EventIngesterWorker
+from kafka_pipeline.xact.schemas import DownloadTaskMessage, EventMessage
+from kafka_pipeline.xact.writers import DeltaEventsWriter
+
+# Using claimx domain
+from kafka_pipeline.claimx.workers import ClaimXEnrichmentWorker
+from kafka_pipeline.claimx.handlers import ProjectHandler, MediaHandler
+from kafka_pipeline.claimx.schemas import ClaimXEventMessage, ClaimXEnrichmentTask
+from kafka_pipeline.claimx.api_client import ClaimXApiClient
 ```
