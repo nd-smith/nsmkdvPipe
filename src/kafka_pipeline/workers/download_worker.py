@@ -207,6 +207,9 @@ class DownloadWorker:
         )
         self._http_session = aiohttp.ClientSession(connector=connector)
 
+        # Re-initialize downloader with shared session for connection pooling
+        self.downloader = AttachmentDownloader(session=self._http_session)
+
         # Start producer
         await self.producer.start()
 

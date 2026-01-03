@@ -233,6 +233,9 @@ async def download_to_file(
     if error:
         return None, error
 
+    # Get reference to chunk iterator for proper cleanup
+    chunk_iterator = response.chunk_iterator
+
     try:
         bytes_written = 0
         # Ensure parent directory exists right before opening file
@@ -242,7 +245,7 @@ async def download_to_file(
             Path(output_path).parent.mkdir, parents=True, exist_ok=True
         )
         with open(output_path, "wb") as f:
-            async for chunk in response.chunk_iterator:
+            async for chunk in chunk_iterator:
                 # Use asyncio.to_thread for disk I/O to avoid blocking event loop
                 await asyncio.to_thread(f.write, chunk)
                 bytes_written += len(chunk)
@@ -259,6 +262,11 @@ async def download_to_file(
             error_message=f"File write error: {str(e)}",
             error_category=ErrorCategory.PERMANENT,
         )
+    finally:
+        # Ensure async generator is closed to release the HTTP connection
+        # This prevents "Unclosed connection" warnings when iteration is
+        # interrupted by errors or early exit
+        await chunk_iterator.aclose()
 
 
 def should_stream(content_length: Optional[int]) -> bool:
