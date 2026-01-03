@@ -24,14 +24,6 @@
 
 <!-- Move tasks here when starting work -->
 
-(none)
-
----
-
-## Ready
-
-### P2 - Medium Priority
-
 **TECH-003: Consolidate Configuration Loading (config.yaml Priority)**
 - Ensure all modules load config consistently: config.yaml first, env vars as overrides
 - Audit all config loading paths across workers and components
@@ -39,6 +31,12 @@
 - Document configuration precedence clearly
 - Size: Medium
 - See: [Research Notes](#tech-003-research-notes)
+
+---
+
+## Ready
+
+### P2 - Medium Priority
 
 **WP-506: Eventhouse Integration Testing**
 - Integration tests for Eventhouse polling flow
@@ -155,21 +153,6 @@
 - Increase readability
 - Size: Medium
 
-**TECH-019: Review core/logging/context.py Structure and Remove Dead Code**
-- Location: `core/logging/context.py`
-- Review overall code structure and organization
-- Remove dead/unreachable code paths
-- Apply best practices (single responsibility, reduce complexity)
-- Increase readability
-- Size: Medium
-
-**TECH-020: Ensure File Names are Logical and Descriptive**
-- Audit all file names across the project
-- Rename files that are unclear or don't reflect their contents
-- Ensure consistency in naming conventions (snake_case, etc.)
-- Update imports after any renames
-- Size: Medium (codebase-wide)
-
 ---
 
 ## Blocked
@@ -183,6 +166,23 @@
 ## Completed
 
 <!-- Done tasks with commit references -->
+
+**TECH-020: Ensure File Names are Logical and Descriptive** ✓
+- Audited all file names across `kafka_pipeline/` and `core/` packages
+- **Finding**: All file names are logical, descriptive, and use consistent snake_case
+- Removed dead `kafka_pipeline/kafka/` package (only had stale documentation `__init__.py`)
+- No renames needed - naming conventions are consistent
+- Size: Small (just cleanup)
+
+**TECH-019: Review core/logging/context.py Structure and Remove Dead Code** ✓
+- Reviewed `core/logging/context.py` (59 lines, 4 ContextVars + 3 functions)
+- **Finding**: No dead code found - file is small and well-structured
+- All functions in use:
+  - `set_log_context()` - used in `__main__.py`, `setup.py`, context managers
+  - `get_log_context()` - used in formatters and filters
+  - `clear_log_context()` - used in test fixtures, exported API
+- No changes required
+- Size: Small (review only)
 
 **TECH-018: Review core/logging/setup.py Structure and Remove Dead Code** ✓
 - Reviewed `core/logging/setup.py` (313 lines)
