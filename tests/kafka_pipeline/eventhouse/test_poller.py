@@ -253,60 +253,10 @@ class TestKQLEventPoller:
             row_count=1,
         )
 
-        with patch(
-            "kafka_pipeline.eventhouse.poller.validate_download_url",
-            return_value=(True, None),
-        ), patch(
-            "kafka_pipeline.eventhouse.poller.generate_blob_path",
-            return_value=("/path/to/file.pdf", "pdf"),
-        ):
-            count = await poller._process_results(result)
+        count = await poller._process_results(result)
 
         assert count == 1
         poller._producer.send.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_process_event_without_attachments(self, config):
-        """Test processing event without attachments."""
-        import json
-        poller = KQLEventPoller(config)
-        poller._producer = AsyncMock()
-
-        event = EventMessage(
-            type="verisk.claims.property.xn.documentsReceived",
-            version=1,
-            utcDateTime=datetime.now(timezone.utc).isoformat(),
-            traceId="test-123",
-            data=json.dumps({"assignmentId": "A-123"}),  # No attachments
-        )
-
-        await poller._process_event_attachments(event)
-
-        # Producer should not be called
-        poller._producer.send.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_process_event_without_assignment_id(self, config):
-        """Test processing event without assignment_id."""
-        import json
-        poller = KQLEventPoller(config)
-        poller._producer = AsyncMock()
-
-        event = EventMessage(
-            type="verisk.claims.property.xn.documentsReceived",
-            version=1,
-            utcDateTime=datetime.now(timezone.utc).isoformat(),
-            traceId="test-123",
-            data=json.dumps({
-                "attachments": ["https://example.com/file.pdf"]
-                # No assignmentId
-            }),
-        )
-
-        await poller._process_event_attachments(event)
-
-        # Producer should not be called due to missing assignment_id
-        poller._producer.send.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_start_and_stop(self, config):

@@ -10,10 +10,9 @@ import logging
 import os
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, Set
-from weakref import WeakSet
+from typing import Any, Dict, Optional, Set
 
 import yaml
 
@@ -27,12 +26,7 @@ from kafka_pipeline.eventhouse.kql_client import (
 )
 from kafka_pipeline.producer import BaseKafkaProducer
 from kafka_pipeline.schemas.events import EventMessage
-from kafka_pipeline.schemas.tasks import DownloadTaskMessage
 from kafka_pipeline.writers.delta_events import DeltaEventsWriter
-
-from core.paths.resolver import generate_blob_path
-from core.security.url_validation import validate_download_url
-from verisk_pipeline.common.security import sanitize_url
 
 logger = logging.getLogger(__name__)
 
@@ -241,9 +235,8 @@ class KQLEventPoller:
     Workflow:
     1. Query Eventhouse with time filter and deduplication
     2. Convert KQL results to EventMessage format
-    3. For each attachment, create DownloadTaskMessage
-    4. Produce to downloads.pending topic
-    5. Write events to Delta Lake for deduplication tracking
+    3. Publish events to events.raw topic (EventIngester handles attachments)
+    4. Write events to Delta Lake for deduplication tracking
 
     Features:
     - Configurable poll interval
@@ -772,135 +765,6 @@ class KQLEventPoller:
             "traceId": trace_id,
             "data": data,
         })
-
-    async def _process_event_attachments(self, event: EventMessage) -> None:
-        """
-        Process attachments from an event (legacy method).
-
-        Note: This is now handled by EventIngester after events are published
-        to the events.raw topic. Kept for backwards compatibility.
-
-        Args:
-            event: EventMessage to process (matches verisk_pipeline EventRecord)
-        """
-        if not event.attachments:
-            logger.debug(
-                "Event has no attachments",
-                extra={"trace_id": event.trace_id},
-            )
-            return
-
-        # Extract assignment_id from data
-        assignment_id = event.assignment_id
-        if not assignment_id:
-            logger.warning(
-                "Event missing assignmentId, cannot generate paths",
-                extra={"trace_id": event.trace_id},
-            )
-            return
-
-        for attachment_url in event.attachments:
-            await self._process_single_attachment(
-                event=event,
-                attachment_url=attachment_url,
-                assignment_id=assignment_id,
-            )
-
-    async def _process_single_attachment(
-        self,
-        event: EventMessage,
-        attachment_url: str,
-        assignment_id: str,
-    ) -> None:
-        """
-        Process a single attachment (legacy method).
-
-        Note: This is now handled by EventIngester after events are published
-        to the events.raw topic. Kept for backwards compatibility.
-
-        Args:
-            event: Source event (matches verisk_pipeline EventRecord)
-            attachment_url: URL to download
-            assignment_id: For path generation
-        """
-        # Validate URL
-        is_valid, error_message = validate_download_url(attachment_url)
-        if not is_valid:
-            logger.warning(
-                "Invalid attachment URL",
-                extra={
-                    "trace_id": event.trace_id,
-                    "url": sanitize_url(attachment_url),
-                    "error": error_message,
-                },
-            )
-            return
-
-        # Generate blob path using status_subtype
-        try:
-            blob_path, file_type = generate_blob_path(
-                status_subtype=event.status_subtype,
-                trace_id=event.trace_id,
-                assignment_id=assignment_id,
-                download_url=attachment_url,
-                estimate_version=event.estimate_version,
-            )
-        except Exception as e:
-            logger.error(
-                "Failed to generate blob path",
-                extra={
-                    "trace_id": event.trace_id,
-                    "error": str(e)[:200],
-                },
-            )
-            return
-
-        # Parse original timestamp from event
-        from datetime import datetime
-        original_timestamp = datetime.fromisoformat(
-            event.utc_datetime.replace("Z", "+00:00")
-        )
-
-        # Create download task matching verisk_pipeline Task schema
-        download_task = DownloadTaskMessage(
-            trace_id=event.trace_id,
-            attachment_url=attachment_url,
-            blob_path=blob_path,
-            status_subtype=event.status_subtype,
-            file_type=file_type,
-            assignment_id=assignment_id,
-            estimate_version=event.estimate_version,
-            retry_count=0,
-            event_type=self.config.domain,  # Use configured domain for OneLake routing
-            event_subtype=event.status_subtype,
-            original_timestamp=original_timestamp,
-        )
-
-        # Produce to Kafka
-        try:
-            await self._producer.send(
-                topic=self.config.kafka.downloads_pending_topic,
-                key=event.trace_id,
-                value=download_task,
-                headers={"trace_id": event.trace_id},
-            )
-
-            logger.debug(
-                "Created download task",
-                extra={
-                    "trace_id": event.trace_id,
-                    "blob_path": blob_path,
-                    "file_type": file_type,
-                },
-            )
-        except Exception as e:
-            logger.error(
-                "Failed to produce download task",
-                extra={
-                    "trace_id": event.trace_id,
-                    "error": str(e)[:200],
-                },
-            )
 
     async def _write_events_to_delta(self, events: list[EventMessage]) -> None:
         """

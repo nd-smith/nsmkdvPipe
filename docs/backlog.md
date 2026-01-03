@@ -24,21 +24,11 @@
 
 <!-- Move tasks here when starting work -->
 
-**TECH-008: Review main.py Structure and Remove Dead Code**
-- Location: `kafka_pipeline/__main__.py`
+**TECH-017: Review delta_events.py Structure and Remove Dead Code**
+- Location: `kafka_pipeline/writers/delta_events.py`
 - Review overall code structure and organization
 - Remove dead/unreachable code paths
 - Apply best practices (single responsibility, reduce complexity)
-- Consider refactoring large functions into smaller units
-- Increase readability
-- Size: Medium
-
-**TECH-009: Review poller.py Structure and Remove Dead Code**
-- Location: `kafka_pipeline/eventhouse/poller.py`
-- Review overall code structure and organization
-- Remove dead/unreachable code paths
-- Apply best practices (single responsibility, reduce complexity)
-- Consider refactoring large functions into smaller units
 - Increase readability
 - Size: Medium
 
@@ -88,22 +78,6 @@
 - Document expected shutdown behavior
 - Size: Medium
 
-**TECH-013: Review dedup.py Structure and Remove Dead Code**
-- Location: `kafka_pipeline/eventhouse/dedup.py`
-- Review overall code structure and organization
-- Remove dead/unreachable code paths
-- Apply best practices (single responsibility, reduce complexity)
-- Increase readability
-- Size: Medium
-
-**TECH-017: Review delta_events.py Structure and Remove Dead Code**
-- Location: `kafka_pipeline/writers/delta_events.py`
-- Review overall code structure and organization
-- Remove dead/unreachable code paths
-- Apply best practices (single responsibility, reduce complexity)
-- Increase readability
-- Size: Medium
-
 ---
 
 ## Blocked
@@ -117,6 +91,43 @@
 ## Completed
 
 <!-- Done tasks with commit references -->
+
+**TECH-009: Review poller.py Structure and Remove Dead Code** ✓
+- Reviewed `kafka_pipeline/eventhouse/poller.py` (973 → 836 lines, reduced by 137 lines)
+- **Finding**: Dead code found - 4 unused imports + 2 legacy methods
+- **Fixed**: Removed unused imports:
+  - `timedelta` from `datetime` (never used)
+  - `timezone` from `datetime` (never used)
+  - `Callable` from `typing` (never used)
+  - `WeakSet` from `weakref` (never used)
+- **Fixed**: Removed legacy methods and their imports:
+  - `_process_event_attachments()` - marked as legacy, only called from tests
+  - `_process_single_attachment()` - marked as legacy, only called by `_process_event_attachments`
+  - Removed 4 imports only used by legacy methods: `DownloadTaskMessage`, `generate_blob_path`, `validate_download_url`, `sanitize_url`
+- Updated docstring workflow to reflect current architecture (events go to events.raw topic, EventIngester handles attachments)
+- Removed obsolete patches and tests for legacy methods
+- All 14 poller tests pass
+- Size: Small (mostly cleanup)
+
+**TECH-008: Review main.py Structure and Remove Dead Code** ✓
+- Reviewed `kafka_pipeline/__main__.py` (593 lines, 14 top-level symbols)
+- **Finding**: No dead code found - file is already well-structured
+- All functions are used:
+  - `get_shutdown_event()` - used by download/upload workers and signal handlers
+  - `parse_args()` - used by main()
+  - Worker run functions (`run_event_ingester`, `run_eventhouse_poller`, `run_download_worker`, `run_upload_worker`, `run_result_processor`, `run_local_event_ingester`) - all used in main() and/or run_all_workers()
+  - `run_all_workers()` - used by main()
+  - `setup_signal_handlers()` - used by main()
+  - `main()` - entry point
+- All constants used:
+  - `WORKER_STAGES` - used in multi-worker logging setup
+  - `logger` - module-level logger, properly initialized
+  - `_shutdown_event` - global for graceful shutdown coordination
+- One TODO comment (line 150) documents TECH-001 for future work
+- Inline imports are intentional for lazy loading and circular import avoidance
+- Code quality is good: clear docstrings, well-organized sections, proper signal handling
+- No changes required
+- Size: Small (review only)
 
 **TECH-013: Review dedup.py Structure and Remove Dead Code** ✓
 - Reviewed `kafka_pipeline/eventhouse/dedup.py` (445 lines, 1 dataclass + 1 class with 10 methods + 1 standalone function)
