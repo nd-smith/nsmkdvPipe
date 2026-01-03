@@ -477,7 +477,7 @@ async def download_worker(
 
     yield worker
 
-    if worker.consumer.is_running:
+    if worker.is_running:
         await worker.stop()
 
 

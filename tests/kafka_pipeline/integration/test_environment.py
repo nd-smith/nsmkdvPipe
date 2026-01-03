@@ -180,7 +180,7 @@ async def test_download_worker_can_be_created(
     - Worker components are initialized
     """
     assert download_worker is not None
-    assert download_worker.consumer is not None
+    assert download_worker.topics is not None  # Consumer is created on start(), topics are set on init
     assert download_worker.producer is not None
     assert download_worker.config is not None
 
@@ -244,7 +244,10 @@ async def test_topics_are_accessible(
     task = DownloadTaskMessage(
         trace_id="test-env-001",
         attachment_url="https://example.com/test.pdf",
-        destination_path="test/test.pdf",
+        blob_path="documentsReceived/T-001/pdf/test.pdf",
+        status_subtype="documentsReceived",
+        file_type="pdf",
+        assignment_id="T-001",
         event_type="test",
         event_subtype="validation",
         retry_count=0,
@@ -284,29 +287,30 @@ async def test_test_data_generators_work():
     # Test event generator
     event = create_event_message()
     assert event.trace_id
-    assert event.event_type == "claim"
+    assert "xn" in event.type  # source_system is in the type string
     assert event.attachments
 
     # Test with customization
     custom_event = create_event_message(
         trace_id="custom-001",
-        event_type="policy",
+        source_system="xn",
+        event_subtype="policyReceived",
         attachments=["https://example.com/file1.pdf", "https://example.com/file2.pdf"]
     )
     assert custom_event.trace_id == "custom-001"
-    assert custom_event.event_type == "policy"
+    assert "policyReceived" in custom_event.type
     assert len(custom_event.attachments) == 2
 
     # Test task generator
     task = create_download_task_message()
     assert task.trace_id
     assert task.attachment_url
-    assert task.destination_path
+    assert task.blob_path
 
     # Test result generator
     result = create_download_result_message()
     assert result.trace_id
-    assert result.status == "success"
+    assert result.status == "completed"
 
     # Test failed message generator
     failed = create_failed_download_message()

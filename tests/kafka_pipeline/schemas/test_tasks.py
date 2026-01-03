@@ -22,9 +22,12 @@ class TestDownloadTaskMessageCreation:
         task = DownloadTaskMessage(
             trace_id="evt-123",
             attachment_url="https://storage.example.com/file.pdf",
-            destination_path="claims/C-456/file.pdf",
-            event_type="claim",
-            event_subtype="created",
+            blob_path="documentsReceived/A12345/pdf/file.pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="A12345",
+            event_type="xact",
+            event_subtype="documentsReceived",
             retry_count=0,
             original_timestamp=datetime(2024, 12, 25, 10, 30, 0, tzinfo=timezone.utc),
             metadata={"file_size": 1024, "content_type": "application/pdf"}
@@ -32,9 +35,12 @@ class TestDownloadTaskMessageCreation:
 
         assert task.trace_id == "evt-123"
         assert task.attachment_url == "https://storage.example.com/file.pdf"
-        assert task.destination_path == "claims/C-456/file.pdf"
-        assert task.event_type == "claim"
-        assert task.event_subtype == "created"
+        assert task.blob_path == "documentsReceived/A12345/pdf/file.pdf"
+        assert task.status_subtype == "documentsReceived"
+        assert task.file_type == "pdf"
+        assert task.assignment_id == "A12345"
+        assert task.event_type == "xact"
+        assert task.event_subtype == "documentsReceived"
         assert task.retry_count == 0
         assert task.metadata == {"file_size": 1024, "content_type": "application/pdf"}
 
@@ -43,9 +49,12 @@ class TestDownloadTaskMessageCreation:
         task = DownloadTaskMessage(
             trace_id="evt-456",
             attachment_url="https://storage.example.com/image.jpg",
-            destination_path="policies/P-789/image.jpg",
-            event_type="policy",
-            event_subtype="updated",
+            blob_path="estimateCreated/B67890/jpg/image.jpg",
+            status_subtype="estimateCreated",
+            file_type="jpg",
+            assignment_id="B67890",
+            event_type="xact",
+            event_subtype="estimateCreated",
             original_timestamp=datetime.now(timezone.utc)
         )
 
@@ -57,9 +66,12 @@ class TestDownloadTaskMessageCreation:
         task = DownloadTaskMessage(
             trace_id="evt-retry",
             attachment_url="https://storage.example.com/doc.pdf",
-            destination_path="claims/C-001/doc.pdf",
-            event_type="claim",
-            event_subtype="created",
+            blob_path="documentsReceived/C-001/pdf/doc.pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="C-001",
+            event_type="xact",
+            event_subtype="documentsReceived",
             retry_count=3,
             original_timestamp=datetime.now(timezone.utc)
         )
@@ -84,9 +96,12 @@ class TestDownloadTaskMessageCreation:
         task = DownloadTaskMessage(
             trace_id="evt-complex",
             attachment_url="https://storage.example.com/large.pdf",
-            destination_path="claims/C-999/large.pdf",
-            event_type="claim",
-            event_subtype="created",
+            blob_path="documentsReceived/C-999/pdf/large.pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="C-999",
+            event_type="xact",
+            event_subtype="documentsReceived",
             retry_count=2,
             original_timestamp=datetime.now(timezone.utc),
             metadata=complex_metadata
@@ -106,14 +121,14 @@ class TestDownloadTaskMessageValidation:
             DownloadTaskMessage(
                 trace_id="evt-123",
                 attachment_url="https://storage.example.com/file.pdf",
-                event_type="claim",
-                event_subtype="created",
+                event_type="xact",
+                event_subtype="documentsReceived",
                 original_timestamp=datetime.now(timezone.utc)
-                # Missing destination_path
+                # Missing blob_path, status_subtype, file_type, assignment_id
             )
 
         errors = exc_info.value.errors()
-        assert any(e['loc'] == ('destination_path',) for e in errors)
+        assert any(e['loc'] == ('blob_path',) for e in errors)
 
     def test_empty_trace_id_raises_error(self):
         """Empty trace_id raises ValidationError."""
@@ -121,9 +136,12 @@ class TestDownloadTaskMessageValidation:
             DownloadTaskMessage(
                 trace_id="",
                 attachment_url="https://storage.example.com/file.pdf",
-                destination_path="claims/C-456/file.pdf",
-                event_type="claim",
-                event_subtype="created",
+                blob_path="documentsReceived/A12345/pdf/file.pdf",
+                status_subtype="documentsReceived",
+                file_type="pdf",
+                assignment_id="A12345",
+                event_type="xact",
+                event_subtype="documentsReceived",
                 original_timestamp=datetime.now(timezone.utc)
             )
 
@@ -136,9 +154,12 @@ class TestDownloadTaskMessageValidation:
             DownloadTaskMessage(
                 trace_id="   ",
                 attachment_url="https://storage.example.com/file.pdf",
-                destination_path="claims/C-456/file.pdf",
-                event_type="claim",
-                event_subtype="created",
+                blob_path="documentsReceived/A12345/pdf/file.pdf",
+                status_subtype="documentsReceived",
+                file_type="pdf",
+                assignment_id="A12345",
+                event_type="xact",
+                event_subtype="documentsReceived",
                 original_timestamp=datetime.now(timezone.utc)
             )
 
@@ -151,21 +172,27 @@ class TestDownloadTaskMessageValidation:
             DownloadTaskMessage(
                 trace_id="evt-123",
                 attachment_url="",
-                destination_path="claims/C-456/file.pdf",
-                event_type="claim",
-                event_subtype="created",
+                blob_path="documentsReceived/A12345/pdf/file.pdf",
+                status_subtype="documentsReceived",
+                file_type="pdf",
+                assignment_id="A12345",
+                event_type="xact",
+                event_subtype="documentsReceived",
                 original_timestamp=datetime.now(timezone.utc)
             )
 
-    def test_empty_destination_path_raises_error(self):
-        """Empty destination_path raises ValidationError."""
+    def test_empty_blob_path_raises_error(self):
+        """Empty blob_path raises ValidationError."""
         with pytest.raises(ValidationError):
             DownloadTaskMessage(
                 trace_id="evt-123",
                 attachment_url="https://storage.example.com/file.pdf",
-                destination_path="",
-                event_type="claim",
-                event_subtype="created",
+                blob_path="",
+                status_subtype="documentsReceived",
+                file_type="pdf",
+                assignment_id="A12345",
+                event_type="xact",
+                event_subtype="documentsReceived",
                 original_timestamp=datetime.now(timezone.utc)
             )
 
@@ -174,17 +201,20 @@ class TestDownloadTaskMessageValidation:
         task = DownloadTaskMessage(
             trace_id="  evt-123  ",
             attachment_url="  https://storage.example.com/file.pdf  ",
-            destination_path="  claims/C-456/file.pdf  ",
-            event_type="  claim  ",
-            event_subtype="  created  ",
+            blob_path="  documentsReceived/A12345/pdf/file.pdf  ",
+            status_subtype="  documentsReceived  ",
+            file_type="  pdf  ",
+            assignment_id="  A12345  ",
+            event_type="  xact  ",
+            event_subtype="  documentsReceived  ",
             original_timestamp=datetime.now(timezone.utc)
         )
 
         assert task.trace_id == "evt-123"
         assert task.attachment_url == "https://storage.example.com/file.pdf"
-        assert task.destination_path == "claims/C-456/file.pdf"
-        assert task.event_type == "claim"
-        assert task.event_subtype == "created"
+        assert task.blob_path == "documentsReceived/A12345/pdf/file.pdf"
+        assert task.event_type == "xact"
+        assert task.event_subtype == "documentsReceived"
 
     def test_negative_retry_count_raises_error(self):
         """Negative retry_count raises ValidationError."""
@@ -192,9 +222,12 @@ class TestDownloadTaskMessageValidation:
             DownloadTaskMessage(
                 trace_id="evt-123",
                 attachment_url="https://storage.example.com/file.pdf",
-                destination_path="claims/C-456/file.pdf",
-                event_type="claim",
-                event_subtype="created",
+                blob_path="documentsReceived/A12345/pdf/file.pdf",
+                status_subtype="documentsReceived",
+                file_type="pdf",
+                assignment_id="A12345",
+                event_type="xact",
+                event_subtype="documentsReceived",
                 retry_count=-1,
                 original_timestamp=datetime.now(timezone.utc)
             )
@@ -207,9 +240,12 @@ class TestDownloadTaskMessageValidation:
         task = DownloadTaskMessage(
             trace_id="evt-many-retries",
             attachment_url="https://storage.example.com/file.pdf",
-            destination_path="claims/C-456/file.pdf",
-            event_type="claim",
-            event_subtype="created",
+            blob_path="documentsReceived/A12345/pdf/file.pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="A12345",
+            event_type="xact",
+            event_subtype="documentsReceived",
             retry_count=100,
             original_timestamp=datetime.now(timezone.utc)
         )
@@ -225,9 +261,12 @@ class TestDownloadTaskMessageSerialization:
         task = DownloadTaskMessage(
             trace_id="evt-123",
             attachment_url="https://storage.example.com/file.pdf",
-            destination_path="claims/C-456/file.pdf",
-            event_type="claim",
-            event_subtype="created",
+            blob_path="documentsReceived/A12345/pdf/file.pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="A12345",
+            event_type="xact",
+            event_subtype="documentsReceived",
             retry_count=0,
             original_timestamp=datetime(2024, 12, 25, 10, 30, 0, tzinfo=timezone.utc),
             metadata={"file_size": 1024}
@@ -238,8 +277,8 @@ class TestDownloadTaskMessageSerialization:
 
         assert parsed["trace_id"] == "evt-123"
         assert parsed["attachment_url"] == "https://storage.example.com/file.pdf"
-        assert parsed["destination_path"] == "claims/C-456/file.pdf"
-        assert parsed["event_type"] == "claim"
+        assert parsed["blob_path"] == "documentsReceived/A12345/pdf/file.pdf"
+        assert parsed["event_type"] == "xact"
         assert parsed["retry_count"] == 0
         assert parsed["original_timestamp"] == "2024-12-25T10:30:00+00:00"
         assert parsed["metadata"] == {"file_size": 1024}
@@ -249,9 +288,12 @@ class TestDownloadTaskMessageSerialization:
         json_data = {
             "trace_id": "evt-789",
             "attachment_url": "https://storage.example.com/doc.pdf",
-            "destination_path": "policies/P-001/doc.pdf",
-            "event_type": "policy",
-            "event_subtype": "updated",
+            "blob_path": "estimateCreated/P-001/pdf/doc.pdf",
+            "status_subtype": "estimateCreated",
+            "file_type": "pdf",
+            "assignment_id": "P-001",
+            "event_type": "xact",
+            "event_subtype": "estimateCreated",
             "retry_count": 2,
             "original_timestamp": "2024-12-25T15:45:00Z",
             "metadata": {"source": "policysys"}
@@ -269,9 +311,12 @@ class TestDownloadTaskMessageSerialization:
         task = DownloadTaskMessage(
             trace_id="evt-123",
             attachment_url="https://storage.example.com/file.pdf",
-            destination_path="claims/C-456/file.pdf",
-            event_type="claim",
-            event_subtype="created",
+            blob_path="documentsReceived/A12345/pdf/file.pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="A12345",
+            event_type="xact",
+            event_subtype="documentsReceived",
             original_timestamp=datetime(2024, 12, 25, 10, 30, 45, tzinfo=timezone.utc)
         )
 
@@ -291,9 +336,12 @@ class TestDownloadTaskMessageSerialization:
         original = DownloadTaskMessage(
             trace_id="evt-round-trip",
             attachment_url="https://storage.example.com/file.pdf",
-            destination_path="claims/C-456/file.pdf",
-            event_type="claim",
-            event_subtype="created",
+            blob_path="documentsReceived/A12345/pdf/file.pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="A12345",
+            event_type="xact",
+            event_subtype="documentsReceived",
             retry_count=3,
             original_timestamp=datetime(2024, 12, 25, 10, 30, 0, tzinfo=timezone.utc),
             metadata={"key": "value", "number": 42}
@@ -305,7 +353,7 @@ class TestDownloadTaskMessageSerialization:
 
         assert restored.trace_id == original.trace_id
         assert restored.attachment_url == original.attachment_url
-        assert restored.destination_path == original.destination_path
+        assert restored.blob_path == original.blob_path
         assert restored.event_type == original.event_type
         assert restored.event_subtype == original.event_subtype
         assert restored.retry_count == original.retry_count
@@ -317,9 +365,12 @@ class TestDownloadTaskMessageSerialization:
         task = DownloadTaskMessage(
             trace_id="evt-123",
             attachment_url="https://storage.example.com/file.pdf",
-            destination_path="claims/C-456/file.pdf",
-            event_type="claim",
-            event_subtype="created",
+            blob_path="documentsReceived/A12345/pdf/file.pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="A12345",
+            event_type="xact",
+            event_subtype="documentsReceived",
             original_timestamp=datetime(2024, 12, 25, 10, 30, 0, tzinfo=timezone.utc)
         )
 
@@ -336,9 +387,12 @@ class TestDownloadTaskMessageSerialization:
         task = DownloadTaskMessage(
             trace_id="evt-123",
             attachment_url="https://storage.example.com/file.pdf",
-            destination_path="claims/C-456/file.pdf",
-            event_type="claim",
-            event_subtype="created",
+            blob_path="documentsReceived/A12345/pdf/file.pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="A12345",
+            event_type="xact",
+            event_subtype="documentsReceived",
             original_timestamp=datetime(2024, 12, 25, 10, 30, 0, tzinfo=timezone.utc)
         )
 
@@ -360,9 +414,12 @@ class TestDownloadTaskMessageRetryTracking:
         task_v1 = DownloadTaskMessage(
             trace_id="evt-retry-test",
             attachment_url="https://storage.example.com/file.pdf",
-            destination_path="claims/C-456/file.pdf",
-            event_type="claim",
-            event_subtype="created",
+            blob_path="documentsReceived/A12345/pdf/file.pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="A12345",
+            event_type="xact",
+            event_subtype="documentsReceived",
             retry_count=0,
             original_timestamp=original_time
         )
@@ -371,9 +428,12 @@ class TestDownloadTaskMessageRetryTracking:
         task_v2 = DownloadTaskMessage(
             trace_id="evt-retry-test",
             attachment_url="https://storage.example.com/file.pdf",
-            destination_path="claims/C-456/file.pdf",
-            event_type="claim",
-            event_subtype="created",
+            blob_path="documentsReceived/A12345/pdf/file.pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="A12345",
+            event_type="xact",
+            event_subtype="documentsReceived",
             retry_count=1,
             original_timestamp=original_time  # Same as v1
         )
@@ -387,9 +447,12 @@ class TestDownloadTaskMessageRetryTracking:
             task = DownloadTaskMessage(
                 trace_id="evt-retry-increment",
                 attachment_url="https://storage.example.com/file.pdf",
-                destination_path="claims/C-456/file.pdf",
-                event_type="claim",
-                event_subtype="created",
+                blob_path="documentsReceived/A12345/pdf/file.pdf",
+                status_subtype="documentsReceived",
+                file_type="pdf",
+                assignment_id="A12345",
+                event_type="xact",
+                event_subtype="documentsReceived",
                 retry_count=attempt,
                 original_timestamp=datetime.now(timezone.utc)
             )
@@ -405,9 +468,12 @@ class TestDownloadTaskMessageMetadata:
         task = DownloadTaskMessage(
             trace_id="evt-123",
             attachment_url="https://storage.example.com/file.pdf",
-            destination_path="claims/C-456/file.pdf",
-            event_type="claim",
-            event_subtype="created",
+            blob_path="documentsReceived/A12345/pdf/file.pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="A12345",
+            event_type="xact",
+            event_subtype="documentsReceived",
             original_timestamp=datetime.now(timezone.utc)
         )
 
@@ -418,9 +484,12 @@ class TestDownloadTaskMessageMetadata:
         task = DownloadTaskMessage(
             trace_id="evt-meta",
             attachment_url="https://storage.example.com/file.pdf",
-            destination_path="claims/C-456/file.pdf",
-            event_type="claim",
-            event_subtype="created",
+            blob_path="documentsReceived/A12345/pdf/file.pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="A12345",
+            event_type="xact",
+            event_subtype="documentsReceived",
             original_timestamp=datetime.now(timezone.utc),
             metadata={
                 "correlation_id": "corr-123",
@@ -446,47 +515,55 @@ class TestDownloadTaskMessageEdgeCases:
         task = DownloadTaskMessage(
             trace_id="evt-long-url",
             attachment_url=long_url,
-            destination_path="claims/C-456/file.pdf",
-            event_type="claim",
-            event_subtype="created",
+            blob_path="documentsReceived/A12345/pdf/file.pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="A12345",
+            event_type="xact",
+            event_subtype="documentsReceived",
             original_timestamp=datetime.now(timezone.utc)
         )
 
         assert task.attachment_url == long_url
 
-    def test_very_long_destination_path(self):
-        """Very long destination paths are accepted."""
+    def test_very_long_blob_path(self):
+        """Very long blob paths are accepted."""
         long_path = "claims/" + "/".join(["dir"] * 100) + "/file.pdf"
         task = DownloadTaskMessage(
             trace_id="evt-long-path",
             attachment_url="https://storage.example.com/file.pdf",
-            destination_path=long_path,
-            event_type="claim",
-            event_subtype="created",
+            blob_path=long_path,
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="A12345",
+            event_type="xact",
+            event_subtype="documentsReceived",
             original_timestamp=datetime.now(timezone.utc)
         )
 
-        assert task.destination_path == long_path
+        assert task.blob_path == long_path
 
     def test_unicode_in_metadata(self):
         """Metadata can contain Unicode characters."""
         task = DownloadTaskMessage(
             trace_id="evt-unicode",
             attachment_url="https://storage.example.com/file.pdf",
-            destination_path="claims/C-456/file.pdf",
-            event_type="claim",
-            event_subtype="created",
+            blob_path="documentsReceived/A12345/pdf/file.pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="A12345",
+            event_type="xact",
+            event_subtype="documentsReceived",
             original_timestamp=datetime.now(timezone.utc),
             metadata={
-                "filename": "Schädenübersicht.pdf",
-                "note": "重要文書",
-                "tags": ["🔥", "💧"]
+                "filename": "Schadenubersicht.pdf",
+                "note": "Important document",
+                "tags": ["urgent", "important"]
             }
         )
 
-        assert task.metadata["filename"] == "Schädenübersicht.pdf"
-        assert task.metadata["note"] == "重要文書"
-        assert "🔥" in task.metadata["tags"]
+        assert task.metadata["filename"] == "Schadenubersicht.pdf"
+        assert "urgent" in task.metadata["tags"]
 
     def test_naive_datetime_is_accepted(self):
         """Naive datetime (without timezone) is accepted."""
@@ -494,9 +571,12 @@ class TestDownloadTaskMessageEdgeCases:
         task = DownloadTaskMessage(
             trace_id="evt-naive",
             attachment_url="https://storage.example.com/file.pdf",
-            destination_path="claims/C-456/file.pdf",
-            event_type="claim",
-            event_subtype="created",
+            blob_path="documentsReceived/A12345/pdf/file.pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="A12345",
+            event_type="xact",
+            event_subtype="documentsReceived",
             original_timestamp=naive_dt
         )
 
@@ -507,11 +587,14 @@ class TestDownloadTaskMessageEdgeCases:
         task = DownloadTaskMessage(
             trace_id="evt-special-chars",
             attachment_url="https://storage.example.com/file%20(1).pdf?token=abc123",
-            destination_path="claims/C-456/file (1).pdf",
-            event_type="claim",
-            event_subtype="created",
+            blob_path="documentsReceived/A12345/pdf/file (1).pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="A12345",
+            event_type="xact",
+            event_subtype="documentsReceived",
             original_timestamp=datetime.now(timezone.utc)
         )
 
         assert "file%20(1).pdf" in task.attachment_url
-        assert "file (1).pdf" in task.destination_path
+        assert "file (1).pdf" in task.blob_path

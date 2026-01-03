@@ -19,8 +19,8 @@ from kafka_pipeline.schemas.tasks import DownloadTaskMessage
 def create_event_message(
     trace_id: Optional[str] = None,
     event_type: str = "claim",
-    event_subtype: str = "created",
-    source_system: str = "claimx",
+    event_subtype: str = "documentsReceived",
+    source_system: str = "xn",
     attachments: Optional[List[str]] = None,
     timestamp: Optional[datetime] = None,
     payload: Optional[Dict[str, Any]] = None,
@@ -31,8 +31,8 @@ def create_event_message(
     Args:
         trace_id: Unique event identifier (auto-generated if None)
         event_type: High-level event category (default: "claim")
-        event_subtype: Specific event action (default: "created")
-        source_system: Originating system (default: "claimx")
+        event_subtype: Specific event action (default: "documentsReceived")
+        source_system: Source system identifier (default: "xn")
         attachments: List of attachment URLs (default: single test PDF)
         timestamp: Event timestamp (default: current UTC time)
         payload: Event-specific data (default: minimal claim payload)
@@ -47,6 +47,8 @@ def create_event_message(
         ...     attachments=["https://example.com/file1.pdf", "https://example.com/file2.pdf"]
         ... )
     """
+    import json
+
     # Auto-generate trace_id if not provided
     if trace_id is None:
         import uuid
@@ -60,31 +62,37 @@ def create_event_message(
     if timestamp is None:
         timestamp = datetime.now(timezone.utc)
 
-    # Default payload
+    # Default payload - include attachments in data
     if payload is None:
         payload = {
+            "assignmentId": f"A-{trace_id[-6:]}",
             "claim_id": f"C-{trace_id[-6:]}",
-            "amount": 10000,
-            "status": "pending",
         }
 
+    # Add attachments to data payload
+    data_payload = {**payload, "attachments": attachments}
+
+    # Build the event type string
+    type_str = f"verisk.claims.property.{source_system}.{event_subtype}"
+
     return EventMessage(
-        trace_id=trace_id,
-        event_type=event_type,
-        event_subtype=event_subtype,
-        timestamp=timestamp,
-        source_system=source_system,
-        payload=payload,
-        attachments=attachments,
+        type=type_str,
+        version=1,
+        utcDateTime=timestamp.isoformat() if isinstance(timestamp, datetime) else timestamp,
+        traceId=trace_id,
+        data=json.dumps(data_payload),
     )
 
 
 def create_download_task_message(
     trace_id: Optional[str] = None,
     attachment_url: str = "https://example.com/file.pdf",
-    destination_path: Optional[str] = None,
-    event_type: str = "claim",
-    event_subtype: str = "created",
+    blob_path: Optional[str] = None,
+    status_subtype: str = "documentsReceived",
+    file_type: Optional[str] = None,
+    assignment_id: str = "A12345",
+    event_type: str = "xact",
+    event_subtype: str = "documentsReceived",
     retry_count: int = 0,
     original_timestamp: Optional[datetime] = None,
     metadata: Optional[Dict[str, Any]] = None,
@@ -95,9 +103,12 @@ def create_download_task_message(
     Args:
         trace_id: Event identifier (auto-generated if None)
         attachment_url: URL to download (default: example.com PDF)
-        destination_path: OneLake destination path (auto-generated if None)
-        event_type: Event category (default: "claim")
-        event_subtype: Event action (default: "created")
+        blob_path: OneLake blob path (auto-generated if None)
+        status_subtype: Event status subtype (default: "documentsReceived")
+        file_type: File type from URL (auto-detected if None)
+        assignment_id: Assignment ID (default: "A12345")
+        event_type: Event category (default: "xact")
+        event_subtype: Event action (default: "documentsReceived")
         retry_count: Number of retry attempts (default: 0)
         original_timestamp: Original event timestamp (default: current UTC)
         metadata: Additional metadata dict (default: empty)
@@ -118,10 +129,18 @@ def create_download_task_message(
         import uuid
         trace_id = f"test-task-{uuid.uuid4().hex[:8]}"
 
-    # Auto-generate destination path if not provided
-    if destination_path is None:
+    # Extract file_type from URL if not provided
+    if file_type is None:
         filename = attachment_url.split("/")[-1]
-        destination_path = f"test/{trace_id}/{filename}"
+        if "." in filename:
+            file_type = filename.rsplit(".", 1)[-1].lower()
+        else:
+            file_type = "pdf"
+
+    # Auto-generate blob_path if not provided
+    if blob_path is None:
+        filename = attachment_url.split("/")[-1]
+        blob_path = f"{status_subtype}/{assignment_id}/{file_type}/{filename}"
 
     # Default timestamp
     if original_timestamp is None:
@@ -134,7 +153,10 @@ def create_download_task_message(
     return DownloadTaskMessage(
         trace_id=trace_id,
         attachment_url=attachment_url,
-        destination_path=destination_path,
+        blob_path=blob_path,
+        status_subtype=status_subtype,
+        file_type=file_type,
+        assignment_id=assignment_id,
         event_type=event_type,
         event_subtype=event_subtype,
         retry_count=retry_count,
@@ -146,13 +168,18 @@ def create_download_task_message(
 def create_download_result_message(
     trace_id: Optional[str] = None,
     attachment_url: str = "https://example.com/file.pdf",
-    destination_path: Optional[str] = None,
-    status: str = "success",
-    bytes_downloaded: Optional[int] = 1024,
-    processing_time_ms: int = 100,
-    completed_at: Optional[datetime] = None,
+    blob_path: Optional[str] = None,
+    status_subtype: str = "documentsReceived",
+    file_type: Optional[str] = None,
+    assignment_id: str = "A12345",
+    status: str = "completed",
+    http_status: Optional[int] = 200,
+    bytes_downloaded: int = 1024,
+    retry_count: int = 0,
+    created_at: Optional[datetime] = None,
     error_message: Optional[str] = None,
-    error_category: Optional[str] = None,
+    expires_at: Optional[datetime] = None,
+    expired_at_ingest: Optional[bool] = None,
 ) -> DownloadResultMessage:
     """
     Create test DownloadResultMessage with sensible defaults.
@@ -160,13 +187,18 @@ def create_download_result_message(
     Args:
         trace_id: Event identifier (auto-generated if None)
         attachment_url: Downloaded URL
-        destination_path: OneLake path where file was uploaded
-        status: Download status (default: "success")
-        bytes_downloaded: Number of bytes downloaded (default: 1024, None for failures)
-        processing_time_ms: Processing time in ms (default: 100)
-        completed_at: Completion timestamp (default: current UTC)
+        blob_path: OneLake path where file was uploaded
+        status_subtype: Event status subtype (default: "documentsReceived")
+        file_type: File extension (auto-detected from URL if None)
+        assignment_id: Assignment ID (default: "A12345")
+        status: Download status (default: "completed")
+        http_status: HTTP response status code (default: 200)
+        bytes_downloaded: Number of bytes downloaded (default: 1024, 0 for failures)
+        retry_count: Number of retry attempts (default: 0)
+        created_at: Creation timestamp (default: current UTC)
         error_message: Error description (for failures)
-        error_category: Error classification (for failures)
+        expires_at: URL expiration timestamp (optional)
+        expired_at_ingest: Whether URL was expired at ingest (optional)
 
     Returns:
         DownloadResultMessage: Valid result message for testing
@@ -175,10 +207,9 @@ def create_download_result_message(
         >>> result = create_download_result_message(trace_id="test-001")
         >>> result = create_download_result_message(
         ...     trace_id="test-002",
-        ...     status="failed_transient",
+        ...     status="failed",
         ...     error_message="Connection timeout",
-        ...     error_category="TRANSIENT",
-        ...     bytes_downloaded=None
+        ...     bytes_downloaded=0
         ... )
     """
     # Auto-generate trace_id if not provided
@@ -186,41 +217,62 @@ def create_download_result_message(
         import uuid
         trace_id = f"test-result-{uuid.uuid4().hex[:8]}"
 
-    # Auto-generate destination path if not provided (only for successful downloads)
-    if destination_path is None and status == "success":
+    # Extract file_type from URL if not provided
+    if file_type is None:
         filename = attachment_url.split("/")[-1]
-        destination_path = f"test/{trace_id}/{filename}"
+        if "." in filename:
+            file_type = filename.rsplit(".", 1)[-1].lower()
+        else:
+            file_type = "pdf"
 
-    # Default completion timestamp
-    if completed_at is None:
-        completed_at = datetime.now(timezone.utc)
+    # Auto-generate blob_path if not provided (only for successful downloads)
+    if blob_path is None and status == "completed":
+        filename = attachment_url.split("/")[-1]
+        blob_path = f"{status_subtype}/{assignment_id}/{file_type}/{filename}"
+    elif blob_path is None:
+        # For failures, still need a blob_path
+        filename = attachment_url.split("/")[-1]
+        blob_path = f"{status_subtype}/{assignment_id}/{file_type}/{filename}"
 
-    # For failed downloads, bytes_downloaded should be None
-    if status != "success" and bytes_downloaded is not None:
-        bytes_downloaded = None
+    # Default creation timestamp
+    if created_at is None:
+        created_at = datetime.now(timezone.utc)
+
+    # For failed downloads, bytes_downloaded should be 0
+    if status != "completed":
+        bytes_downloaded = 0
+        http_status = None
 
     return DownloadResultMessage(
         trace_id=trace_id,
         attachment_url=attachment_url,
-        destination_path=destination_path,
+        blob_path=blob_path,
+        status_subtype=status_subtype,
+        file_type=file_type,
+        assignment_id=assignment_id,
         status=status,
+        http_status=http_status,
         bytes_downloaded=bytes_downloaded,
-        processing_time_ms=processing_time_ms,
-        completed_at=completed_at,
+        retry_count=retry_count,
         error_message=error_message,
-        error_category=error_category,
+        created_at=created_at,
+        expires_at=expires_at,
+        expired_at_ingest=expired_at_ingest,
     )
 
 
 def create_failed_download_message(
     trace_id: Optional[str] = None,
     attachment_url: str = "https://example.com/file.pdf",
-    destination_path: Optional[str] = None,
+    blob_path: Optional[str] = None,
+    status_subtype: str = "documentsReceived",
+    file_type: Optional[str] = None,
+    assignment_id: str = "A12345",
     final_error: str = "Download failed after max retries",
     error_category: str = "PERMANENT",
     retry_count: int = 3,
-    event_type: str = "claim",
-    event_subtype: str = "created",
+    event_type: str = "xact",
+    event_subtype: str = "documentsReceived",
     original_timestamp: Optional[datetime] = None,
     failed_at: Optional[datetime] = None,
     metadata: Optional[Dict[str, Any]] = None,
@@ -231,12 +283,15 @@ def create_failed_download_message(
     Args:
         trace_id: Event identifier (auto-generated if None)
         attachment_url: Failed download URL
-        destination_path: Intended destination path
+        blob_path: OneLake blob path (auto-generated if None)
+        status_subtype: Event status subtype (default: "documentsReceived")
+        file_type: File type from URL (auto-detected if None)
+        assignment_id: Assignment ID (default: "A12345")
         final_error: Error description
         error_category: Error classification (default: "PERMANENT")
         retry_count: Number of attempts made (default: 3)
-        event_type: Event category
-        event_subtype: Event action
+        event_type: Event category (default: "xact")
+        event_subtype: Event action (default: "documentsReceived")
         original_timestamp: Original event timestamp
         failed_at: Timestamp when task was sent to DLQ (default: current UTC)
         metadata: Additional error context
@@ -257,10 +312,18 @@ def create_failed_download_message(
         import uuid
         trace_id = f"test-failed-{uuid.uuid4().hex[:8]}"
 
-    # Auto-generate destination path if not provided
-    if destination_path is None:
+    # Extract file_type from URL if not provided
+    if file_type is None:
         filename = attachment_url.split("/")[-1]
-        destination_path = f"test/{trace_id}/{filename}"
+        if "." in filename:
+            file_type = filename.rsplit(".", 1)[-1].lower()
+        else:
+            file_type = "pdf"
+
+    # Auto-generate blob_path if not provided
+    if blob_path is None:
+        filename = attachment_url.split("/")[-1]
+        blob_path = f"{status_subtype}/{assignment_id}/{file_type}/{filename}"
 
     # Default timestamps
     if original_timestamp is None:
@@ -283,7 +346,10 @@ def create_failed_download_message(
     original_task = DownloadTaskMessage(
         trace_id=trace_id,
         attachment_url=attachment_url,
-        destination_path=destination_path,
+        blob_path=blob_path,
+        status_subtype=status_subtype,
+        file_type=file_type,
+        assignment_id=assignment_id,
         event_type=event_type,
         event_subtype=event_subtype,
         retry_count=retry_count,

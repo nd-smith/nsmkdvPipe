@@ -44,7 +44,10 @@ def download_task():
     return DownloadTaskMessage(
         trace_id="test-trace-123",
         attachment_url="https://example.com/file.pdf",
-        destination_path="claims/C-123/file.pdf",
+        blob_path="documentsReceived/C-123/pdf/file.pdf",
+        status_subtype="documentsReceived",
+        file_type="pdf",
+        assignment_id="C-123",
         event_type="claim",
         event_subtype="created",
         retry_count=1,
@@ -426,7 +429,7 @@ class TestDelayedRedeliveryScheduler:
 
         assert redelivered_task.trace_id == download_task.trace_id
         assert redelivered_task.attachment_url == download_task.attachment_url
-        assert redelivered_task.destination_path == download_task.destination_path
+        assert redelivered_task.blob_path == download_task.blob_path
         assert redelivered_task.retry_count == download_task.retry_count
         assert redelivered_task.metadata["custom_field"] == "custom_value"
         assert redelivered_task.metadata["retry_at"] == past_time.isoformat()

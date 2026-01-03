@@ -120,73 +120,75 @@ class TestKQLEventPoller:
 
     def test_row_to_event_basic(self, config):
         """Test converting a simple row to EventMessage."""
+        import json
         poller = KQLEventPoller(config)
 
         row = {
-            "trace_id": "test-trace-123",
-            "event_type": "claim",
-            "event_subtype": "created",
-            "timestamp": "2024-01-15T10:30:00+00:00",
-            "source_system": "claimx",
-            "payload": {"claim_id": "C-123"},
-            "attachments": ["https://example.com/file1.pdf"],
+            "type": "verisk.claims.property.claimx.created",
+            "version": 1,
+            "utcDateTime": "2024-01-15T10:30:00+00:00",
+            "traceId": "test-trace-123",
+            "data": json.dumps({
+                "claim_id": "C-123",
+                "attachments": ["https://example.com/file1.pdf"],
+            }),
         }
 
         event = poller._row_to_event(row)
 
         assert event.trace_id == "test-trace-123"
-        assert event.event_type == "claim"
-        assert event.event_subtype == "created"
-        assert event.source_system == "claimx"
-        assert event.payload == {"claim_id": "C-123"}
+        assert event.type == "verisk.claims.property.claimx.created"
+        assert event.status_subtype == "created"
+        assert event.data_dict["claim_id"] == "C-123"
         assert event.attachments == ["https://example.com/file1.pdf"]
 
     def test_row_to_event_with_datetime_object(self, config):
         """Test converting row with datetime object."""
+        import json
         poller = KQLEventPoller(config)
 
         row = {
-            "trace_id": "test-trace-123",
-            "event_type": "claim",
-            "event_subtype": "created",
-            "timestamp": datetime(2024, 1, 15, 10, 30, 0, tzinfo=timezone.utc),
-            "source_system": "claimx",
-            "payload": {},
+            "type": "verisk.claims.property.claimx.created",
+            "version": 1,
+            "utcDateTime": datetime(2024, 1, 15, 10, 30, 0, tzinfo=timezone.utc),
+            "traceId": "test-trace-123",
+            "data": json.dumps({}),
         }
 
         event = poller._row_to_event(row)
 
-        assert event.timestamp == datetime(2024, 1, 15, 10, 30, 0, tzinfo=timezone.utc)
+        # utc_datetime is stored as string
+        assert "2024-01-15" in event.utc_datetime
 
-    def test_row_to_event_with_string_payload(self, config):
-        """Test converting row with JSON string payload."""
+    def test_row_to_event_with_string_data(self, config):
+        """Test converting row with JSON string data."""
         poller = KQLEventPoller(config)
 
         row = {
-            "trace_id": "test-trace-123",
-            "event_type": "claim",
-            "event_subtype": "created",
-            "timestamp": "2024-01-15T10:30:00Z",
-            "source_system": "claimx",
-            "payload": '{"claim_id": "C-123"}',
+            "type": "verisk.claims.property.claimx.created",
+            "version": 1,
+            "utcDateTime": "2024-01-15T10:30:00Z",
+            "traceId": "test-trace-123",
+            "data": '{"claim_id": "C-123"}',
         }
 
         event = poller._row_to_event(row)
 
-        assert event.payload == {"claim_id": "C-123"}
+        assert event.data_dict == {"claim_id": "C-123"}
 
-    def test_row_to_event_with_string_attachments(self, config):
-        """Test converting row with JSON string attachments."""
+    def test_row_to_event_with_attachments_in_data(self, config):
+        """Test converting row with attachments in data field."""
+        import json
         poller = KQLEventPoller(config)
 
         row = {
-            "trace_id": "test-trace-123",
-            "event_type": "claim",
-            "event_subtype": "created",
-            "timestamp": "2024-01-15T10:30:00Z",
-            "source_system": "claimx",
-            "payload": {},
-            "attachments": '["https://example.com/file1.pdf", "https://example.com/file2.pdf"]',
+            "type": "verisk.claims.property.claimx.created",
+            "version": 1,
+            "utcDateTime": "2024-01-15T10:30:00Z",
+            "traceId": "test-trace-123",
+            "data": json.dumps({
+                "attachments": ["https://example.com/file1.pdf", "https://example.com/file2.pdf"]
+            }),
         }
 
         event = poller._row_to_event(row)
@@ -196,32 +198,23 @@ class TestKQLEventPoller:
             "https://example.com/file2.pdf",
         ]
 
-    def test_row_to_event_custom_column_mapping(self, config):
-        """Test converting row with custom column mapping."""
-        config.column_mapping = {
-            "trace_id": "custom_trace",
-            "event_type": "custom_type",
-            "event_subtype": "custom_subtype",
-            "timestamp": "custom_time",
-            "source_system": "custom_source",
-            "payload": "custom_data",
-        }
-
+    def test_row_to_event_with_dict_data(self, config):
+        """Test converting row with dict data field (auto-serialized to JSON)."""
         poller = KQLEventPoller(config)
 
         row = {
-            "custom_trace": "test-trace-123",
-            "custom_type": "claim",
-            "custom_subtype": "created",
-            "custom_time": "2024-01-15T10:30:00Z",
-            "custom_source": "claimx",
-            "custom_data": {},
+            "type": "verisk.claims.property.xn.documentsReceived",
+            "version": 1,
+            "utcDateTime": "2024-01-15T10:30:00Z",
+            "traceId": "test-trace-123",
+            "data": {"assignmentId": "A-123", "claim_id": "C-456"},  # Dict, not string
         }
 
         event = poller._row_to_event(row)
 
         assert event.trace_id == "test-trace-123"
-        assert event.event_type == "claim"
+        assert event.status_subtype == "documentsReceived"
+        assert event.assignment_id == "A-123"
 
     @pytest.mark.asyncio
     async def test_process_results_empty(self, config):
@@ -237,6 +230,7 @@ class TestKQLEventPoller:
     @pytest.mark.asyncio
     async def test_process_results_with_events(self, config):
         """Test processing results with events."""
+        import json
         poller = KQLEventPoller(config)
         poller._producer = AsyncMock()
         poller._producer.send = AsyncMock(
@@ -246,13 +240,14 @@ class TestKQLEventPoller:
         result = KQLQueryResult(
             rows=[
                 {
-                    "trace_id": "test-1",
-                    "event_type": "claim",
-                    "event_subtype": "created",
-                    "timestamp": "2024-01-15T10:30:00Z",
-                    "source_system": "claimx",
-                    "payload": {"assignment_id": "A-123"},
-                    "attachments": ["https://verisk.com/file1.pdf"],
+                    "type": "verisk.claims.property.xn.documentsReceived",
+                    "version": 1,
+                    "utcDateTime": "2024-01-15T10:30:00Z",
+                    "traceId": "test-1",
+                    "data": json.dumps({
+                        "assignmentId": "A-123",
+                        "attachments": ["https://verisk.com/file1.pdf"],
+                    }),
                 },
             ],
             row_count=1,
@@ -273,17 +268,16 @@ class TestKQLEventPoller:
     @pytest.mark.asyncio
     async def test_process_event_without_attachments(self, config):
         """Test processing event without attachments."""
+        import json
         poller = KQLEventPoller(config)
         poller._producer = AsyncMock()
 
         event = EventMessage(
-            trace_id="test-123",
-            event_type="claim",
-            event_subtype="created",
-            timestamp=datetime.now(timezone.utc),
-            source_system="claimx",
-            payload={},
-            attachments=None,
+            type="verisk.claims.property.xn.documentsReceived",
+            version=1,
+            utcDateTime=datetime.now(timezone.utc).isoformat(),
+            traceId="test-123",
+            data=json.dumps({"assignmentId": "A-123"}),  # No attachments
         )
 
         await poller._process_event_attachments(event)
@@ -294,17 +288,19 @@ class TestKQLEventPoller:
     @pytest.mark.asyncio
     async def test_process_event_without_assignment_id(self, config):
         """Test processing event without assignment_id."""
+        import json
         poller = KQLEventPoller(config)
         poller._producer = AsyncMock()
 
         event = EventMessage(
-            trace_id="test-123",
-            event_type="claim",
-            event_subtype="created",
-            timestamp=datetime.now(timezone.utc),
-            source_system="claimx",
-            payload={},  # No assignment_id
-            attachments=["https://example.com/file.pdf"],
+            type="verisk.claims.property.xn.documentsReceived",
+            version=1,
+            utcDateTime=datetime.now(timezone.utc).isoformat(),
+            traceId="test-123",
+            data=json.dumps({
+                "attachments": ["https://example.com/file.pdf"]
+                # No assignmentId
+            }),
         )
 
         await poller._process_event_attachments(event)

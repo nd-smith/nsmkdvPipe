@@ -18,58 +18,64 @@ from kafka_pipeline.schemas.tasks import DownloadTaskMessage
 class TestDownloadResultMessageCreation:
     """Test DownloadResultMessage instantiation with valid data."""
 
-    def test_create_success_result(self):
+    def test_create_completed_result(self):
         """DownloadResultMessage can be created for successful download."""
         result = DownloadResultMessage(
             trace_id="evt-123",
             attachment_url="https://storage.example.com/file.pdf",
-            status="success",
-            destination_path="claims/C-456/file.pdf",
+            blob_path="claims/C-456/file.pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="C-456",
+            status="completed",
+            http_status=200,
             bytes_downloaded=2048576,
-            processing_time_ms=1250,
-            completed_at=datetime(2024, 12, 25, 10, 31, 15, tzinfo=timezone.utc)
+            created_at=datetime(2024, 12, 25, 10, 31, 15, tzinfo=timezone.utc)
         )
 
         assert result.trace_id == "evt-123"
-        assert result.status == "success"
-        assert result.destination_path == "claims/C-456/file.pdf"
+        assert result.status == "completed"
+        assert result.blob_path == "claims/C-456/file.pdf"
         assert result.bytes_downloaded == 2048576
         assert result.error_message is None
-        assert result.error_category is None
 
-    def test_create_failed_transient_result(self):
+    def test_create_failed_result(self):
         """DownloadResultMessage can be created for transient failure."""
         result = DownloadResultMessage(
             trace_id="evt-456",
             attachment_url="https://storage.example.com/file.pdf",
-            status="failed_transient",
+            blob_path="documentsReceived/C-456/pdf/file.pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="C-456",
+            status="failed",
+            bytes_downloaded=0,
             error_message="Connection timeout after 30 seconds",
-            error_category="transient",
-            processing_time_ms=30150,
-            completed_at=datetime.now(timezone.utc)
+            created_at=datetime.now(timezone.utc)
         )
 
-        assert result.status == "failed_transient"
-        assert result.destination_path is None
-        assert result.bytes_downloaded is None
+        assert result.status == "failed"
+        assert result.bytes_downloaded == 0
         assert result.error_message == "Connection timeout after 30 seconds"
-        assert result.error_category == "transient"
 
     def test_create_failed_permanent_result(self):
         """DownloadResultMessage can be created for permanent failure."""
         result = DownloadResultMessage(
             trace_id="evt-789",
             attachment_url="https://storage.example.com/invalid.exe",
+            blob_path="documentsReceived/C-789/exe/invalid.exe",
+            status_subtype="documentsReceived",
+            file_type="exe",
+            assignment_id="C-789",
             status="failed_permanent",
+            http_status=403,
+            bytes_downloaded=0,
             error_message="File type .exe not allowed",
-            error_category="permanent",
-            processing_time_ms=50,
-            completed_at=datetime.now(timezone.utc)
+            created_at=datetime.now(timezone.utc)
         )
 
         assert result.status == "failed_permanent"
         assert result.error_message == "File type .exe not allowed"
-        assert result.error_category == "permanent"
 
 
 class TestDownloadResultMessageValidation:
@@ -81,13 +87,16 @@ class TestDownloadResultMessageValidation:
             DownloadResultMessage(
                 trace_id="evt-123",
                 attachment_url="https://storage.example.com/file.pdf",
-                status="success"
-                # Missing processing_time_ms and completed_at
+                status="completed"
+                # Missing blob_path, status_subtype, file_type, assignment_id, created_at
             )
 
         errors = exc_info.value.errors()
-        assert any(e['loc'] == ('processing_time_ms',) for e in errors)
-        assert any(e['loc'] == ('completed_at',) for e in errors)
+        assert any(e['loc'] == ('blob_path',) for e in errors)
+        assert any(e['loc'] == ('status_subtype',) for e in errors)
+        assert any(e['loc'] == ('file_type',) for e in errors)
+        assert any(e['loc'] == ('assignment_id',) for e in errors)
+        assert any(e['loc'] == ('created_at',) for e in errors)
 
     def test_empty_trace_id_raises_error(self):
         """Empty trace_id raises ValidationError."""
@@ -95,9 +104,12 @@ class TestDownloadResultMessageValidation:
             DownloadResultMessage(
                 trace_id="",
                 attachment_url="https://storage.example.com/file.pdf",
-                status="success",
-                processing_time_ms=1000,
-                completed_at=datetime.now(timezone.utc)
+                blob_path="claims/C-456/file.pdf",
+                status_subtype="documentsReceived",
+                file_type="pdf",
+                assignment_id="C-456",
+                status="completed",
+                created_at=datetime.now(timezone.utc)
             )
 
     def test_whitespace_trace_id_raises_error(self):
@@ -106,9 +118,12 @@ class TestDownloadResultMessageValidation:
             DownloadResultMessage(
                 trace_id="   ",
                 attachment_url="https://storage.example.com/file.pdf",
-                status="success",
-                processing_time_ms=1000,
-                completed_at=datetime.now(timezone.utc)
+                blob_path="claims/C-456/file.pdf",
+                status_subtype="documentsReceived",
+                file_type="pdf",
+                assignment_id="C-456",
+                status="completed",
+                created_at=datetime.now(timezone.utc)
             )
 
     def test_invalid_status_raises_error(self):
@@ -117,9 +132,12 @@ class TestDownloadResultMessageValidation:
             DownloadResultMessage(
                 trace_id="evt-123",
                 attachment_url="https://storage.example.com/file.pdf",
+                blob_path="claims/C-456/file.pdf",
+                status_subtype="documentsReceived",
+                file_type="pdf",
+                assignment_id="C-456",
                 status="invalid_status",
-                processing_time_ms=1000,
-                completed_at=datetime.now(timezone.utc)
+                created_at=datetime.now(timezone.utc)
             )
 
     def test_negative_bytes_downloaded_raises_error(self):
@@ -128,21 +146,13 @@ class TestDownloadResultMessageValidation:
             DownloadResultMessage(
                 trace_id="evt-123",
                 attachment_url="https://storage.example.com/file.pdf",
-                status="success",
+                blob_path="claims/C-456/file.pdf",
+                status_subtype="documentsReceived",
+                file_type="pdf",
+                assignment_id="C-456",
+                status="completed",
                 bytes_downloaded=-100,
-                processing_time_ms=1000,
-                completed_at=datetime.now(timezone.utc)
-            )
-
-    def test_negative_processing_time_raises_error(self):
-        """Negative processing_time_ms raises ValidationError."""
-        with pytest.raises(ValidationError):
-            DownloadResultMessage(
-                trace_id="evt-123",
-                attachment_url="https://storage.example.com/file.pdf",
-                status="success",
-                processing_time_ms=-1000,
-                completed_at=datetime.now(timezone.utc)
+                created_at=datetime.now(timezone.utc)
             )
 
     def test_whitespace_is_trimmed(self):
@@ -150,48 +160,61 @@ class TestDownloadResultMessageValidation:
         result = DownloadResultMessage(
             trace_id="  evt-123  ",
             attachment_url="  https://storage.example.com/file.pdf  ",
-            status="success",
-            processing_time_ms=1000,
-            completed_at=datetime.now(timezone.utc)
+            blob_path="  claims/C-456/file.pdf  ",
+            status_subtype="  documentsReceived  ",
+            file_type="  pdf  ",
+            assignment_id="  C-456  ",
+            status="completed",
+            created_at=datetime.now(timezone.utc)
         )
 
         assert result.trace_id == "evt-123"
         assert result.attachment_url == "https://storage.example.com/file.pdf"
+        assert result.blob_path == "claims/C-456/file.pdf"
 
 
 class TestDownloadResultMessageStatusEnum:
     """Test status field values and validation."""
 
-    def test_success_status_is_valid(self):
-        """Status 'success' is accepted."""
+    def test_completed_status_is_valid(self):
+        """Status 'completed' is accepted."""
         result = DownloadResultMessage(
             trace_id="evt-123",
             attachment_url="https://storage.example.com/file.pdf",
-            status="success",
-            processing_time_ms=1000,
-            completed_at=datetime.now(timezone.utc)
+            blob_path="claims/C-456/file.pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="C-456",
+            status="completed",
+            created_at=datetime.now(timezone.utc)
         )
-        assert result.status == "success"
+        assert result.status == "completed"
 
-    def test_failed_transient_status_is_valid(self):
-        """Status 'failed_transient' is accepted."""
+    def test_failed_status_is_valid(self):
+        """Status 'failed' is accepted."""
         result = DownloadResultMessage(
             trace_id="evt-123",
             attachment_url="https://storage.example.com/file.pdf",
-            status="failed_transient",
-            processing_time_ms=1000,
-            completed_at=datetime.now(timezone.utc)
+            blob_path="claims/C-456/file.pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="C-456",
+            status="failed",
+            created_at=datetime.now(timezone.utc)
         )
-        assert result.status == "failed_transient"
+        assert result.status == "failed"
 
     def test_failed_permanent_status_is_valid(self):
         """Status 'failed_permanent' is accepted."""
         result = DownloadResultMessage(
             trace_id="evt-123",
             attachment_url="https://storage.example.com/file.pdf",
+            blob_path="claims/C-456/file.pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="C-456",
             status="failed_permanent",
-            processing_time_ms=1000,
-            completed_at=datetime.now(timezone.utc)
+            created_at=datetime.now(timezone.utc)
         )
         assert result.status == "failed_permanent"
 
@@ -199,68 +222,74 @@ class TestDownloadResultMessageStatusEnum:
 class TestDownloadResultMessageSerialization:
     """Test JSON serialization and deserialization."""
 
-    def test_serialize_success_to_json(self):
+    def test_serialize_completed_to_json(self):
         """DownloadResultMessage serializes to valid JSON."""
         result = DownloadResultMessage(
             trace_id="evt-123",
             attachment_url="https://storage.example.com/file.pdf",
-            status="success",
-            destination_path="claims/C-456/file.pdf",
+            blob_path="claims/C-456/file.pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="C-456",
+            status="completed",
+            http_status=200,
             bytes_downloaded=2048576,
-            processing_time_ms=1250,
-            completed_at=datetime(2024, 12, 25, 10, 31, 15, tzinfo=timezone.utc)
+            created_at=datetime(2024, 12, 25, 10, 31, 15, tzinfo=timezone.utc)
         )
 
         json_str = result.model_dump_json()
         parsed = json.loads(json_str)
 
         assert parsed["trace_id"] == "evt-123"
-        assert parsed["status"] == "success"
-        assert parsed["destination_path"] == "claims/C-456/file.pdf"
+        assert parsed["status"] == "completed"
+        assert parsed["blob_path"] == "claims/C-456/file.pdf"
         assert parsed["bytes_downloaded"] == 2048576
-        assert parsed["processing_time_ms"] == 1250
-        assert parsed["completed_at"] == "2024-12-25T10:31:15+00:00"
+        assert parsed["created_at"] == "2024-12-25T10:31:15+00:00"
 
     def test_serialize_failure_to_json(self):
         """Failed result serializes with error fields."""
         result = DownloadResultMessage(
             trace_id="evt-456",
             attachment_url="https://storage.example.com/file.pdf",
-            status="failed_transient",
+            blob_path="documentsReceived/C-456/pdf/file.pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="C-456",
+            status="failed",
+            bytes_downloaded=0,
             error_message="Connection timeout",
-            error_category="transient",
-            processing_time_ms=30000,
-            completed_at=datetime(2024, 12, 25, 10, 31, 45, tzinfo=timezone.utc)
+            created_at=datetime(2024, 12, 25, 10, 31, 45, tzinfo=timezone.utc)
         )
 
         json_str = result.model_dump_json()
         parsed = json.loads(json_str)
 
-        assert parsed["status"] == "failed_transient"
+        assert parsed["status"] == "failed"
         assert parsed["error_message"] == "Connection timeout"
-        assert parsed["error_category"] == "transient"
-        assert parsed["destination_path"] is None
-        assert parsed["bytes_downloaded"] is None
+        assert parsed["bytes_downloaded"] == 0
 
     def test_deserialize_from_json(self):
         """DownloadResultMessage can be created from JSON."""
         json_data = {
             "trace_id": "evt-789",
             "attachment_url": "https://storage.example.com/doc.pdf",
-            "status": "success",
-            "destination_path": "policies/P-001/doc.pdf",
+            "blob_path": "policies/P-001/doc.pdf",
+            "status_subtype": "documentsReceived",
+            "file_type": "pdf",
+            "assignment_id": "P-001",
+            "status": "completed",
+            "http_status": 200,
             "bytes_downloaded": 1024,
+            "retry_count": 0,
             "error_message": None,
-            "error_category": None,
-            "processing_time_ms": 500,
-            "completed_at": "2024-12-25T15:45:00Z"
+            "created_at": "2024-12-25T15:45:00Z"
         }
 
         json_str = json.dumps(json_data)
         result = DownloadResultMessage.model_validate_json(json_str)
 
         assert result.trace_id == "evt-789"
-        assert result.status == "success"
+        assert result.status == "completed"
         assert result.bytes_downloaded == 1024
 
     def test_round_trip_serialization(self):
@@ -268,11 +297,14 @@ class TestDownloadResultMessageSerialization:
         original = DownloadResultMessage(
             trace_id="evt-round-trip",
             attachment_url="https://storage.example.com/file.pdf",
+            blob_path="documentsReceived/C-456/pdf/file.pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="C-456",
             status="failed_permanent",
+            bytes_downloaded=0,
             error_message="Invalid file type",
-            error_category="permanent",
-            processing_time_ms=100,
-            completed_at=datetime(2024, 12, 25, 10, 30, 0, tzinfo=timezone.utc)
+            created_at=datetime(2024, 12, 25, 10, 30, 0, tzinfo=timezone.utc)
         )
 
         json_str = original.model_dump_json()
@@ -281,7 +313,6 @@ class TestDownloadResultMessageSerialization:
         assert restored.trace_id == original.trace_id
         assert restored.status == original.status
         assert restored.error_message == original.error_message
-        assert restored.processing_time_ms == original.processing_time_ms
 
 
 class TestErrorMessageTruncation:
@@ -293,10 +324,14 @@ class TestErrorMessageTruncation:
         result = DownloadResultMessage(
             trace_id="evt-123",
             attachment_url="https://storage.example.com/file.pdf",
-            status="failed_transient",
+            blob_path="documentsReceived/C-456/pdf/file.pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="C-456",
+            status="failed",
+            bytes_downloaded=0,
             error_message=short_error,
-            processing_time_ms=1000,
-            completed_at=datetime.now(timezone.utc)
+            created_at=datetime.now(timezone.utc)
         )
 
         assert result.error_message == short_error
@@ -307,10 +342,14 @@ class TestErrorMessageTruncation:
         result = DownloadResultMessage(
             trace_id="evt-123",
             attachment_url="https://storage.example.com/file.pdf",
-            status="failed_transient",
+            blob_path="documentsReceived/C-456/pdf/file.pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="C-456",
+            status="failed",
+            bytes_downloaded=0,
             error_message=long_error,
-            processing_time_ms=1000,
-            completed_at=datetime.now(timezone.utc)
+            created_at=datetime.now(timezone.utc)
         )
 
         assert len(result.error_message) == 500
@@ -322,10 +361,14 @@ class TestErrorMessageTruncation:
         result = DownloadResultMessage(
             trace_id="evt-123",
             attachment_url="https://storage.example.com/file.pdf",
-            status="failed_transient",
+            blob_path="documentsReceived/C-456/pdf/file.pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="C-456",
+            status="failed",
+            bytes_downloaded=0,
             error_message=exact_error,
-            processing_time_ms=1000,
-            completed_at=datetime.now(timezone.utc)
+            created_at=datetime.now(timezone.utc)
         )
 
         assert len(result.error_message) == 500
@@ -340,7 +383,10 @@ class TestFailedDownloadMessageCreation:
         task = DownloadTaskMessage(
             trace_id="evt-456",
             attachment_url="https://storage.example.com/bad.pdf",
-            destination_path="claims/C-789/bad.pdf",
+            blob_path="documentsReceived/C-789/pdf/bad.pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="C-789",
             event_type="claim",
             event_subtype="created",
             retry_count=4,
@@ -368,7 +414,10 @@ class TestFailedDownloadMessageCreation:
         task = DownloadTaskMessage(
             trace_id="evt-error",
             attachment_url="https://storage.example.com/file.pdf",
-            destination_path="claims/C-001/file.pdf",
+            blob_path="documentsReceived/C-001/pdf/file.pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="C-001",
             event_type="claim",
             event_subtype="created",
             retry_count=4,
@@ -411,7 +460,10 @@ class TestFailedDownloadMessageValidation:
         task = DownloadTaskMessage(
             trace_id="evt-456",
             attachment_url="https://storage.example.com/file.pdf",
-            destination_path="claims/C-789/file.pdf",
+            blob_path="documentsReceived/C-789/pdf/file.pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="C-789",
             event_type="claim",
             event_subtype="created",
             original_timestamp=datetime.now(timezone.utc)
@@ -433,7 +485,10 @@ class TestFailedDownloadMessageValidation:
         task = DownloadTaskMessage(
             trace_id="evt-456",
             attachment_url="https://storage.example.com/file.pdf",
-            destination_path="claims/C-789/file.pdf",
+            blob_path="documentsReceived/C-789/pdf/file.pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="C-789",
             event_type="claim",
             event_subtype="created",
             original_timestamp=datetime.now(timezone.utc)
@@ -455,7 +510,10 @@ class TestFailedDownloadMessageValidation:
         task = DownloadTaskMessage(
             trace_id="evt-456",
             attachment_url="https://storage.example.com/file.pdf",
-            destination_path="claims/C-789/file.pdf",
+            blob_path="documentsReceived/C-789/pdf/file.pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="C-789",
             event_type="claim",
             event_subtype="created",
             original_timestamp=datetime.now(timezone.utc)
@@ -477,7 +535,10 @@ class TestFailedDownloadMessageValidation:
         task = DownloadTaskMessage(
             trace_id="evt-456",
             attachment_url="https://storage.example.com/file.pdf",
-            destination_path="claims/C-789/file.pdf",
+            blob_path="documentsReceived/C-789/pdf/file.pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="C-789",
             event_type="claim",
             event_subtype="created",
             original_timestamp=datetime.now(timezone.utc)
@@ -507,7 +568,10 @@ class TestFailedDownloadMessageSerialization:
         task = DownloadTaskMessage(
             trace_id="evt-dlq",
             attachment_url="https://storage.example.com/missing.pdf",
-            destination_path="claims/C-999/missing.pdf",
+            blob_path="documentsReceived/C-999/pdf/missing.pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="C-999",
             event_type="claim",
             event_subtype="created",
             retry_count=4,
@@ -543,7 +607,10 @@ class TestFailedDownloadMessageSerialization:
             "original_task": {
                 "trace_id": "evt-dlq",
                 "attachment_url": "https://storage.example.com/missing.pdf",
-                "destination_path": "claims/C-999/missing.pdf",
+                "blob_path": "documentsReceived/C-999/pdf/missing.pdf",
+                "status_subtype": "documentsReceived",
+                "file_type": "pdf",
+                "assignment_id": "C-999",
                 "event_type": "claim",
                 "event_subtype": "created",
                 "retry_count": 4,
@@ -570,7 +637,10 @@ class TestFailedDownloadMessageSerialization:
         task = DownloadTaskMessage(
             trace_id="evt-round",
             attachment_url="https://storage.example.com/file.pdf",
-            destination_path="claims/C-123/file.pdf",
+            blob_path="documentsReceived/C-123/pdf/file.pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="C-123",
             event_type="claim",
             event_subtype="created",
             retry_count=4,
@@ -604,33 +674,28 @@ class TestEdgeCases:
         result = DownloadResultMessage(
             trace_id="evt-zero",
             attachment_url="https://storage.example.com/empty.txt",
-            status="success",
+            blob_path="documentsReceived/C-456/txt/empty.txt",
+            status_subtype="documentsReceived",
+            file_type="txt",
+            assignment_id="C-456",
+            status="completed",
             bytes_downloaded=0,
-            processing_time_ms=100,
-            completed_at=datetime.now(timezone.utc)
+            created_at=datetime.now(timezone.utc)
         )
         assert result.bytes_downloaded == 0
-
-    def test_zero_processing_time_is_valid(self):
-        """Zero processing time is a valid value."""
-        result = DownloadResultMessage(
-            trace_id="evt-instant",
-            attachment_url="https://storage.example.com/file.pdf",
-            status="failed_permanent",
-            processing_time_ms=0,
-            completed_at=datetime.now(timezone.utc)
-        )
-        assert result.processing_time_ms == 0
 
     def test_very_large_bytes_downloaded(self):
         """Very large bytes_downloaded values are accepted."""
         result = DownloadResultMessage(
             trace_id="evt-large",
             attachment_url="https://storage.example.com/huge.zip",
-            status="success",
+            blob_path="documentsReceived/C-456/zip/huge.zip",
+            status_subtype="documentsReceived",
+            file_type="zip",
+            assignment_id="C-456",
+            status="completed",
             bytes_downloaded=10_737_418_240,  # 10 GB
-            processing_time_ms=60000,
-            completed_at=datetime.now(timezone.utc)
+            created_at=datetime.now(timezone.utc)
         )
         assert result.bytes_downloaded == 10_737_418_240
 
@@ -639,13 +704,16 @@ class TestEdgeCases:
         result = DownloadResultMessage(
             trace_id="evt-unicode",
             attachment_url="https://storage.example.com/file.pdf",
+            blob_path="documentsReceived/C-456/pdf/file.pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="C-456",
             status="failed_permanent",
-            error_message="Datei nicht gefunden: Schädenübersicht.pdf 重要",
-            processing_time_ms=100,
-            completed_at=datetime.now(timezone.utc)
+            bytes_downloaded=0,
+            error_message="Datei nicht gefunden: Schadenubersicht.pdf",
+            created_at=datetime.now(timezone.utc)
         )
-        assert "Schädenübersicht" in result.error_message
-        assert "重要" in result.error_message
+        assert "Schadenubersicht" in result.error_message
 
     def test_naive_datetime_is_accepted(self):
         """Naive datetime (without timezone) is accepted."""
@@ -653,8 +721,33 @@ class TestEdgeCases:
         result = DownloadResultMessage(
             trace_id="evt-naive",
             attachment_url="https://storage.example.com/file.pdf",
-            status="success",
-            processing_time_ms=1000,
-            completed_at=naive_dt
+            blob_path="documentsReceived/C-456/pdf/file.pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="C-456",
+            status="completed",
+            created_at=naive_dt
         )
-        assert result.completed_at == naive_dt
+        assert result.created_at == naive_dt
+
+    def test_to_tracking_row(self):
+        """Test conversion to tracking table row format."""
+        result = DownloadResultMessage(
+            trace_id="evt-tracking",
+            attachment_url="https://storage.example.com/file.pdf",
+            blob_path="documentsReceived/C-456/pdf/file.pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="C-456",
+            status="completed",
+            http_status=200,
+            bytes_downloaded=1024,
+            created_at=datetime(2024, 12, 25, 10, 30, 0, tzinfo=timezone.utc)
+        )
+
+        row = result.to_tracking_row()
+
+        assert row["trace_id"] == "evt-tracking"
+        assert row["blob_path"] == "documentsReceived/C-456/pdf/file.pdf"
+        assert row["status"] == "completed"
+        assert row["bytes_downloaded"] == 1024

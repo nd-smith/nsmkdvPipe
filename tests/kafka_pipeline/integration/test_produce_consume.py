@@ -40,7 +40,10 @@ async def test_send_and_receive_single_message(
     task = DownloadTaskMessage(
         trace_id="test-evt-001",
         attachment_url="https://example.com/file1.pdf",
-        destination_path="test/file1.pdf",
+        blob_path="documentsReceived/T-001/pdf/file1.pdf",
+        status_subtype="documentsReceived",
+        file_type="pdf",
+        assignment_id="T-001",
         event_type="test_event",
         event_subtype="created",
         retry_count=0,
@@ -98,7 +101,7 @@ async def test_send_and_receive_single_message(
     received_task = DownloadTaskMessage.model_validate_json(received.value)
     assert received_task.trace_id == task.trace_id
     assert received_task.attachment_url == task.attachment_url
-    assert received_task.destination_path == task.destination_path
+    assert received_task.blob_path == task.blob_path
     assert received_task.event_type == task.event_type
     assert received_task.retry_count == 0
     assert received_task.metadata["test"] == "value"
@@ -126,7 +129,10 @@ async def test_send_batch_and_consume(
         task = DownloadTaskMessage(
             trace_id=f"test-evt-{i:03d}",
             attachment_url=f"https://example.com/file{i}.pdf",
-            destination_path=f"test/file{i}.pdf",
+            blob_path=f"documentsReceived/T-{i:03d}/pdf/file{i}.pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id=f"T-{i:03d}",
             event_type="test_event",
             event_subtype="created",
             retry_count=0,
@@ -216,7 +222,10 @@ async def test_multiple_consumers_same_group(
         task = DownloadTaskMessage(
             trace_id=f"test-evt-multi-{i:03d}",
             attachment_url=f"https://example.com/file{i}.pdf",
-            destination_path=f"test/file{i}.pdf",
+            blob_path=f"documentsReceived/T-{i:03d}/pdf/file{i}.pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id=f"T-{i:03d}",
             event_type="test_event",
             event_subtype="created",
             retry_count=0,
@@ -296,7 +305,10 @@ async def test_consumer_processes_with_headers(
     task = DownloadTaskMessage(
         trace_id="test-evt-headers",
         attachment_url="https://example.com/file.pdf",
-        destination_path="test/file.pdf",
+        blob_path="documentsReceived/T-001/pdf/file.pdf",
+        status_subtype="documentsReceived",
+        file_type="pdf",
+        assignment_id="T-001",
         event_type="test_event",
         event_subtype="created",
         retry_count=0,
@@ -383,7 +395,10 @@ async def test_consumer_manual_offset_commit(
     task = DownloadTaskMessage(
         trace_id="test-evt-commit",
         attachment_url="https://example.com/file.pdf",
-        destination_path="test/file.pdf",
+        blob_path="documentsReceived/T-001/pdf/file.pdf",
+        status_subtype="documentsReceived",
+        file_type="pdf",
+        assignment_id="T-001",
         event_type="test_event",
         event_subtype="created",
         retry_count=0,

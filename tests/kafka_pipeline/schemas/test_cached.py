@@ -29,6 +29,9 @@ class TestCachedDownloadMessageCreation:
             bytes_downloaded=2048576,
             event_type="claim",
             event_subtype="created",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="C-456",
             original_timestamp=datetime(2024, 12, 25, 10, 30, 0, tzinfo=timezone.utc),
             downloaded_at=datetime(2024, 12, 25, 10, 30, 5, tzinfo=timezone.utc),
         )
@@ -52,18 +55,20 @@ class TestCachedDownloadMessageCreation:
             content_type="application/pdf",
             event_type="claim",
             event_subtype="documentsReceived",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="A-789",
             original_timestamp=datetime(2024, 12, 25, 10, 30, 0, tzinfo=timezone.utc),
             downloaded_at=datetime(2024, 12, 25, 10, 30, 5, tzinfo=timezone.utc),
             metadata={
                 "source_partition": 3,
-                "assignment_id": "A-789",
                 "retry_count": 0
             }
         )
 
         assert cached.content_type == "application/pdf"
         assert cached.metadata["source_partition"] == 3
-        assert cached.metadata["assignment_id"] == "A-789"
+        assert cached.assignment_id == "A-789"
 
     def test_create_message_without_optional_fields(self):
         """CachedDownloadMessage can be created without optional fields."""
@@ -75,6 +80,9 @@ class TestCachedDownloadMessageCreation:
             bytes_downloaded=1024,
             event_type="policy",
             event_subtype="updated",
+            status_subtype="documentsReceived",
+            file_type="jpg",
+            assignment_id="P-123",
             original_timestamp=datetime.now(timezone.utc),
             downloaded_at=datetime.now(timezone.utc),
         )
@@ -112,6 +120,9 @@ class TestCachedDownloadMessageValidation:
                 bytes_downloaded=1024,
                 event_type="claim",
                 event_subtype="created",
+                status_subtype="documentsReceived",
+                file_type="pdf",
+                assignment_id="C-456",
                 original_timestamp=datetime.now(timezone.utc),
                 downloaded_at=datetime.now(timezone.utc),
             )
@@ -127,6 +138,9 @@ class TestCachedDownloadMessageValidation:
                 bytes_downloaded=1024,
                 event_type="claim",
                 event_subtype="created",
+                status_subtype="documentsReceived",
+                file_type="pdf",
+                assignment_id="C-456",
                 original_timestamp=datetime.now(timezone.utc),
                 downloaded_at=datetime.now(timezone.utc),
             )
@@ -142,6 +156,9 @@ class TestCachedDownloadMessageValidation:
                 bytes_downloaded=1024,
                 event_type="claim",
                 event_subtype="created",
+                status_subtype="documentsReceived",
+                file_type="pdf",
+                assignment_id="C-456",
                 original_timestamp=datetime.now(timezone.utc),
                 downloaded_at=datetime.now(timezone.utc),
             )
@@ -157,6 +174,9 @@ class TestCachedDownloadMessageValidation:
                 bytes_downloaded=1024,
                 event_type="claim",
                 event_subtype="created",
+                status_subtype="documentsReceived",
+                file_type="pdf",
+                assignment_id="C-456",
                 original_timestamp=datetime.now(timezone.utc),
                 downloaded_at=datetime.now(timezone.utc),
             )
@@ -172,6 +192,9 @@ class TestCachedDownloadMessageValidation:
                 bytes_downloaded=1024,
                 event_type="claim",
                 event_subtype="created",
+                status_subtype="documentsReceived",
+                file_type="pdf",
+                assignment_id="C-456",
                 original_timestamp=datetime.now(timezone.utc),
                 downloaded_at=datetime.now(timezone.utc),
             )
@@ -187,6 +210,9 @@ class TestCachedDownloadMessageValidation:
                 bytes_downloaded=1024,
                 event_type="",
                 event_subtype="created",
+                status_subtype="documentsReceived",
+                file_type="pdf",
+                assignment_id="C-456",
                 original_timestamp=datetime.now(timezone.utc),
                 downloaded_at=datetime.now(timezone.utc),
             )
@@ -202,6 +228,9 @@ class TestCachedDownloadMessageValidation:
                 bytes_downloaded=1024,
                 event_type="claim",
                 event_subtype="",
+                status_subtype="documentsReceived",
+                file_type="pdf",
+                assignment_id="C-456",
                 original_timestamp=datetime.now(timezone.utc),
                 downloaded_at=datetime.now(timezone.utc),
             )
@@ -217,6 +246,9 @@ class TestCachedDownloadMessageValidation:
                 bytes_downloaded=-100,
                 event_type="claim",
                 event_subtype="created",
+                status_subtype="documentsReceived",
+                file_type="pdf",
+                assignment_id="C-456",
                 original_timestamp=datetime.now(timezone.utc),
                 downloaded_at=datetime.now(timezone.utc),
             )
@@ -231,6 +263,9 @@ class TestCachedDownloadMessageValidation:
             bytes_downloaded=1024,
             event_type="  claim  ",
             event_subtype="  created  ",
+            status_subtype="  documentsReceived  ",
+            file_type="  pdf  ",
+            assignment_id="  C-456  ",
             original_timestamp=datetime.now(timezone.utc),
             downloaded_at=datetime.now(timezone.utc),
         )
@@ -241,6 +276,9 @@ class TestCachedDownloadMessageValidation:
         assert cached.local_cache_path == "/tmp/kafka_pipeline_cache/evt-123/file.pdf"
         assert cached.event_type == "claim"
         assert cached.event_subtype == "created"
+        assert cached.status_subtype == "documentsReceived"
+        assert cached.file_type == "pdf"
+        assert cached.assignment_id == "C-456"
 
 
 class TestCachedDownloadMessageSerialization:
@@ -257,6 +295,9 @@ class TestCachedDownloadMessageSerialization:
             content_type="application/pdf",
             event_type="claim",
             event_subtype="created",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="C-456",
             original_timestamp=datetime(2024, 12, 25, 10, 30, 0, tzinfo=timezone.utc),
             downloaded_at=datetime(2024, 12, 25, 10, 30, 5, tzinfo=timezone.utc),
             metadata={"source_partition": 3}
@@ -287,6 +328,9 @@ class TestCachedDownloadMessageSerialization:
             bytes_downloaded=1024,
             event_type="policy",
             event_subtype="updated",
+            status_subtype="documentsReceived",
+            file_type="jpg",
+            assignment_id="P-123",
             original_timestamp=datetime(2024, 12, 25, 11, 0, 0, tzinfo=timezone.utc),
             downloaded_at=datetime(2024, 12, 25, 11, 0, 2, tzinfo=timezone.utc),
         )
@@ -308,6 +352,9 @@ class TestCachedDownloadMessageSerialization:
             "content_type": "application/pdf",
             "event_type": "claim",
             "event_subtype": "documentsReceived",
+            "status_subtype": "documentsReceived",
+            "file_type": "pdf",
+            "assignment_id": "C-999",
             "original_timestamp": "2024-12-25T15:45:00Z",
             "downloaded_at": "2024-12-25T15:45:03Z",
             "metadata": {"retry_count": 0}
@@ -331,6 +378,9 @@ class TestCachedDownloadMessageSerialization:
             "bytes_downloaded": 100,
             "event_type": "data",
             "event_subtype": "upload",
+            "status_subtype": "documentsReceived",
+            "file_type": "txt",
+            "assignment_id": "D-123",
             "original_timestamp": "2024-12-25T12:00:00Z",
             "downloaded_at": "2024-12-25T12:00:01Z"
         }
@@ -353,6 +403,9 @@ class TestCachedDownloadMessageSerialization:
             content_type="application/pdf",
             event_type="test",
             event_subtype="roundtrip",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="T-123",
             original_timestamp=datetime(2024, 12, 25, 10, 30, 0, tzinfo=timezone.utc),
             downloaded_at=datetime(2024, 12, 25, 10, 30, 5, tzinfo=timezone.utc),
             metadata={"key": "value", "number": 42}
@@ -385,6 +438,9 @@ class TestEdgeCases:
             bytes_downloaded=0,
             event_type="test",
             event_subtype="empty",
+            status_subtype="documentsReceived",
+            file_type="txt",
+            assignment_id="T-001",
             original_timestamp=datetime.now(timezone.utc),
             downloaded_at=datetime.now(timezone.utc),
         )
@@ -400,6 +456,9 @@ class TestEdgeCases:
             bytes_downloaded=10_737_418_240,  # 10 GB
             event_type="archive",
             event_subtype="backup",
+            status_subtype="documentsReceived",
+            file_type="zip",
+            assignment_id="A-002",
             original_timestamp=datetime.now(timezone.utc),
             downloaded_at=datetime.now(timezone.utc),
         )
@@ -415,6 +474,9 @@ class TestEdgeCases:
             bytes_downloaded=1024,
             event_type="claim",
             event_subtype="created",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="C-003",
             original_timestamp=datetime.now(timezone.utc),
             downloaded_at=datetime.now(timezone.utc),
         )
@@ -430,6 +492,9 @@ class TestEdgeCases:
             bytes_downloaded=1024,
             event_type="test",
             event_subtype="special",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="T-004",
             original_timestamp=datetime.now(timezone.utc),
             downloaded_at=datetime.now(timezone.utc),
         )
@@ -448,6 +513,9 @@ class TestEdgeCases:
             bytes_downloaded=1024,
             event_type="test",
             event_subtype="naive",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="T-005",
             original_timestamp=naive_original,
             downloaded_at=naive_downloaded,
         )
@@ -464,6 +532,9 @@ class TestEdgeCases:
             bytes_downloaded=1024,
             event_type="test",
             event_subtype="complex",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="T-006",
             original_timestamp=datetime.now(timezone.utc),
             downloaded_at=datetime.now(timezone.utc),
             metadata={
@@ -503,6 +574,9 @@ class TestEdgeCases:
                 content_type=ct,
                 event_type="test",
                 event_subtype="content_type",
+                status_subtype="documentsReceived",
+                file_type="bin",
+                assignment_id="T-007",
                 original_timestamp=datetime.now(timezone.utc),
                 downloaded_at=datetime.now(timezone.utc),
             )
@@ -521,6 +595,9 @@ class TestEdgeCases:
             bytes_downloaded=1024,
             event_type="test",
             event_subtype="longpath",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="T-008",
             original_timestamp=datetime.now(timezone.utc),
             downloaded_at=datetime.now(timezone.utc),
         )

@@ -49,7 +49,10 @@ def download_task():
     return DownloadTaskMessage(
         trace_id="evt-test-001",
         attachment_url="https://storage.example.com/file.pdf",
-        destination_path="claims/C-123/file.pdf",
+        blob_path="documentsReceived/C-123/pdf/file.pdf",
+        status_subtype="documentsReceived",
+        file_type="pdf",
+        assignment_id="C-123",
         event_type="claim",
         event_subtype="created",
         retry_count=0,
@@ -360,7 +363,10 @@ class TestEdgeCases:
         task = DownloadTaskMessage(
             trace_id="evt-empty-meta",
             attachment_url="https://example.com/file.pdf",
-            destination_path="path/file.pdf",
+            blob_path="documentsReceived/T-001/pdf/file.pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="T-001",
             event_type="test",
             event_subtype="test",
             retry_count=0,
@@ -435,7 +441,10 @@ class TestConfigurableRetryDelays:
         task = DownloadTaskMessage(
             trace_id="evt-custom",
             attachment_url="https://example.com/file.pdf",
-            destination_path="path/file.pdf",
+            blob_path="documentsReceived/T-002/pdf/file.pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="T-002",
             event_type="test",
             event_subtype="test",
             retry_count=0,
@@ -467,7 +476,10 @@ class TestConfigurableRetryDelays:
         task = DownloadTaskMessage(
             trace_id="evt-max",
             attachment_url="https://example.com/file.pdf",
-            destination_path="path/file.pdf",
+            blob_path="documentsReceived/T-003/pdf/file.pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="T-003",
             event_type="test",
             event_subtype="test",
             retry_count=2,  # At max

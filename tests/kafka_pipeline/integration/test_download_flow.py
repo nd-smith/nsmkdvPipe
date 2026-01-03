@@ -41,7 +41,10 @@ def sample_download_task():
     return DownloadTaskMessage(
         trace_id="test-flow-001",
         attachment_url="https://claimxperience.com/files/document.pdf",
-        destination_path="claims/C-12345/document.pdf",
+        blob_path="documentsReceived/C-12345/pdf/document.pdf",
+        status_subtype="documentsReceived",
+        file_type="pdf",
+        assignment_id="C-12345",
         event_type="claim",
         event_subtype="documentsReceived",
         retry_count=0,
@@ -146,8 +149,12 @@ async def test_successful_download_flow(
         status_code=200,
     )
 
-    with patch.object(worker.downloader, "download", new_callable=AsyncMock) as mock_download:
-        mock_download.return_value = successful_outcome
+    # Patch at class level since start() re-initializes the downloader
+    with patch(
+        "kafka_pipeline.workers.download_worker.AttachmentDownloader"
+    ) as mock_downloader_class:
+        mock_download = AsyncMock(return_value=successful_outcome)
+        mock_downloader_class.return_value.download = mock_download
 
         # Start worker in background
         worker_task = asyncio.create_task(worker.start())
@@ -179,7 +186,7 @@ async def test_successful_download_flow(
     cached = cached_messages[0]
     assert cached.trace_id == sample_download_task.trace_id
     assert cached.attachment_url == sample_download_task.attachment_url
-    assert cached.destination_path == sample_download_task.destination_path
+    assert cached.destination_path == sample_download_task.blob_path
     assert cached.bytes_downloaded == 1024
     assert cached.content_type == "application/pdf"
     assert cached.local_cache_path is not None
@@ -206,7 +213,7 @@ async def test_transient_failure_routes_to_retry(
     - Error context is preserved
     """
     pending_topic = kafka_config_with_downloads.downloads_pending_topic
-    retry_topic_5m = f"{unique_topic_prefix}.downloads.retry.5m"
+    retry_topic_5m = kafka_config_with_downloads.get_retry_topic(0)  # First retry uses 5m delay
 
     # Send download task to pending topic
     await kafka_producer.send(
@@ -248,8 +255,12 @@ async def test_transient_failure_routes_to_retry(
         status_code=None,
     )
 
-    with patch.object(worker.downloader, "download", new_callable=AsyncMock) as mock_download:
-        mock_download.return_value = failed_outcome
+    # Patch at class level since start() re-initializes the downloader
+    with patch(
+        "kafka_pipeline.workers.download_worker.AttachmentDownloader"
+    ) as mock_downloader_class:
+        mock_download = AsyncMock(return_value=failed_outcome)
+        mock_downloader_class.return_value.download = mock_download
 
         # Start worker in background
         worker_task = asyncio.create_task(worker.start())
@@ -343,8 +354,12 @@ async def test_permanent_failure_routes_to_dlq(
         status_code=404,
     )
 
-    with patch.object(worker.downloader, "download", new_callable=AsyncMock) as mock_download:
-        mock_download.return_value = failed_outcome
+    # Patch at class level since start() re-initializes the downloader
+    with patch(
+        "kafka_pipeline.workers.download_worker.AttachmentDownloader"
+    ) as mock_downloader_class:
+        mock_download = AsyncMock(return_value=failed_outcome)
+        mock_downloader_class.return_value.download = mock_download
 
         # Start worker in background
         worker_task = asyncio.create_task(worker.start())
@@ -373,8 +388,8 @@ async def test_permanent_failure_routes_to_dlq(
     dlq_msg = dlq_messages[0]
     assert dlq_msg.trace_id == sample_download_task.trace_id
     assert dlq_msg.attachment_url == sample_download_task.attachment_url
-    assert dlq_msg.failure_reason == "permanent"
-    assert "404" in dlq_msg.error_message
+    assert dlq_msg.error_category == "permanent"
+    assert "404" in dlq_msg.final_error
 
 
 @pytest.mark.asyncio
@@ -395,14 +410,17 @@ async def test_retry_exhaustion_routes_to_dlq(
     - Task is routed to DLQ (not another retry)
     - DLQ message indicates retry exhaustion
     """
-    retry_topic = f"{unique_topic_prefix}.downloads.retry.40m"
+    retry_topic = kafka_config_with_downloads.get_retry_topic(3)  # Last retry level (40m)
     dlq_topic = kafka_config_with_downloads.dlq_topic
 
     # Create task with max retry count (exhausted)
     exhausted_task = DownloadTaskMessage(
         trace_id="test-exhausted-001",
         attachment_url="https://claimxperience.com/files/document.pdf",
-        destination_path="claims/C-99999/document.pdf",
+        blob_path="documentsReceived/C-99999/pdf/document.pdf",
+        status_subtype="documentsReceived",
+        file_type="pdf",
+        assignment_id="C-99999",
         event_type="claim",
         event_subtype="documentsReceived",
         retry_count=4,  # At max retries
@@ -450,8 +468,12 @@ async def test_retry_exhaustion_routes_to_dlq(
         status_code=None,
     )
 
-    with patch.object(worker.downloader, "download", new_callable=AsyncMock) as mock_download:
-        mock_download.return_value = failed_outcome
+    # Patch at class level since start() re-initializes the downloader
+    with patch(
+        "kafka_pipeline.workers.download_worker.AttachmentDownloader"
+    ) as mock_downloader_class:
+        mock_download = AsyncMock(return_value=failed_outcome)
+        mock_downloader_class.return_value.download = mock_download
 
         # Start worker in background
         worker_task = asyncio.create_task(worker.start())
@@ -480,4 +502,4 @@ async def test_retry_exhaustion_routes_to_dlq(
     dlq_msg = dlq_messages[0]
     assert dlq_msg.trace_id == exhausted_task.trace_id
     assert dlq_msg.retry_count == 4, "Should preserve final retry count"
-    assert dlq_msg.failure_reason == "retry_exhausted"
+    assert dlq_msg.error_category == "transient"  # Exhausted retries due to transient errors

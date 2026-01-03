@@ -35,7 +35,10 @@ def sample_task():
     return DownloadTaskMessage(
         trace_id="evt-123",
         attachment_url="https://storage.example.com/file.pdf",
-        destination_path="claims/C-456/file.pdf",
+        blob_path="documentsReceived/C-456/pdf/file.pdf",
+        status_subtype="documentsReceived",
+        file_type="pdf",
+        assignment_id="C-456",
         event_type="claim",
         event_subtype="created",
         retry_count=4,
