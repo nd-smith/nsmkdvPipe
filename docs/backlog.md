@@ -42,14 +42,6 @@
 - Increase readability
 - Size: Medium
 
-**TECH-012: Review kql_client.py Structure and Remove Dead Code**
-- Location: `kafka_pipeline/eventhouse/kql_client.py`
-- Review overall code structure and organization
-- Remove dead/unreachable code paths
-- Apply best practices (single responsibility, reduce complexity)
-- Increase readability
-- Size: Medium
-
 ---
 
 ## Ready
@@ -125,6 +117,42 @@
 ## Completed
 
 <!-- Done tasks with commit references -->
+
+**TECH-013: Review dedup.py Structure and Remove Dead Code** ✓
+- Reviewed `kafka_pipeline/eventhouse/dedup.py` (445 lines, 1 dataclass + 1 class with 10 methods + 1 standalone function)
+- **Finding**: No dead code found - file is clean and well-structured
+- All public symbols in use:
+  - `DedupConfig` - used in `__main__.py`, `poller.py`, tests, exported via `__init__.py`
+  - `EventhouseDeduplicator` - used in `poller.py`, tests, exported via `__init__.py`
+  - `get_recent_trace_ids_sync` - standalone utility, exported via `__init__.py`, used in tests
+- All methods of `EventhouseDeduplicator` in use:
+  - `get_recent_trace_ids()`, `add_to_cache()`, `build_deduped_query()`, `get_poll_window()` - used in `poller.py`
+  - `get_cache_size()` - used in `poller.py` for logging
+  - `is_cache_initialized()` - accessor for internal state, tested
+  - `build_kql_anti_join_filter()` - used internally by `build_deduped_query()`
+  - Private methods: `_get_storage_options()`, `_load_cache_from_delta()` - used internally
+- All 9 imports verified in use (logging, time, dataclass, datetime/timedelta/timezone, Optional, polars, get_storage_options)
+- Code quality is good: clear docstrings, type hints, proper error handling, partition pruning optimization
+- No changes required
+- Size: Small (review only)
+
+**TECH-012: Review kql_client.py Structure and Remove Dead Code** ✓
+- Reviewed `kafka_pipeline/eventhouse/kql_client.py` (677 lines, 2 classes + 2 dataclasses)
+- **Finding**: Minimal dead code - 2 unused imports
+- **Fixed**: Removed unused imports:
+  - `dataframe_from_result_table` from `azure.kusto.data.helpers` (never used)
+  - `get_default_provider` from `core.auth.credentials` (never used)
+- All public symbols in use:
+  - `EventhouseConfig` - used in `__main__.py`, `poller.py`, tests, exported via `__init__.py`
+  - `KQLClient` - used in `poller.py`, tests, exported via `__init__.py`
+  - `KQLQueryResult` - used in `poller.py`, tests, exported via `__init__.py`
+- Internal symbols in use:
+  - `FileBackedKustoCredential` - used internally for token file authentication
+  - `KUSTO_RESOURCE` - used by `FileBackedKustoCredential`
+  - `DEFAULT_CONFIG_PATH` - used by `EventhouseConfig.load_config()` and imported by `poller.py`
+- `from_env()` marked as deprecated, consistent with TECH-003 pattern
+- Code quality is good: clear docstrings, type hints, proper retry logic, error handling
+- Size: Small (just import cleanup)
 
 **TECH-014: Review event_ingester.py Structure and Remove Dead Code** ✓
 - Reviewed `kafka_pipeline/workers/event_ingester.py` (557 lines, 1 class with 8 methods)

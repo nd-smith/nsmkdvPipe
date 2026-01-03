@@ -20,9 +20,6 @@ from azure.core.credentials import AccessToken
 from azure.identity import DefaultAzureCredential
 from azure.kusto.data import KustoClient, KustoConnectionStringBuilder
 from azure.kusto.data.exceptions import KustoServiceError
-from azure.kusto.data.helpers import dataframe_from_result_table
-
-from core.auth.credentials import get_default_provider
 from core.errors.classifiers import StorageErrorClassifier
 from core.errors.exceptions import KustoError, KustoQueryError
 
