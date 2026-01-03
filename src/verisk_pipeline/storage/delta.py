@@ -353,9 +353,7 @@ class DeltaTableWriter(LoggedClass):
             storage_options=opts,
         )  # type: ignore[call-overload]
 
-        rows_written = len(df)
-        # rows_written auto-captured by decorator since we return int
-        return rows_written
+        return len(df)
 
     @logged_operation(level=logging.INFO, include_args=["merge_keys"])
     @with_retry(config=DELTA_RETRY_CONFIG, on_auth_error=_on_auth_error)

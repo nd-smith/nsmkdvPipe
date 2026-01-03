@@ -48,13 +48,15 @@ def logged_operation(
 
     def decorator(func: F) -> F:
         def _process_result(ctx: OperationContext, result: Any) -> None:
-            """Extract row counts from DataFrame results."""
-            if (
-                result is not None
-                and hasattr(result, "__len__")
-                and hasattr(result, "columns")
-            ):
+            """Extract row counts from results."""
+            if result is None:
+                return
+            # DataFrame-like results: capture as rows_read
+            if hasattr(result, "__len__") and hasattr(result, "columns"):
                 ctx.add_context(rows_read=len(result))
+            # Integer results: capture as rows_written (for write operations)
+            elif isinstance(result, int):
+                ctx.add_context(rows_written=result)
 
         if _is_coroutine_function(func):
 
