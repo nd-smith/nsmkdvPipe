@@ -20,14 +20,6 @@
 
 ## Phase 1: Create common/ Infrastructure
 
-**REORG-101: Create common/ Directory Structure [ASSIGNED]** (P2)
-- Create `kafka_pipeline/common/` with `__init__.py`
-- Create subdirectories: `retry/`, `dlq/`, `storage/`, `writers/`, `eventhouse/`
-- Add `__init__.py` to each subdirectory
-- No code moves yet - structure only
-- Size: Small
-- Dependencies: None
-
 **REORG-102: Move Core Infrastructure to common/** (P2)
 - Move `consumer.py` → `common/consumer.py`
 - Move `producer.py` → `common/producer.py`
@@ -338,4 +330,10 @@ Phase 4: Config & Entry Points
 
 <!-- Move completed work packages here with commit hash -->
 
-(none)
+**REORG-101: Create common/ Directory Structure** (P2) - `9595e9f`
+- Created `kafka_pipeline/common/` with `__init__.py`
+- Created subdirectories: `retry/`, `dlq/`, `storage/`, `writers/`, `eventhouse/`
+- Added `__init__.py` to each subdirectory
+- No code moves - structure only
+- Size: Small
+- Dependencies: None
