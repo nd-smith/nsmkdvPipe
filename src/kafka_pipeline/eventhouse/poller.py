@@ -6,6 +6,7 @@ and produces events to Kafka for processing by download workers.
 """
 
 import asyncio
+import json
 import logging
 import os
 import time
@@ -730,8 +731,6 @@ class KQLEventPoller:
         Returns:
             EventMessage matching verisk_pipeline EventRecord schema
         """
-        import json
-
         # Extract trace_id (supports both traceId and trace_id column names)
         trace_id = row.get("traceId", row.get("trace_id", ""))
 

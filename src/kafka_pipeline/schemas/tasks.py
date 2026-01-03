@@ -146,6 +146,7 @@ class DownloadTaskMessage(BaseModel):
         Returns:
             verisk_pipeline.xact.xact_models.Task instance
         """
+        # Inline import avoids circular dependency between kafka_pipeline and verisk_pipeline
         from verisk_pipeline.xact.xact_models import Task
         return Task(
             trace_id=self.trace_id,

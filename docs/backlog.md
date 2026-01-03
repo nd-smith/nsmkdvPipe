@@ -24,12 +24,11 @@
 
 <!-- Move tasks here when starting work -->
 
-**TECH-017: Review delta_events.py Structure and Remove Dead Code**
-- Location: `kafka_pipeline/writers/delta_events.py`
-- Review overall code structure and organization
-- Remove dead/unreachable code paths
-- Apply best practices (single responsibility, reduce complexity)
-- Increase readability
+**TECH-007: Confirm Consistent CTRL+C / Graceful Shutdown Behavior**
+- Verify all workers handle KeyboardInterrupt consistently
+- CTRL+C should initiate graceful shutdown: finish current batch, then exit
+- Review: event-ingester, download-worker, upload-worker, result-processor, poller
+- Document expected shutdown behavior
 - Size: Medium
 
 ---
@@ -50,10 +49,6 @@
 
 ### P3 - Low Priority
 
-**WP-505: Multi-Pipeline Support**
-- Support multiple pipelines (xact, claimx) with independent configs
-- CLI flag for pipeline selection, separate source tables
-- Size: Medium
 
 **TECH-001: Refactor EventIngesterWorker for Separate Consumer/Producer Configs**
 - Location: `kafka_pipeline/__main__.py:157`
@@ -63,20 +58,6 @@
 - **Note:** Only affects `EVENT_SOURCE=eventhub` mode; Eventhouse mode works correctly
 - Size: Small
 - See: [Research Notes](#tech-001-research-notes)
-
-**TECH-002: Move Inline Imports to Top of Files**
-- Move all inline/function-level imports to top of files per PEP 8 convention
-- Review each inline import for valid exceptions (circular import avoidance, optional dependencies)
-- Document any intentional exceptions with comments
-- Size: Medium (codebase-wide)
-
-
-**TECH-007: Confirm Consistent CTRL+C / Graceful Shutdown Behavior**
-- Verify all workers handle KeyboardInterrupt consistently
-- CTRL+C should initiate graceful shutdown: finish current batch, then exit
-- Test: event-ingester, download-worker, upload-worker, result-processor, poller
-- Document expected shutdown behavior
-- Size: Medium
 
 ---
 
@@ -91,6 +72,35 @@
 ## Completed
 
 <!-- Done tasks with commit references -->
+
+**TECH-002: Move Inline Imports to Top of Files** ✓
+- Audited all inline imports in `kafka_pipeline/` directory
+- **Finding**: 1 inline import should be moved, 5 are valid exceptions
+- **Fixed**: Moved `import json` to top of `poller.py` (was inside `_parse_event_row` method)
+- **Valid exceptions documented with comments**:
+  - `__main__.py:507,527`: Lazy loading for conditional dev/prod code paths
+  - `schemas/tasks.py:149`: Avoids circular dependency with verisk_pipeline
+  - `schemas/events.py:174`: Avoids circular dependency with verisk_pipeline
+  - `dlq/cli.py:273`: Lazy loading for CLI commands (only import what's needed)
+- Size: Small (1 file changed, 4 files with added comments)
+
+**TECH-017: Review delta_events.py Structure and Remove Dead Code** ✓
+- Reviewed `kafka_pipeline/writers/delta_events.py` (155 lines, 1 class with 2 methods)
+- **Finding**: No dead code found - file is small, clean, and well-structured
+- All 7 imports verified in use:
+  - `asyncio` - used for `asyncio.to_thread` non-blocking writes
+  - `datetime, timezone` - used for timestamp generation
+  - `Any, Dict, List` - used in type hints
+  - `polars as pl` - used for DataFrame operations
+  - `get_logger`, `DeltaTableWriter`, `flatten_events` - all in use
+- `DeltaEventsWriter` class actively used in:
+  - `poller.py` (KQLEventPoller)
+  - `event_ingester.py` (EventIngesterWorker)
+  - Exported via `writers/__init__.py`
+  - Tested in `test_delta_events.py`
+- Code quality is good: comprehensive docstrings, proper error handling, async non-blocking pattern
+- No changes required
+- Size: Small (review only)
 
 **TECH-009: Review poller.py Structure and Remove Dead Code** ✓
 - Reviewed `kafka_pipeline/eventhouse/poller.py` (973 → 836 lines, reduced by 137 lines)

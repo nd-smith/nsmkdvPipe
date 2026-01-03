@@ -137,23 +137,19 @@ async def run_event_ingester(
     """Run the Event Ingester worker.
 
     Reads events from Event Hub and produces download tasks to local Kafka.
+    Uses separate configs: eventhub_config for consumer, local_kafka_config for producer.
     """
     from kafka_pipeline.workers.event_ingester import EventIngesterWorker
 
     set_log_context(stage="event-ingester")
     logger.info("Starting Event Ingester worker...")
 
-    # For event ingester, we need to read from Event Hub and write to local Kafka
-    # This requires a modified worker that uses two different configs
-    # For now, we'll use a single config approach with the Event Hub config
-
-    # TODO: Refactor EventIngesterWorker to accept separate consumer/producer configs
-    # For now, the worker uses the same config for both consumer and producer
     worker = EventIngesterWorker(
         config=eventhub_config,
         enable_delta_writes=enable_delta_writes,
         events_table_path=events_table_path,
         domain=domain,
+        producer_config=local_kafka_config,
     )
 
     await worker.start()
@@ -502,6 +498,7 @@ def main():
     # Load configuration
     # Dev mode bypasses Event Hub/Eventhouse requirements for local testing.
     # Production mode requires either Event Hub or Eventhouse credentials.
+    # NOTE: Inline imports below are intentional - lazy loading for conditional code paths
     if args.dev:
         logger.info("Running in DEVELOPMENT mode (local Kafka only)")
         from kafka_pipeline.pipeline_config import (

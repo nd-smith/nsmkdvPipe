@@ -270,6 +270,7 @@ async def main_list(args):
         await manager.handler._producer.start() if not manager.handler._producer else None
 
         # Create consumer manually without starting message loop
+        # Inline import: lazy loading for CLI commands (only import what's needed)
         from kafka_pipeline.consumer import BaseKafkaConsumer
         manager.handler._consumer = BaseKafkaConsumer(
             config=config,

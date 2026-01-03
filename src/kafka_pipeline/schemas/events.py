@@ -171,6 +171,7 @@ class EventMessage(BaseModel):
         Returns:
             verisk_pipeline.xact.xact_models.EventRecord instance
         """
+        # Inline import avoids circular dependency between kafka_pipeline and verisk_pipeline
         from verisk_pipeline.xact.xact_models import EventRecord
         return EventRecord(
             type=self.type,
