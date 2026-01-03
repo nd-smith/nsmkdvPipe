@@ -108,6 +108,7 @@ class TestIsAllowedExtension:
         """Should accept allowed extensions."""
         assert is_allowed_extension("pdf") is True
         assert is_allowed_extension("xml") is True
+        assert is_allowed_extension("txt") is True
         assert is_allowed_extension("jpg") is True
         assert is_allowed_extension("jpeg") is True
         assert is_allowed_extension("png") is True
@@ -144,6 +145,7 @@ class TestIsAllowedContentType:
         assert is_allowed_content_type("application/pdf") is True
         assert is_allowed_content_type("application/xml") is True
         assert is_allowed_content_type("text/xml") is True
+        assert is_allowed_content_type("text/plain") is True
         assert is_allowed_content_type("image/jpeg") is True
         assert is_allowed_content_type("image/png") is True
 
@@ -312,6 +314,36 @@ class TestValidateFileType:
     def test_xml_with_application_xml_content_type(self):
         """Should accept application/xml for XML files."""
         is_valid, error = validate_file_type("data.xml", "application/xml")
+        assert is_valid is True
+        assert error == ""
+
+    def test_valid_txt_extension_only(self):
+        """Should accept TXT file extension."""
+        is_valid, error = validate_file_type("document.txt")
+        assert is_valid is True
+        assert error == ""
+
+    def test_valid_txt_with_content_type(self):
+        """Should accept TXT with matching Content-Type."""
+        is_valid, error = validate_file_type("document.txt", "text/plain")
+        assert is_valid is True
+        assert error == ""
+
+    def test_valid_txt_uppercase_extension(self):
+        """Should accept uppercase TXT extension."""
+        is_valid, error = validate_file_type("DOCUMENT.TXT")
+        assert is_valid is True
+        assert error == ""
+
+    def test_s3_presigned_url_with_txt(self):
+        """Should accept TXT file from S3 presigned URL with query parameters."""
+        # This URL format matches Xact/Verisk S3 presigned URLs
+        url = (
+            "https://usw2-prod-xn-exportreceiver-publish.s3.us-west-2.amazonaws.com/"
+            "Allstate-API/06NSLJQ/Reassigned-%20Reject%20Roof%20Measurement%20Update.TXT"
+            "?X-Amz-Expires=259200&X-Amz-Algorithm=AWS4-HMAC-SHA256"
+        )
+        is_valid, error = validate_file_type(url)
         assert is_valid is True
         assert error == ""
 
