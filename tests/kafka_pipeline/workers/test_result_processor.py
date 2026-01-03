@@ -72,11 +72,14 @@ def sample_success_result():
     return DownloadResultMessage(
         trace_id="evt-123",
         attachment_url="https://storage.example.com/file.pdf",
-        status="success",
-        destination_path="claims/C-456/file.pdf",
+        blob_path="claims/C-456/file.pdf",
+        status_subtype="documentsReceived",
+        file_type="pdf",
+        assignment_id="C-456",
+        status="completed",
+        http_status=200,
         bytes_downloaded=2048576,
-        processing_time_ms=1250,
-        completed_at=datetime.now(timezone.utc),
+        created_at=datetime.now(timezone.utc),
     )
 
 
@@ -86,13 +89,15 @@ def sample_failed_transient_result():
     return DownloadResultMessage(
         trace_id="evt-456",
         attachment_url="https://storage.example.com/timeout.pdf",
-        status="failed_transient",
-        destination_path=None,
-        bytes_downloaded=None,
+        blob_path="documentsReceived/C-456/pdf/timeout.pdf",
+        status_subtype="documentsReceived",
+        file_type="pdf",
+        assignment_id="C-456",
+        status="failed",
+        http_status=None,
+        bytes_downloaded=0,
         error_message="Connection timeout",
-        error_category="transient",
-        processing_time_ms=30000,
-        completed_at=datetime.now(timezone.utc),
+        created_at=datetime.now(timezone.utc),
     )
 
 
@@ -102,13 +107,15 @@ def sample_failed_permanent_result():
     return DownloadResultMessage(
         trace_id="evt-789",
         attachment_url="https://storage.example.com/invalid.exe",
+        blob_path="documentsReceived/C-789/exe/invalid.exe",
+        status_subtype="documentsReceived",
+        file_type="exe",
+        assignment_id="C-789",
         status="failed_permanent",
-        destination_path=None,
-        bytes_downloaded=None,
+        http_status=403,
+        bytes_downloaded=0,
         error_message="File type not allowed",
-        error_category="permanent",
-        processing_time_ms=50,
-        completed_at=datetime.now(timezone.utc),
+        created_at=datetime.now(timezone.utc),
     )
 
 
@@ -208,11 +215,14 @@ class TestResultProcessor:
             result = DownloadResultMessage(
                 trace_id=f"evt-{i}",
                 attachment_url=f"https://storage.example.com/file{i}.pdf",
-                status="success",
-                destination_path=f"claims/C-{i}/file{i}.pdf",
+                blob_path=f"claims/C-{i}/file{i}.pdf",
+                status_subtype="documentsReceived",
+                file_type="pdf",
+                assignment_id=f"C-{i}",
+                status="completed",
+                http_status=200,
                 bytes_downloaded=1024 * i,
-                processing_time_ms=100,
-                completed_at=datetime.now(timezone.utc),
+                created_at=datetime.now(timezone.utc),
             )
             record = create_consumer_record(result, offset=i)
             await processor._handle_result(record)
@@ -231,11 +241,14 @@ class TestResultProcessor:
             result = DownloadResultMessage(
                 trace_id=f"evt-{i}",
                 attachment_url=f"https://storage.example.com/file{i}.pdf",
-                status="success",
-                destination_path=f"claims/C-{i}/file{i}.pdf",
+                blob_path=f"claims/C-{i}/file{i}.pdf",
+                status_subtype="documentsReceived",
+                file_type="pdf",
+                assignment_id=f"C-{i}",
+                status="completed",
+                http_status=200,
                 bytes_downloaded=1024 * i,
-                processing_time_ms=100,
-                completed_at=datetime.now(timezone.utc),
+                created_at=datetime.now(timezone.utc),
             )
             record = create_consumer_record(result, offset=i)
             await processor._handle_result(record)
@@ -291,11 +304,14 @@ class TestResultProcessor:
             result = DownloadResultMessage(
                 trace_id=f"evt-{i}",
                 attachment_url=f"https://storage.example.com/file{i}.pdf",
-                status="success",
-                destination_path=f"claims/C-{i}/file{i}.pdf",
+                blob_path=f"claims/C-{i}/file{i}.pdf",
+                status_subtype="documentsReceived",
+                file_type="pdf",
+                assignment_id=f"C-{i}",
+                status="completed",
+                http_status=200,
                 bytes_downloaded=1024 * i,
-                processing_time_ms=100,
-                completed_at=datetime.now(timezone.utc),
+                created_at=datetime.now(timezone.utc),
             )
             record = create_consumer_record(result, offset=i)
             await processor._handle_result(record)
@@ -359,11 +375,14 @@ class TestResultProcessor:
             result = DownloadResultMessage(
                 trace_id=f"evt-{i}",
                 attachment_url=f"https://storage.example.com/file{i}.pdf",
-                status="success",
-                destination_path=f"claims/C-{i}/file{i}.pdf",
+                blob_path=f"claims/C-{i}/file{i}.pdf",
+                status_subtype="documentsReceived",
+                file_type="pdf",
+                assignment_id=f"C-{i}",
+                status="completed",
+                http_status=200,
                 bytes_downloaded=1024 * i,
-                processing_time_ms=100,
-                completed_at=datetime.now(timezone.utc),
+                created_at=datetime.now(timezone.utc),
             )
             record = create_consumer_record(result, offset=i)
             await processor._handle_result(record)
@@ -406,11 +425,14 @@ class TestResultProcessor:
             result = DownloadResultMessage(
                 trace_id=f"evt-batch1-{i}",
                 attachment_url=f"https://storage.example.com/file{i}.pdf",
-                status="success",
-                destination_path=f"claims/C-{i}/file{i}.pdf",
+                blob_path=f"claims/C-{i}/file{i}.pdf",
+                status_subtype="documentsReceived",
+                file_type="pdf",
+                assignment_id=f"C-{i}",
+                status="completed",
+                http_status=200,
                 bytes_downloaded=1024 * i,
-                processing_time_ms=100,
-                completed_at=datetime.now(timezone.utc),
+                created_at=datetime.now(timezone.utc),
             )
             record = create_consumer_record(result, offset=i)
             await processor._handle_result(record)
@@ -423,11 +445,14 @@ class TestResultProcessor:
             result = DownloadResultMessage(
                 trace_id=f"evt-batch2-{i}",
                 attachment_url=f"https://storage.example.com/file{i}.pdf",
-                status="success",
-                destination_path=f"claims/C-{i}/file{i}.pdf",
+                blob_path=f"claims/C-{i}/file{i}.pdf",
+                status_subtype="documentsReceived",
+                file_type="pdf",
+                assignment_id=f"C-{i}",
+                status="completed",
+                http_status=200,
                 bytes_downloaded=1024 * i,
-                processing_time_ms=100,
-                completed_at=datetime.now(timezone.utc),
+                created_at=datetime.now(timezone.utc),
             )
             record = create_consumer_record(result, offset=i + 10)
             await processor._handle_result(record)
@@ -469,11 +494,14 @@ class TestResultProcessor:
             result = DownloadResultMessage(
                 trace_id=f"evt-{i}",
                 attachment_url=f"https://storage.example.com/file{i}.pdf",
-                status="success",
-                destination_path=f"claims/C-{i}/file{i}.pdf",
+                blob_path=f"claims/C-{i}/file{i}.pdf",
+                status_subtype="documentsReceived",
+                file_type="pdf",
+                assignment_id=f"C-{i}",
+                status="completed",
+                http_status=200,
                 bytes_downloaded=1024 * i,
-                processing_time_ms=100,
-                completed_at=datetime.now(timezone.utc),
+                created_at=datetime.now(timezone.utc),
             )
             record = create_consumer_record(result, offset=i)
             await processor._handle_result(record)
@@ -500,11 +528,14 @@ class TestResultProcessor:
         result = DownloadResultMessage(
             trace_id="evt-fail",
             attachment_url="https://storage.example.com/file.pdf",
-            status="success",
-            destination_path="claims/C-123/file.pdf",
+            blob_path="claims/C-123/file.pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="C-123",
+            status="completed",
+            http_status=200,
             bytes_downloaded=1024,
-            processing_time_ms=100,
-            completed_at=datetime.now(timezone.utc),
+            created_at=datetime.now(timezone.utc),
         )
         record = create_consumer_record(result)
 
@@ -608,13 +639,15 @@ class TestResultProcessor:
             result = DownloadResultMessage(
                 trace_id=f"evt-fail-{i}",
                 attachment_url=f"https://storage.example.com/invalid{i}.pdf",
+                blob_path=f"documentsReceived/C-fail-{i}/pdf/invalid{i}.pdf",
+                status_subtype="documentsReceived",
+                file_type="pdf",
+                assignment_id=f"C-fail-{i}",
                 status="failed_permanent",
-                destination_path=None,
-                bytes_downloaded=None,
+                http_status=403,
+                bytes_downloaded=0,
                 error_message="File type not allowed",
-                error_category="permanent",
-                processing_time_ms=50,
-                completed_at=datetime.now(timezone.utc),
+                created_at=datetime.now(timezone.utc),
             )
             record = create_consumer_record(result, offset=i)
             await processor._handle_result(record)
@@ -639,13 +672,15 @@ class TestResultProcessor:
             result = DownloadResultMessage(
                 trace_id=f"evt-fail-{i}",
                 attachment_url=f"https://storage.example.com/invalid{i}.pdf",
+                blob_path=f"documentsReceived/C-fail-{i}/pdf/invalid{i}.pdf",
+                status_subtype="documentsReceived",
+                file_type="pdf",
+                assignment_id=f"C-fail-{i}",
                 status="failed_permanent",
-                destination_path=None,
-                bytes_downloaded=None,
+                http_status=403,
+                bytes_downloaded=0,
                 error_message=f"Error {i}",
-                error_category="permanent",
-                processing_time_ms=50,
-                completed_at=datetime.now(timezone.utc),
+                created_at=datetime.now(timezone.utc),
             )
             record = create_consumer_record(result, offset=i)
             await processor._handle_result(record)
@@ -672,13 +707,15 @@ class TestResultProcessor:
         result = DownloadResultMessage(
             trace_id="evt-fail-shutdown",
             attachment_url="https://storage.example.com/invalid.pdf",
+            blob_path="documentsReceived/C-shutdown/pdf/invalid.pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="C-shutdown",
             status="failed_permanent",
-            destination_path=None,
-            bytes_downloaded=None,
+            http_status=403,
+            bytes_downloaded=0,
             error_message="File type not allowed",
-            error_category="permanent",
-            processing_time_ms=50,
-            completed_at=datetime.now(timezone.utc),
+            created_at=datetime.now(timezone.utc),
         )
         record = create_consumer_record(result)
         await processor._handle_result(record)
@@ -714,11 +751,14 @@ class TestResultProcessor:
         success_result = DownloadResultMessage(
             trace_id="evt-success",
             attachment_url="https://storage.example.com/file.pdf",
-            status="success",
-            destination_path="claims/C-123/file.pdf",
+            blob_path="claims/C-123/file.pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="C-123",
+            status="completed",
+            http_status=200,
             bytes_downloaded=1024,
-            processing_time_ms=100,
-            completed_at=datetime.now(timezone.utc),
+            created_at=datetime.now(timezone.utc),
         )
         await processor._handle_result(create_consumer_record(success_result, offset=0))
 
@@ -726,13 +766,15 @@ class TestResultProcessor:
         failed_result = DownloadResultMessage(
             trace_id="evt-failed",
             attachment_url="https://storage.example.com/invalid.pdf",
+            blob_path="documentsReceived/C-fail/pdf/invalid.pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="C-fail",
             status="failed_permanent",
-            destination_path=None,
-            bytes_downloaded=None,
+            http_status=403,
+            bytes_downloaded=0,
             error_message="File type not allowed",
-            error_category="permanent",
-            processing_time_ms=50,
-            completed_at=datetime.now(timezone.utc),
+            created_at=datetime.now(timezone.utc),
         )
         await processor._handle_result(create_consumer_record(failed_result, offset=1))
 

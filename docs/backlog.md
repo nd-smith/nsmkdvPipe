@@ -24,12 +24,7 @@
 
 <!-- Move tasks here when starting work -->
 
-**TECH-007: Confirm Consistent CTRL+C / Graceful Shutdown Behavior**
-- Verify all workers handle KeyboardInterrupt consistently
-- CTRL+C should initiate graceful shutdown: finish current batch, then exit
-- Review: event-ingester, download-worker, upload-worker, result-processor, poller
-- Document expected shutdown behavior
-- Size: Medium
+(none)
 
 ---
 
@@ -62,6 +57,20 @@
 ## Completed
 
 <!-- Done tasks with commit references -->
+
+**TECH-007: Confirm Consistent CTRL+C / Graceful Shutdown Behavior** ✓
+- Reviewed all workers for shutdown handling consistency
+- **Finding**: 4 worker run functions were missing graceful shutdown handling
+- **Fixed**: Added `shutdown_watcher` pattern to:
+  - `run_event_ingester()` - now watches for shutdown event and calls `worker.stop()`
+  - `run_local_event_ingester()` - now watches for shutdown event and calls `worker.stop()`
+  - `run_result_processor()` - now watches for shutdown event and calls `worker.stop()`
+  - `run_eventhouse_poller()` - now watches for shutdown event and calls `poller.stop()`
+- All workers now follow consistent pattern:
+  - First CTRL+C: Sets shutdown event → worker finishes current batch → graceful exit
+  - Second CTRL+C: Forces immediate shutdown via task cancellation
+- Updated `setup_signal_handlers()` docstring with shutdown behavior documentation
+- Size: Medium
 
 **TECH-001: Refactor EventIngesterWorker for Separate Consumer/Producer Configs** ✓
 - Modified `EventIngesterWorker.__init__` to accept optional `producer_config` parameter

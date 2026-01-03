@@ -38,6 +38,7 @@ ENV/
 .DS_Store
 .serena
 claudedocs
+claude
 
 
 # Logs

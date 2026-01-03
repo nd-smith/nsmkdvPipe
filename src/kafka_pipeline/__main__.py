@@ -182,6 +182,9 @@ async def run_eventhouse_poller(pipeline_config):
 
     Polls Microsoft Fabric Eventhouse for events and produces download tasks to local Kafka.
     Uses KQL queries with deduplication against xact_events Delta table.
+
+    Supports graceful shutdown: when shutdown event is set, the poller
+    finishes its current poll cycle before exiting.
     """
     from kafka_pipeline.eventhouse.dedup import DedupConfig
     from kafka_pipeline.eventhouse.kql_client import EventhouseConfig
@@ -220,8 +223,26 @@ async def run_eventhouse_poller(pipeline_config):
         events_table_path=eventhouse_source.xact_events_table_path,
     )
 
+    shutdown_event = get_shutdown_event()
+
+    async def shutdown_watcher(poller: KQLEventPoller):
+        """Wait for shutdown signal and stop poller gracefully."""
+        await shutdown_event.wait()
+        logger.info("Shutdown signal received, stopping eventhouse poller...")
+        await poller.stop()
+
     async with KQLEventPoller(poller_config) as poller:
-        await poller.run()
+        # Start shutdown watcher alongside poller
+        watcher_task = asyncio.create_task(shutdown_watcher(poller))
+
+        try:
+            await poller.run()
+        finally:
+            watcher_task.cancel()
+            try:
+                await watcher_task
+            except asyncio.CancelledError:
+                pass
 
 
 async def run_download_worker(kafka_config):
@@ -488,8 +509,18 @@ async def run_all_workers(
 def setup_signal_handlers(loop: asyncio.AbstractEventLoop):
     """Set up signal handlers for graceful shutdown.
 
-    Sets the global shutdown event to allow workers to finish their current
-    batch before exiting, rather than cancelling tasks immediately.
+    Shutdown Behavior:
+    - First CTRL+C (SIGINT/SIGTERM): Sets the global shutdown event.
+      All workers receive this signal and initiate graceful shutdown:
+      - Finish processing current batch/message
+      - Flush pending data to Delta Lake
+      - Commit Kafka offsets
+      - Close connections gracefully
+    - Second CTRL+C: Forces immediate shutdown by cancelling all tasks.
+      Use only if graceful shutdown is stuck.
+
+    Note: Signal handlers are not supported on Windows. On Windows,
+    KeyboardInterrupt is used instead, which triggers asyncio.CancelledError.
     """
 
     def handle_signal(sig):

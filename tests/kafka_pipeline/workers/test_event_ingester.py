@@ -33,20 +33,21 @@ def kafka_config():
 @pytest.fixture
 def sample_event():
     """Create sample EventMessage for testing."""
-    return EventMessage(
-        trace_id="evt-123",
-        event_type="claim",
-        event_subtype="documentsReceived",
-        timestamp=datetime.now(timezone.utc),
-        source_system="claimx",
-        payload={
-            "assignment_id": "A-456",
-            "claim_id": "C-789",
-        },
-        attachments=[
+    import json
+    data = {
+        "assignmentId": "A-456",
+        "claim_id": "C-789",
+        "attachments": [
             "https://claimxperience.com/files/document1.pdf",
             "https://claimxperience.com/files/document2.pdf",
         ],
+    }
+    return EventMessage(
+        type="verisk.claims.property.xn.documentsReceived",
+        version=1,
+        utcDateTime=datetime.now(timezone.utc).isoformat(),
+        traceId="evt-123",
+        data=json.dumps(data),
     )
 
 

@@ -313,14 +313,19 @@ async def test_result_processor_throughput(
 
                 for event in test_events:
                     for attachment_url in event.attachments:
+                        filename = attachment_url.split('/')[-1]
+                        file_type = filename.rsplit('.', 1)[-1] if '.' in filename else 'pdf'
                         result = DownloadResultMessage(
                             trace_id=event.trace_id,
                             attachment_url=attachment_url,
-                            destination_path=f"downloads/{event.trace_id}/{attachment_url.split('/')[-1]}",
-                            status="success",
+                            blob_path=f"downloads/{event.trace_id}/{filename}",
+                            status_subtype="documentsReceived",
+                            file_type=file_type,
+                            assignment_id=event.payload.get("claim_id", "A12345"),
+                            status="completed",
+                            http_status=200,
                             bytes_downloaded=1024,
-                            processing_time_ms=100,
-                            completed_at=datetime.now(timezone.utc),
+                            created_at=datetime.now(timezone.utc),
                         )
                         await producer.send(
                             test_kafka_config.downloads_results_topic,

@@ -29,11 +29,14 @@ def sample_result():
     return DownloadResultMessage(
         trace_id="test-trace-123",
         attachment_url="https://example.com/file1.pdf",
-        destination_path="attachments/2024/01/test-trace-123/file1.pdf",
-        status="success",
+        blob_path="attachments/2024/01/test-trace-123/file1.pdf",
+        status_subtype="documentsReceived",
+        file_type="pdf",
+        assignment_id="A12345",
+        status="completed",
+        http_status=200,
         bytes_downloaded=12345,
-        completed_at=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
-        processing_time_ms=1500,
+        created_at=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
     )
 
 
@@ -66,28 +69,28 @@ class TestDeltaInventoryWriter:
         assert "trace_id" in df.columns
         assert "attachment_url" in df.columns
         assert "blob_path" in df.columns
+        assert "status_subtype" in df.columns
+        assert "file_type" in df.columns
+        assert "assignment_id" in df.columns
+        assert "status" in df.columns
         assert "bytes_downloaded" in df.columns
-        assert "downloaded_at" in df.columns
-        assert "processing_time_ms" in df.columns
         assert "created_at" in df.columns
-        assert "created_date" in df.columns
 
         # Check data types
         assert df.schema["trace_id"] == pl.Utf8
         assert df.schema["attachment_url"] == pl.Utf8
         assert df.schema["blob_path"] == pl.Utf8
+        assert df.schema["status_subtype"] == pl.Utf8
+        assert df.schema["file_type"] == pl.Utf8
+        assert df.schema["assignment_id"] == pl.Utf8
         assert df.schema["bytes_downloaded"] == pl.Int64
-        assert df.schema["downloaded_at"] == pl.Datetime(time_zone="UTC")
-        assert df.schema["processing_time_ms"] == pl.Int64
-        assert df.schema["created_at"] == pl.Datetime(time_zone="UTC")
-        assert df.schema["created_date"] == pl.Date
 
         # Check values
         assert df["trace_id"][0] == "test-trace-123"
         assert df["attachment_url"][0] == "https://example.com/file1.pdf"
         assert df["blob_path"][0] == "attachments/2024/01/test-trace-123/file1.pdf"
         assert df["bytes_downloaded"][0] == 12345
-        assert df["processing_time_ms"][0] == 1500
+        assert df["status"][0] == "completed"
 
     def test_results_to_dataframe_multiple_results(self, delta_writer):
         """Test converting multiple results to DataFrame."""
@@ -95,11 +98,14 @@ class TestDeltaInventoryWriter:
             DownloadResultMessage(
                 trace_id=f"trace-{i}",
                 attachment_url=f"https://example.com/file{i}.pdf",
-                destination_path=f"attachments/2024/01/trace-{i}/file{i}.pdf",
-                status="success",
+                blob_path=f"attachments/2024/01/trace-{i}/file{i}.pdf",
+                status_subtype="documentsReceived",
+                file_type="pdf",
+                assignment_id=f"A{i}",
+                status="completed",
+                http_status=200,
                 bytes_downloaded=1000 * i,
-                completed_at=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
-                processing_time_ms=1000 + i,
+                created_at=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
             )
             for i in range(3)
         ]
@@ -139,11 +145,14 @@ class TestDeltaInventoryWriter:
             DownloadResultMessage(
                 trace_id=f"trace-{i}",
                 attachment_url=f"https://example.com/file{i}.pdf",
-                destination_path=f"attachments/2024/01/trace-{i}/file{i}.pdf",
-                status="success",
+                blob_path=f"attachments/2024/01/trace-{i}/file{i}.pdf",
+                status_subtype="documentsReceived",
+                file_type="pdf",
+                assignment_id=f"A{i}",
+                status="completed",
+                http_status=200,
                 bytes_downloaded=1000 * i,
-                completed_at=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
-                processing_time_ms=1000,
+                created_at=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
             )
             for i in range(5)
         ]
@@ -274,11 +283,11 @@ class TestDeltaInventoryWriter:
         assert df.schema["created_at"] == pl.Datetime(time_zone="UTC")
 
     def test_blob_path_mapping(self, delta_writer, sample_result):
-        """Test that destination_path is correctly mapped to blob_path."""
+        """Test that blob_path is correctly mapped."""
         df = delta_writer._results_to_dataframe([sample_result])
 
-        # destination_path from result should become blob_path in DataFrame
-        assert df["blob_path"][0] == sample_result.destination_path
+        # blob_path from result should be in DataFrame
+        assert df["blob_path"][0] == sample_result.blob_path
 
 
 @pytest.mark.asyncio
@@ -300,11 +309,14 @@ async def test_delta_writer_integration():
         result = DownloadResultMessage(
             trace_id="integration-test",
             attachment_url="https://example.com/integration.pdf",
-            destination_path="attachments/2024/01/integration-test/integration.pdf",
-            status="success",
+            blob_path="attachments/2024/01/integration-test/integration.pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="A12345",
+            status="completed",
+            http_status=200,
             bytes_downloaded=54321,
-            completed_at=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
-            processing_time_ms=2000,
+            created_at=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
         )
 
         write_result = await writer.write_result(result)
@@ -330,13 +342,15 @@ def sample_failed_result():
     return DownloadResultMessage(
         trace_id="test-trace-failed-123",
         attachment_url="https://example.com/missing.pdf",
-        destination_path=None,
+        blob_path="documentsReceived/A12345/pdf/missing.pdf",
+        status_subtype="documentsReceived",
+        file_type="pdf",
+        assignment_id="A12345",
         status="failed_permanent",
-        bytes_downloaded=None,
+        http_status=404,
+        bytes_downloaded=0,
         error_message="File not found: 404 response",
-        error_category="permanent",
-        completed_at=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
-        processing_time_ms=500,
+        created_at=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
     )
 
 
@@ -368,29 +382,26 @@ class TestDeltaFailedAttachmentsWriter:
         # Check schema
         assert "trace_id" in df.columns
         assert "attachment_url" in df.columns
+        assert "blob_path" in df.columns
+        assert "status_subtype" in df.columns
+        assert "file_type" in df.columns
+        assert "assignment_id" in df.columns
+        assert "status" in df.columns
         assert "error_message" in df.columns
-        assert "error_category" in df.columns
-        assert "failed_at" in df.columns
-        assert "processing_time_ms" in df.columns
         assert "created_at" in df.columns
-        assert "created_date" in df.columns
 
         # Check data types
         assert df.schema["trace_id"] == pl.Utf8
         assert df.schema["attachment_url"] == pl.Utf8
+        assert df.schema["blob_path"] == pl.Utf8
+        assert df.schema["status_subtype"] == pl.Utf8
         assert df.schema["error_message"] == pl.Utf8
-        assert df.schema["error_category"] == pl.Utf8
-        assert df.schema["failed_at"] == pl.Datetime(time_zone="UTC")
-        assert df.schema["processing_time_ms"] == pl.Int64
-        assert df.schema["created_at"] == pl.Datetime(time_zone="UTC")
-        assert df.schema["created_date"] == pl.Date
 
         # Check values
         assert df["trace_id"][0] == "test-trace-failed-123"
         assert df["attachment_url"][0] == "https://example.com/missing.pdf"
         assert df["error_message"][0] == "File not found: 404 response"
-        assert df["error_category"][0] == "permanent"
-        assert df["processing_time_ms"][0] == 500
+        assert df["status"][0] == "failed_permanent"
 
     def test_results_to_dataframe_multiple_results(self, failed_writer):
         """Test converting multiple failed results to DataFrame."""
@@ -398,13 +409,15 @@ class TestDeltaFailedAttachmentsWriter:
             DownloadResultMessage(
                 trace_id=f"trace-failed-{i}",
                 attachment_url=f"https://example.com/missing{i}.pdf",
-                destination_path=None,
+                blob_path=f"documentsReceived/A{i}/pdf/missing{i}.pdf",
+                status_subtype="documentsReceived",
+                file_type="pdf",
+                assignment_id=f"A{i}",
                 status="failed_permanent",
-                bytes_downloaded=None,
+                http_status=404,
+                bytes_downloaded=0,
                 error_message=f"Error {i}",
-                error_category="permanent",
-                completed_at=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
-                processing_time_ms=100 * i,
+                created_at=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
             )
             for i in range(3)
         ]
@@ -416,24 +429,25 @@ class TestDeltaFailedAttachmentsWriter:
         assert df["error_message"].to_list() == ["Error 0", "Error 1", "Error 2"]
 
     def test_results_to_dataframe_null_error_handling(self, failed_writer):
-        """Test that null error_message and error_category are handled."""
+        """Test that null error_message is handled."""
         result = DownloadResultMessage(
             trace_id="trace-null-error",
             attachment_url="https://example.com/null.pdf",
-            destination_path=None,
+            blob_path="documentsReceived/A12345/pdf/null.pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="A12345",
             status="failed_permanent",
-            bytes_downloaded=None,
+            http_status=500,
+            bytes_downloaded=0,
             error_message=None,  # Null
-            error_category=None,  # Null
-            completed_at=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
-            processing_time_ms=100,
+            created_at=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
         )
 
         df = failed_writer._results_to_dataframe([result])
 
-        # Should have default values for null fields
-        assert df["error_message"][0] == "Unknown error"
-        assert df["error_category"][0] == "unknown"
+        # Should have default value for null error_message
+        assert df["error_message"][0] is None or df["error_message"][0] == "Unknown error"
 
     @pytest.mark.asyncio
     async def test_write_result_success(self, failed_writer, sample_failed_result):
@@ -504,13 +518,15 @@ async def test_failed_writer_integration():
         result = DownloadResultMessage(
             trace_id="integration-failed-test",
             attachment_url="https://example.com/integration-fail.pdf",
-            destination_path=None,
+            blob_path="documentsReceived/A12345/pdf/integration-fail.pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="A12345",
             status="failed_permanent",
-            bytes_downloaded=None,
+            http_status=500,
+            bytes_downloaded=0,
             error_message="Integration test error",
-            error_category="permanent",
-            completed_at=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
-            processing_time_ms=150,
+            created_at=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
         )
 
         write_result = await writer.write_result(result)

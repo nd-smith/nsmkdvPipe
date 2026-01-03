@@ -52,11 +52,14 @@ class TestResultProcessingIntegration:
                     result = DownloadResultMessage(
                         trace_id=f"evt-{i}",
                         attachment_url=f"https://storage.example.com/file{i}.pdf",
-                        status="success",
-                        destination_path=f"claims/C-{i}/file{i}.pdf",
+                        blob_path=f"claims/C-{i}/file{i}.pdf",
+                        status_subtype="documentsReceived",
+                        file_type="pdf",
+                        assignment_id=f"C-{i}",
+                        status="completed",
+                        http_status=200,
                         bytes_downloaded=1024 * (i + 1),
-                        processing_time_ms=100 + i,
-                        completed_at=datetime.now(timezone.utc),
+                        created_at=datetime.now(timezone.utc),
                     )
 
                     await kafka_producer.send(
@@ -113,11 +116,14 @@ class TestResultProcessingIntegration:
                     result = DownloadResultMessage(
                         trace_id="evt-duplicate",
                         attachment_url="https://storage.example.com/duplicate.pdf",
-                        status="success",
-                        destination_path="claims/C-999/duplicate.pdf",
+                        blob_path="claims/C-999/duplicate.pdf",
+                        status_subtype="documentsReceived",
+                        file_type="pdf",
+                        assignment_id="C-999",
+                        status="completed",
+                        http_status=200,
                         bytes_downloaded=2048,
-                        processing_time_ms=150,
-                        completed_at=datetime.now(timezone.utc),
+                        created_at=datetime.now(timezone.utc),
                     )
 
                     await kafka_producer.send(
@@ -174,11 +180,14 @@ class TestResultProcessingIntegration:
                     result = DownloadResultMessage(
                         trace_id=f"evt-pending-{i}",
                         attachment_url=f"https://storage.example.com/pending{i}.pdf",
-                        status="success",
-                        destination_path=f"claims/C-{i}/pending{i}.pdf",
+                        blob_path=f"claims/C-{i}/pending{i}.pdf",
+                        status_subtype="documentsReceived",
+                        file_type="pdf",
+                        assignment_id=f"C-{i}",
+                        status="completed",
+                        http_status=200,
                         bytes_downloaded=1024,
-                        processing_time_ms=100,
-                        completed_at=datetime.now(timezone.utc),
+                        created_at=datetime.now(timezone.utc),
                     )
 
                     await kafka_producer.send(
@@ -238,33 +247,39 @@ class TestResultProcessingIntegration:
                     DownloadResultMessage(
                         trace_id="evt-success",
                         attachment_url="https://storage.example.com/success.pdf",
-                        status="success",
-                        destination_path="claims/C-1/success.pdf",
+                        blob_path="claims/C-1/success.pdf",
+                        status_subtype="documentsReceived",
+                        file_type="pdf",
+                        assignment_id="C-1",
+                        status="completed",
+                        http_status=200,
                         bytes_downloaded=2048,
-                        processing_time_ms=100,
-                        completed_at=datetime.now(timezone.utc),
+                        created_at=datetime.now(timezone.utc),
                     ),
                     DownloadResultMessage(
                         trace_id="evt-failed-transient",
                         attachment_url="https://storage.example.com/timeout.pdf",
-                        status="failed_transient",
-                        destination_path=None,
-                        bytes_downloaded=None,
+                        blob_path="documentsReceived/C-2/pdf/timeout.pdf",
+                        status_subtype="documentsReceived",
+                        file_type="pdf",
+                        assignment_id="C-2",
+                        status="failed",
+                        bytes_downloaded=0,
                         error_message="Connection timeout",
-                        error_category="transient",
-                        processing_time_ms=30000,
-                        completed_at=datetime.now(timezone.utc),
+                        created_at=datetime.now(timezone.utc),
                     ),
                     DownloadResultMessage(
                         trace_id="evt-failed-permanent",
                         attachment_url="https://storage.example.com/invalid.exe",
+                        blob_path="documentsReceived/C-3/exe/invalid.exe",
+                        status_subtype="documentsReceived",
+                        file_type="exe",
+                        assignment_id="C-3",
                         status="failed_permanent",
-                        destination_path=None,
-                        bytes_downloaded=None,
+                        http_status=403,
+                        bytes_downloaded=0,
                         error_message="File type not allowed",
-                        error_category="permanent",
-                        processing_time_ms=50,
-                        completed_at=datetime.now(timezone.utc),
+                        created_at=datetime.now(timezone.utc),
                     ),
                 ]
 
@@ -286,7 +301,7 @@ class TestResultProcessingIntegration:
                 call_args = mock_writer.write_results.call_args[0][0]
                 assert len(call_args) == 1
                 assert call_args[0].trace_id == "evt-success"
-                assert call_args[0].status == "success"
+                assert call_args[0].status == "completed"
 
             finally:
                 processor_task.cancel()
@@ -323,11 +338,14 @@ class TestResultProcessingIntegration:
                 result = DownloadResultMessage(
                     trace_id="evt-timeout",
                     attachment_url="https://storage.example.com/timeout.pdf",
-                    status="success",
-                    destination_path="claims/C-1/timeout.pdf",
+                    blob_path="claims/C-1/timeout.pdf",
+                    status_subtype="documentsReceived",
+                    file_type="pdf",
+                    assignment_id="C-1",
+                    status="completed",
+                    http_status=200,
                     bytes_downloaded=1024,
-                    processing_time_ms=100,
-                    completed_at=datetime.now(timezone.utc),
+                    created_at=datetime.now(timezone.utc),
                 )
 
                 await kafka_producer.send(

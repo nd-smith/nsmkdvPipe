@@ -49,7 +49,10 @@ def sample_task():
     return DownloadTaskMessage(
         trace_id="test-trace-123",
         attachment_url="https://example.com/file.pdf",
-        destination_path="2024/01/file.pdf",
+        blob_path="documentsReceived/C-123/pdf/file.pdf",
+        status_subtype="documentsReceived",
+        file_type="pdf",
+        assignment_id="C-123",
         event_type="claim",
         event_subtype="created",
         retry_count=0,
@@ -451,7 +454,10 @@ class TestDownloadWorkerErrorHandling:
         task_with_retries = DownloadTaskMessage(
             trace_id="test-trace-456",
             attachment_url="https://example.com/file.pdf",
-            destination_path="2024/01/file.pdf",
+            blob_path="documentsReceived/C-123/pdf/file.pdf",
+            status_subtype="documentsReceived",
+            file_type="pdf",
+            assignment_id="C-123",
             event_type="claim",
             event_subtype="created",
             retry_count=2,  # Already retried twice

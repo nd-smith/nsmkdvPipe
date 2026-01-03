@@ -19,17 +19,27 @@ import pytest
 from core.download.models import DownloadOutcome, DownloadTask
 from core.errors.exceptions import ErrorCategory
 from kafka_pipeline.config import KafkaConfig
+from kafka_pipeline.schemas.cached import CachedDownloadMessage
 from kafka_pipeline.schemas.tasks import DownloadTaskMessage
 from kafka_pipeline.workers.download_worker import DownloadWorker, TaskResult
 
 
 @pytest.fixture
-def kafka_config():
+def temp_cache_dir(tmp_path):
+    """Create temporary cache directory for downloaded files awaiting upload."""
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    return cache_dir
+
+
+@pytest.fixture
+def kafka_config(temp_cache_dir):
     """Create test Kafka configuration."""
     return KafkaConfig(
         bootstrap_servers="localhost:9092",
         events_topic="test.events.raw",
         downloads_pending_topic="test.downloads.pending",
+        downloads_cached_topic="test.downloads.cached",
         downloads_results_topic="test.downloads.results",
         dlq_topic="test.downloads.dlq",
         consumer_group_prefix="test",
@@ -38,6 +48,7 @@ def kafka_config():
         sasl_mechanism="PLAIN",
         download_concurrency=10,  # WP-313
         download_batch_size=20,  # WP-313
+        cache_dir=str(temp_cache_dir),  # WP-315: Use test cache directory
     )
 
 
@@ -47,7 +58,10 @@ def sample_download_task_message():
     return DownloadTaskMessage(
         trace_id="evt-123",
         attachment_url="https://claimxperience.com/files/document.pdf",
-        destination_path="claims/C-456/document.pdf",
+        blob_path="documentsReceived/C-456/pdf/document.pdf",
+        status_subtype="documentsReceived",
+        file_type="pdf",
+        assignment_id="C-456",
         event_type="claim",
         event_subtype="documentsReceived",
         retry_count=0,
@@ -131,9 +145,9 @@ class TestDownloadWorker:
         assert download_task.destination.parent == temp_download_dir / sample_download_task_message.trace_id
 
     async def test_process_single_task_success(
-        self, kafka_config, temp_download_dir, sample_consumer_record, sample_download_task_message
+        self, kafka_config, temp_download_dir, temp_cache_dir, sample_consumer_record, sample_download_task_message
     ):
-        """Test successful download task processing (WP-313: _process_single_task)."""
+        """Test successful download task processing (WP-313: _process_single_task, WP-315: cache behavior)."""
         worker = DownloadWorker(kafka_config, temp_dir=temp_download_dir)
 
         # Initialize concurrency control
@@ -142,8 +156,6 @@ class TestDownloadWorker:
         worker._in_flight_lock = asyncio.Lock()
 
         # Mock dependencies that are normally initialized in start()
-        worker.onelake_client = AsyncMock()
-        worker.onelake_client.upload_file = AsyncMock(return_value="claims/C-456/document.pdf")
         worker.producer = AsyncMock()
         worker.retry_handler = AsyncMock()
 
@@ -155,9 +167,10 @@ class TestDownloadWorker:
             status_code=200,
         )
 
-        # Create the temp file so cleanup doesn't fail
+        # Create the temp file that will be moved to cache
         (temp_download_dir / "evt-123").mkdir(parents=True, exist_ok=True)
-        (temp_download_dir / "evt-123" / "document.pdf").touch()
+        temp_file = temp_download_dir / "evt-123" / "document.pdf"
+        temp_file.write_text("test pdf content")
 
         with patch.object(worker.downloader, "download", new_callable=AsyncMock) as mock_download:
             mock_download.return_value = mock_outcome
@@ -177,6 +190,28 @@ class TestDownloadWorker:
             assert isinstance(call_args, DownloadTask)
             assert call_args.url == sample_download_task_message.attachment_url
             assert "evt-123" in str(call_args.destination)
+
+            # WP-315: Verify cache file creation
+            expected_cache_path = temp_cache_dir / "evt-123" / "document.pdf"
+            assert expected_cache_path.exists(), "File should be moved to cache directory"
+            assert expected_cache_path.read_text() == "test pdf content"
+
+            # WP-315: Verify CachedDownloadMessage was produced
+            worker.producer.send.assert_called_once()
+            send_call = worker.producer.send.call_args
+            assert send_call.kwargs["topic"] == "test.downloads.cached"
+            assert send_call.kwargs["key"] == "evt-123"
+
+            cached_message = send_call.kwargs["value"]
+            assert isinstance(cached_message, CachedDownloadMessage)
+            assert cached_message.trace_id == "evt-123"
+            assert cached_message.attachment_url == sample_download_task_message.attachment_url
+            assert cached_message.destination_path == sample_download_task_message.blob_path
+            assert cached_message.local_cache_path == str(expected_cache_path)
+            assert cached_message.bytes_downloaded == 2048
+            assert cached_message.content_type == "application/pdf"
+            assert cached_message.event_type == sample_download_task_message.event_type
+            assert cached_message.file_type == sample_download_task_message.file_type
 
     async def test_process_single_task_failure(
         self, kafka_config, temp_download_dir, sample_consumer_record
@@ -248,9 +283,9 @@ class TestDownloadWorker:
         assert "Failed to parse message" in result.outcome.error_message
 
     async def test_process_batch_concurrent(
-        self, kafka_config, temp_download_dir, sample_download_task_message
+        self, kafka_config, temp_download_dir, temp_cache_dir, sample_download_task_message
     ):
-        """Test concurrent batch processing (WP-313)."""
+        """Test concurrent batch processing (WP-313, WP-315: cache behavior)."""
         worker = DownloadWorker(kafka_config, temp_dir=temp_download_dir)
 
         # Initialize concurrency control
@@ -259,8 +294,6 @@ class TestDownloadWorker:
         worker._in_flight_lock = asyncio.Lock()
 
         # Mock dependencies
-        worker.onelake_client = AsyncMock()
-        worker.onelake_client.upload_file = AsyncMock(return_value="path/to/file.pdf")
         worker.producer = AsyncMock()
         worker.retry_handler = AsyncMock()
 
@@ -268,7 +301,7 @@ class TestDownloadWorker:
         messages = []
         for i in range(5):
             task = sample_download_task_message.model_copy(
-                update={"trace_id": f"evt-{i}", "destination_path": f"claims/C-{i}/doc.pdf"}
+                update={"trace_id": f"evt-{i}", "blob_path": f"claims/C-{i}/document.pdf"}
             )
             record = ConsumerRecord(
                 topic="test.downloads.pending",
@@ -285,9 +318,10 @@ class TestDownloadWorker:
             )
             messages.append(record)
 
-            # Create temp files
+            # Create temp files with content (WP-315: files are moved to cache)
+            # Filename must match blob_path's filename (document.pdf)
             (temp_download_dir / f"evt-{i}").mkdir(parents=True, exist_ok=True)
-            (temp_download_dir / f"evt-{i}" / "doc.pdf").touch()
+            (temp_download_dir / f"evt-{i}" / "document.pdf").write_text(f"content-{i}")
 
         # Track concurrent execution
         concurrent_count = 0
@@ -305,8 +339,9 @@ class TestDownloadWorker:
             async with lock:
                 concurrent_count -= 1
 
+            # Return path matching the temp file we created
             return DownloadOutcome.success_outcome(
-                file_path=temp_download_dir / task.destination.parent.name / task.destination.name,
+                file_path=task.destination,  # temp_dir/trace_id/document.pdf
                 bytes_downloaded=1024,
                 content_type="application/pdf",
                 status_code=200,
@@ -322,10 +357,18 @@ class TestDownloadWorker:
         # Verify concurrency was limited by semaphore
         assert max_concurrent <= 3, f"Max concurrent was {max_concurrent}, should be <= 3"
 
+        # WP-315: Verify cache files were created for all successful downloads
+        for i in range(5):
+            cache_path = temp_cache_dir / f"evt-{i}" / "document.pdf"
+            assert cache_path.exists(), f"Cache file for evt-{i} should exist"
+
+        # WP-315: Verify CachedDownloadMessages were produced
+        assert worker.producer.send.call_count == 5
+
     async def test_process_batch_with_failures(
-        self, kafka_config, temp_download_dir, sample_download_task_message
+        self, kafka_config, temp_download_dir, temp_cache_dir, sample_download_task_message
     ):
-        """Test batch processing with mixed success/failure (WP-313)."""
+        """Test batch processing with mixed success/failure (WP-313, WP-315: cache behavior)."""
         worker = DownloadWorker(kafka_config, temp_dir=temp_download_dir)
 
         # Initialize concurrency control
@@ -334,8 +377,6 @@ class TestDownloadWorker:
         worker._in_flight_lock = asyncio.Lock()
 
         # Mock dependencies
-        worker.onelake_client = AsyncMock()
-        worker.onelake_client.upload_file = AsyncMock(return_value="path/to/file.pdf")
         worker.producer = AsyncMock()
         worker.retry_handler = AsyncMock()
 
@@ -343,7 +384,7 @@ class TestDownloadWorker:
         messages = []
         for i in range(3):
             task = sample_download_task_message.model_copy(
-                update={"trace_id": f"evt-{i}", "destination_path": f"claims/C-{i}/doc.pdf"}
+                update={"trace_id": f"evt-{i}", "blob_path": f"claims/C-{i}/document.pdf"}
             )
             record = ConsumerRecord(
                 topic="test.downloads.pending",
@@ -360,9 +401,10 @@ class TestDownloadWorker:
             )
             messages.append(record)
 
-            # Create temp files
+            # Create temp files with content (WP-315: files are moved to cache on success)
+            # Filename must match blob_path's filename (document.pdf)
             (temp_download_dir / f"evt-{i}").mkdir(parents=True, exist_ok=True)
-            (temp_download_dir / f"evt-{i}" / "doc.pdf").touch()
+            (temp_download_dir / f"evt-{i}" / "document.pdf").write_text(f"content-{i}")
 
         call_count = 0
 
@@ -378,8 +420,9 @@ class TestDownloadWorker:
                     status_code=503,
                 )
 
+            # Return path matching the temp file we created
             return DownloadOutcome.success_outcome(
-                file_path=temp_download_dir / task.destination.parent.name / task.destination.name,
+                file_path=task.destination,  # temp_dir/trace_id/document.pdf
                 bytes_downloaded=1024,
                 content_type="application/pdf",
                 status_code=200,
@@ -398,10 +441,26 @@ class TestDownloadWorker:
         assert succeeded == 2
         assert failed == 1
 
+        # WP-315: Verify cache files only for successful downloads
+        assert not (temp_cache_dir / "evt-0" / "document.pdf").exists(), "Failed download should not be cached"
+        assert (temp_cache_dir / "evt-1" / "document.pdf").exists(), "Successful download should be cached"
+        assert (temp_cache_dir / "evt-2" / "document.pdf").exists(), "Successful download should be cached"
+
+        # WP-315: Verify producer calls
+        # 2 CachedDownloadMessages for successes + 1 DownloadResultMessage for failure
+        assert worker.producer.send.call_count == 3
+
+        # Verify specific message types were sent
+        send_calls = worker.producer.send.call_args_list
+        cached_calls = [c for c in send_calls if c.kwargs["topic"] == "test.downloads.cached"]
+        result_calls = [c for c in send_calls if c.kwargs["topic"] == "test.downloads.results"]
+        assert len(cached_calls) == 2, "Two CachedDownloadMessages for successful downloads"
+        assert len(result_calls) == 1, "One DownloadResultMessage for failed download"
+
     async def test_in_flight_tracking(
-        self, kafka_config, temp_download_dir, sample_consumer_record
+        self, kafka_config, temp_download_dir, temp_cache_dir, sample_consumer_record
     ):
-        """Test in-flight task tracking (WP-313)."""
+        """Test in-flight task tracking (WP-313, WP-315: cache behavior)."""
         worker = DownloadWorker(kafka_config, temp_dir=temp_download_dir)
 
         # Initialize concurrency control
@@ -410,14 +469,12 @@ class TestDownloadWorker:
         worker._in_flight_lock = asyncio.Lock()
 
         # Mock dependencies
-        worker.onelake_client = AsyncMock()
-        worker.onelake_client.upload_file = AsyncMock(return_value="path/to/file.pdf")
         worker.producer = AsyncMock()
         worker.retry_handler = AsyncMock()
 
-        # Create temp files
+        # Create temp files with content (WP-315)
         (temp_download_dir / "evt-123").mkdir(parents=True, exist_ok=True)
-        (temp_download_dir / "evt-123" / "document.pdf").touch()
+        (temp_download_dir / "evt-123" / "document.pdf").write_text("test content")
 
         in_flight_during_download = None
 
