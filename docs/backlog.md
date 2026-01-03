@@ -33,16 +33,17 @@
 - Increase readability
 - Size: Medium
 
-**TECH-014: Review event_ingester.py Structure and Remove Dead Code**
-- Location: `kafka_pipeline/workers/event_ingester.py`
+**TECH-009: Review poller.py Structure and Remove Dead Code**
+- Location: `kafka_pipeline/eventhouse/poller.py`
 - Review overall code structure and organization
 - Remove dead/unreachable code paths
 - Apply best practices (single responsibility, reduce complexity)
+- Consider refactoring large functions into smaller units
 - Increase readability
 - Size: Medium
 
-**TECH-011: Review pipeline_config.py Structure and Remove Dead Code**
-- Location: `kafka_pipeline/pipeline_config.py`
+**TECH-012: Review kql_client.py Structure and Remove Dead Code**
+- Location: `kafka_pipeline/eventhouse/kql_client.py`
 - Review overall code structure and organization
 - Remove dead/unreachable code paths
 - Apply best practices (single responsibility, reduce complexity)
@@ -95,23 +96,6 @@
 - Document expected shutdown behavior
 - Size: Medium
 
-**TECH-009: Review poller.py Structure and Remove Dead Code**
-- Location: `kafka_pipeline/eventhouse/poller.py`
-- Review overall code structure and organization
-- Remove dead/unreachable code paths
-- Apply best practices (single responsibility, reduce complexity)
-- Consider refactoring large functions into smaller units
-- Increase readability
-- Size: Medium
-
-**TECH-012: Review kql_client.py Structure and Remove Dead Code**
-- Location: `kafka_pipeline/eventhouse/kql_client.py`
-- Review overall code structure and organization
-- Remove dead/unreachable code paths
-- Apply best practices (single responsibility, reduce complexity)
-- Increase readability
-- Size: Medium
-
 **TECH-013: Review dedup.py Structure and Remove Dead Code**
 - Location: `kafka_pipeline/eventhouse/dedup.py`
 - Review overall code structure and organization
@@ -141,6 +125,18 @@
 ## Completed
 
 <!-- Done tasks with commit references -->
+
+**TECH-014: Review event_ingester.py Structure and Remove Dead Code** ✓
+- Reviewed `kafka_pipeline/workers/event_ingester.py` (557 lines, 1 class with 8 methods)
+- **Finding**: Minimal dead code - 1 unused import
+- **Fixed**: Removed unused import:
+  - `List` from `typing` (not used in type hints)
+- All methods are in use:
+  - Public: `start()`, `stop()` - used in production code (`__main__.py`)
+  - Private: `_create_tracked_task()`, `_wait_for_pending_tasks()`, `_handle_event_message()`, `_process_attachment()`, `_write_event_to_delta()` - all used internally
+- `EventIngesterWorker` is heavily used in `__main__.py`, `workers/__init__.py`, and test files
+- Code quality is good: clear docstrings, type hints, proper error handling, graceful shutdown
+- Size: Small (just import cleanup)
 
 **TECH-003: Consolidate Configuration Loading (config.yaml Priority)** ✓
 - Audited all config classes across the codebase
@@ -184,6 +180,24 @@
 - `TaskResult` dataclass used internally and in tests
 - Code quality is good: clear docstrings, proper error handling, concurrent batch processing
 - Size: Small (just import cleanup)
+
+**TECH-011: Review pipeline_config.py Structure and Remove Dead Code** ✓
+- Reviewed `kafka_pipeline/pipeline_config.py` (471 lines, 4 dataclasses + 2 helper functions)
+- **Finding**: No dead code found - file is well-structured
+- All public symbols in use:
+  - `EventSourceType` - used in `__main__.py` (6 locations) for source type checks
+  - `EventHubConfig` - used by `PipelineConfig.load_config()` and tests
+  - `LocalKafkaConfig` - used in `__main__.py` and `PipelineConfig.load_config()`
+  - `EventhouseSourceConfig` - used by `PipelineConfig.load_config()` and tests
+  - `PipelineConfig` - primary config class, used in `__main__.py`
+  - `get_pipeline_config()` - main entry point, used in `__main__.py`
+  - `get_event_source_type()` - lightweight check (tests only, but useful API)
+- All `to_kafka_config()` methods actively used for worker configuration
+- All `load_config()` methods follow consistent precedence (env vars > yaml > defaults)
+- `is_eventhub_source`/`is_eventhouse_source` properties used in tests (convenience API)
+- All imports verified in use
+- No changes required
+- Size: Small (review only)
 
 **TECH-020: Ensure File Names are Logical and Descriptive** ✓
 - Audited all file names across `kafka_pipeline/` and `core/` packages
