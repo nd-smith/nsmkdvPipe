@@ -12,7 +12,7 @@
 | Phase | Status | Progress |
 |-------|--------|----------|
 | Phase 1: common/ | Completed | 9/9 |
-| Phase 2: xact/ | In Progress | 1/7 |
+| Phase 2: xact/ | In Progress | 2/7 |
 | Phase 3: claimx/ | In Progress | 1/11 |
 | Phase 4: Config | Not Started | 0/4 |
 | Phase 5: Remove verisk_pipeline/ | Not Started | 0/6 |
@@ -34,17 +34,6 @@
 ---
 
 ## Phase 2: Create xact/ Domain
-
-**REORG-202: Move xact Schemas** (P2) [COMPLETED]
-- ✅ Moved `schemas/events.py` → `xact/schemas/events.py`
-- ✅ Moved `schemas/tasks.py` → `xact/schemas/tasks.py`
-- ✅ Moved `schemas/results.py` → `xact/schemas/results.py`
-- ✅ Moved `schemas/cached.py` → `xact/schemas/cached.py`
-- ✅ Updated imports in moved files
-- ✅ Added re-exports from old `schemas/` (stub files for convenience)
-- ✅ All 111 schema tests passing
-- Size: Medium
-- Dependencies: REORG-201
 
 **REORG-203: Move xact Workers** (P2)
 - Move `workers/event_ingester.py` → `xact/workers/event_ingester.py`
@@ -420,6 +409,18 @@ Phase 5: Remove verisk_pipeline/
 - No code moves - structure only for Phase 3
 - Size: Small
 - Dependencies: REORG-108
+
+**REORG-202: Move xact Schemas** (P2) - `1c04e9c`
+- Moved `schemas/events.py` → `xact/schemas/events.py`
+- Moved `schemas/tasks.py` → `xact/schemas/tasks.py`
+- Moved `schemas/results.py` → `xact/schemas/results.py`
+- Moved `schemas/cached.py` → `xact/schemas/cached.py`
+- Updated internal imports in results.py
+- Created xact/schemas/__init__.py with proper exports
+- Added stub re-export files in schemas/ for existing imports
+- All 111 schema tests passing
+- Size: Medium
+- Dependencies: REORG-201
 
 **REORG-204: Move xact Writers** (P2) - [To be committed]
 - ✅ Moved `writers/delta_events.py` → `xact/writers/delta_events.py`
