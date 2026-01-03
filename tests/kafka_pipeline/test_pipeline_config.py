@@ -79,7 +79,7 @@ class TestEventhouseSourceConfig:
         assert config.eventhouse_query_window_hours == 2
         assert config.overlap_minutes == 10
 
-    def test_from_env_success(self):
+    def test_load_config_success(self):
         """Test loading from environment variables."""
         env = {
             "EVENTHOUSE_CLUSTER_URL": "https://test.kusto.windows.net",
@@ -95,7 +95,7 @@ class TestEventhouseSourceConfig:
         }
 
         with patch.dict(os.environ, env, clear=False):
-            config = EventhouseSourceConfig.from_env()
+            config = EventhouseSourceConfig.load_config()
 
         assert config.cluster_url == "https://test.kusto.windows.net"
         assert config.database == "testdb"
@@ -108,25 +108,25 @@ class TestEventhouseSourceConfig:
         assert config.eventhouse_query_window_hours == 3
         assert config.overlap_minutes == 8
 
-    def test_from_env_missing_cluster_url(self):
+    def test_load_config_missing_cluster_url(self):
         """Test error when cluster URL is missing."""
         env = {
             "EVENTHOUSE_DATABASE": "testdb",
         }
 
         with patch.dict(os.environ, env, clear=True):
-            with pytest.raises(ValueError, match="EVENTHOUSE_CLUSTER_URL is required"):
-                EventhouseSourceConfig.from_env()
+            with pytest.raises(ValueError, match="cluster_url is required"):
+                EventhouseSourceConfig.load_config()
 
-    def test_from_env_missing_database(self):
+    def test_load_config_missing_database(self):
         """Test error when database is missing."""
         env = {
             "EVENTHOUSE_CLUSTER_URL": "https://test.kusto.windows.net",
         }
 
         with patch.dict(os.environ, env, clear=True):
-            with pytest.raises(ValueError, match="EVENTHOUSE_DATABASE is required"):
-                EventhouseSourceConfig.from_env()
+            with pytest.raises(ValueError, match="database is required"):
+                EventhouseSourceConfig.load_config()
 
 
 class TestPipelineConfig:
@@ -158,7 +158,7 @@ class TestPipelineConfig:
         assert config.is_eventhub_source is False
         assert config.is_eventhouse_source is True
 
-    def test_from_env_eventhub_default(self):
+    def test_load_config_eventhub_default(self):
         """Test loading Event Hub config (default)."""
         env = {
             "EVENTHUB_BOOTSTRAP_SERVERS": "namespace.servicebus.windows.net:9093",
@@ -167,14 +167,14 @@ class TestPipelineConfig:
         }
 
         with patch.dict(os.environ, env, clear=True):
-            config = PipelineConfig.from_env()
+            config = PipelineConfig.load_config()
 
         assert config.event_source == EventSourceType.EVENTHUB
         assert config.eventhub is not None
         assert config.eventhouse is None
         assert config.is_eventhub_source is True
 
-    def test_from_env_eventhub_explicit(self):
+    def test_load_config_eventhub_explicit(self):
         """Test loading Event Hub config with explicit EVENT_SOURCE."""
         env = {
             "EVENT_SOURCE": "eventhub",
@@ -183,12 +183,12 @@ class TestPipelineConfig:
         }
 
         with patch.dict(os.environ, env, clear=True):
-            config = PipelineConfig.from_env()
+            config = PipelineConfig.load_config()
 
         assert config.event_source == EventSourceType.EVENTHUB
         assert config.is_eventhub_source is True
 
-    def test_from_env_eventhouse(self):
+    def test_load_config_eventhouse(self):
         """Test loading Eventhouse config."""
         env = {
             "EVENT_SOURCE": "eventhouse",
@@ -197,24 +197,24 @@ class TestPipelineConfig:
         }
 
         with patch.dict(os.environ, env, clear=True):
-            config = PipelineConfig.from_env()
+            config = PipelineConfig.load_config()
 
         assert config.event_source == EventSourceType.EVENTHOUSE
         assert config.eventhub is None
         assert config.eventhouse is not None
         assert config.is_eventhouse_source is True
 
-    def test_from_env_invalid_source(self):
+    def test_load_config_invalid_source(self):
         """Test error with invalid event source."""
         env = {
             "EVENT_SOURCE": "invalid",
         }
 
         with patch.dict(os.environ, env, clear=True):
-            with pytest.raises(ValueError, match="Invalid EVENT_SOURCE 'invalid'"):
-                PipelineConfig.from_env()
+            with pytest.raises(ValueError, match="Invalid event_source 'invalid'"):
+                PipelineConfig.load_config()
 
-    def test_from_env_case_insensitive(self):
+    def test_load_config_case_insensitive(self):
         """Test EVENT_SOURCE is case-insensitive."""
         env = {
             "EVENT_SOURCE": "EVENTHOUSE",
@@ -223,7 +223,7 @@ class TestPipelineConfig:
         }
 
         with patch.dict(os.environ, env, clear=True):
-            config = PipelineConfig.from_env()
+            config = PipelineConfig.load_config()
 
         assert config.event_source == EventSourceType.EVENTHOUSE
 

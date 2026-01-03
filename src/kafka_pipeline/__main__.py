@@ -510,7 +510,7 @@ def main():
             PipelineConfig,
         )
 
-        local_config = LocalKafkaConfig.from_env()
+        local_config = LocalKafkaConfig.load_config()
         kafka_config = local_config.to_kafka_config()
 
         # In dev mode, create a minimal PipelineConfig

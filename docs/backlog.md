@@ -24,14 +24,6 @@
 
 <!-- Move tasks here when starting work -->
 
-**TECH-003: Consolidate Configuration Loading (config.yaml Priority)**
-- Ensure all modules load config consistently: config.yaml first, env vars as overrides
-- Audit all config loading paths across workers and components
-- Remove or deprecate `from_env()` methods in favor of unified `load_config()`
-- Document configuration precedence clearly
-- Size: Medium
-- See: [Research Notes](#tech-003-research-notes)
-
 **TECH-008: Review main.py Structure and Remove Dead Code**
 - Location: `kafka_pipeline/__main__.py`
 - Review overall code structure and organization
@@ -43,6 +35,14 @@
 
 **TECH-014: Review event_ingester.py Structure and Remove Dead Code**
 - Location: `kafka_pipeline/workers/event_ingester.py`
+- Review overall code structure and organization
+- Remove dead/unreachable code paths
+- Apply best practices (single responsibility, reduce complexity)
+- Increase readability
+- Size: Medium
+
+**TECH-011: Review pipeline_config.py Structure and Remove Dead Code**
+- Location: `kafka_pipeline/pipeline_config.py`
 - Review overall code structure and organization
 - Remove dead/unreachable code paths
 - Apply best practices (single responsibility, reduce complexity)
@@ -104,14 +104,6 @@
 - Increase readability
 - Size: Medium
 
-**TECH-011: Review pipeline_config.py Structure and Remove Dead Code**
-- Location: `kafka_pipeline/pipeline_config.py`
-- Review overall code structure and organization
-- Remove dead/unreachable code paths
-- Apply best practices (single responsibility, reduce complexity)
-- Increase readability
-- Size: Medium
-
 **TECH-012: Review kql_client.py Structure and Remove Dead Code**
 - Location: `kafka_pipeline/eventhouse/kql_client.py`
 - Review overall code structure and organization
@@ -122,14 +114,6 @@
 
 **TECH-013: Review dedup.py Structure and Remove Dead Code**
 - Location: `kafka_pipeline/eventhouse/dedup.py`
-- Review overall code structure and organization
-- Remove dead/unreachable code paths
-- Apply best practices (single responsibility, reduce complexity)
-- Increase readability
-- Size: Medium
-
-**TECH-014: Review event_ingester.py Structure and Remove Dead Code**
-- Location: `kafka_pipeline/workers/event_ingester.py`
 - Review overall code structure and organization
 - Remove dead/unreachable code paths
 - Apply best practices (single responsibility, reduce complexity)
@@ -157,6 +141,20 @@
 ## Completed
 
 <!-- Done tasks with commit references -->
+
+**TECH-003: Consolidate Configuration Loading (config.yaml Priority)** ✓
+- Audited all config classes across the codebase
+- **Finding**: `pipeline_config.py` had misnamed `from_env()` methods that actually loaded from config.yaml
+- **Fixed**: Renamed to `load_config()` for consistency with other config classes:
+  - `LocalKafkaConfig.from_env()` → `load_config()`
+  - `EventhouseSourceConfig.from_env()` → `load_config()`
+  - `PipelineConfig.from_env()` → `load_config()`
+- Updated all callers in `__main__.py` and tests
+- Configuration precedence is now consistent across all classes:
+  1. Environment variables (highest priority)
+  2. config.yaml file
+  3. Dataclass defaults (lowest priority)
+- Size: Medium
 
 **TECH-015: Review config.py Structure and Remove Dead Code** ✓
 - Reviewed `kafka_pipeline/config.py` (423 lines)

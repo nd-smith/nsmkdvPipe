@@ -129,7 +129,7 @@ class LocalKafkaConfig:
     cache_dir: str = "/tmp/kafka_pipeline_cache"
 
     @classmethod
-    def from_env(cls, config_path: Optional[Path] = None) -> "LocalKafkaConfig":
+    def load_config(cls, config_path: Optional[Path] = None) -> "LocalKafkaConfig":
         """Load local Kafka configuration from config.yaml and environment variables.
 
         Configuration priority (highest to lowest):
@@ -259,7 +259,7 @@ class EventhouseSourceConfig:
     overlap_minutes: int = 5
 
     @classmethod
-    def from_env(cls, config_path: Optional[Path] = None) -> "EventhouseSourceConfig":
+    def load_config(cls, config_path: Optional[Path] = None) -> "EventhouseSourceConfig":
         """Load Eventhouse configuration from config.yaml and environment variables.
 
         Configuration priority (highest to lowest):
@@ -376,7 +376,7 @@ class PipelineConfig:
     failed_table_path: str = ""  # Optional: for tracking permanent failures
 
     @classmethod
-    def from_env(cls, config_path: Optional[Path] = None) -> "PipelineConfig":
+    def load_config(cls, config_path: Optional[Path] = None) -> "PipelineConfig":
         """Load complete pipeline configuration from config.yaml and environment.
 
         Configuration priority (highest to lowest):
@@ -410,7 +410,7 @@ class PipelineConfig:
                 f"Invalid event_source '{source_str}'. Must be 'eventhub' or 'eventhouse'"
             )
 
-        local_kafka = LocalKafkaConfig.from_env(config_path)
+        local_kafka = LocalKafkaConfig.load_config(config_path)
 
         eventhub_config = None
         eventhouse_config = None
@@ -418,7 +418,7 @@ class PipelineConfig:
         if event_source == EventSourceType.EVENTHUB:
             eventhub_config = EventHubConfig.from_env()
         else:
-            eventhouse_config = EventhouseSourceConfig.from_env(config_path)
+            eventhouse_config = EventhouseSourceConfig.load_config(config_path)
 
         return cls(
             event_source=event_source,
@@ -448,7 +448,7 @@ def get_pipeline_config(config_path: Optional[Path] = None) -> PipelineConfig:
 
     This is the main entry point for loading configuration.
     """
-    return PipelineConfig.from_env(config_path)
+    return PipelineConfig.load_config(config_path)
 
 
 def get_event_source_type(config_path: Optional[Path] = None) -> EventSourceType:
