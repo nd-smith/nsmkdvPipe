@@ -3,7 +3,7 @@
 > **Reference:** `src/docs/kafka_pipeline_reorganization.md`
 >
 > This epic reorganizes `kafka_pipeline/` from a flat structure to a domain-based structure,
-> enabling cleaner separation between xact and claimx processing.
+> enabling cleaner separation between xact and claimx processing.  PIck the next unworked task, and add the [ASSIGNED] tag to the work package. 
 
 ---
 
@@ -11,7 +11,7 @@
 
 | Phase | Status | Progress |
 |-------|--------|----------|
-| Phase 1: common/ | Not Started | 0/9 |
+| Phase 1: common/ | In Progress | 1/9 |
 | Phase 2: xact/ | Not Started | 0/7 |
 | Phase 3: claimx/ | Not Started | 0/11 |
 | Phase 4: Config | Not Started | 0/4 |
@@ -20,7 +20,7 @@
 
 ## Phase 1: Create common/ Infrastructure
 
-**REORG-101: Create common/ Directory Structure** (P2)
+**REORG-101: Create common/ Directory Structure [ASSIGNED]** (P2)
 - Create `kafka_pipeline/common/` with `__init__.py`
 - Create subdirectories: `retry/`, `dlq/`, `storage/`, `writers/`, `eventhouse/`
 - Add `__init__.py` to each subdirectory
