@@ -22,7 +22,7 @@ Delta table: xact_events (with all 28 flattened columns)
 import asyncio
 import json
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from aiokafka.structs import ConsumerRecord
 from pydantic import ValidationError
@@ -106,6 +106,10 @@ class EventIngesterWorker:
                 "Delta writes enabled but no events_table_path provided, skipping"
             )
 
+        # Background task tracking for graceful shutdown
+        self._pending_tasks: Set[asyncio.Task] = set()
+        self._task_counter = 0  # For unique task naming
+
         logger.info(
             "Initialized EventIngesterWorker",
             extra={
@@ -148,10 +152,14 @@ class EventIngesterWorker:
         """
         Stop the event ingester worker.
 
-        Gracefully shuts down consumer and producer, committing any pending
-        offsets and flushing pending messages.
+        Waits for pending background tasks (with timeout), then gracefully
+        shuts down consumer and producer, committing any pending offsets
+        and flushing pending messages.
         """
         logger.info("Stopping EventIngesterWorker")
+
+        # Wait for pending background tasks with timeout
+        await self._wait_for_pending_tasks(timeout_seconds=30)
 
         # Stop consumer first (stops receiving new messages)
         if self.consumer:
@@ -162,6 +170,156 @@ class EventIngesterWorker:
             await self.producer.stop()
 
         logger.info("EventIngesterWorker stopped successfully")
+
+    def _create_tracked_task(
+        self,
+        coro,
+        task_name: str,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> asyncio.Task:
+        """
+        Create a background task with tracking and lifecycle logging.
+
+        The task is added to _pending_tasks and automatically removed on completion.
+        Task lifecycle events (creation, completion, error) are logged.
+
+        Args:
+            coro: Coroutine to run as a task
+            task_name: Descriptive name for the task (e.g., "delta_write")
+            context: Optional dict of context info for logging
+
+        Returns:
+            The created asyncio.Task
+        """
+        self._task_counter += 1
+        full_name = f"{task_name}-{self._task_counter}"
+        context = context or {}
+
+        task = asyncio.create_task(coro, name=full_name)
+        self._pending_tasks.add(task)
+
+        logger.debug(
+            "Background task created",
+            extra={
+                "task_name": full_name,
+                "pending_tasks": len(self._pending_tasks),
+                **context,
+            },
+        )
+
+        def _on_task_done(t: asyncio.Task) -> None:
+            """Callback when task completes (success, error, or cancelled)."""
+            self._pending_tasks.discard(t)
+
+            if t.cancelled():
+                logger.debug(
+                    "Background task cancelled",
+                    extra={
+                        "task_name": t.get_name(),
+                        "pending_tasks": len(self._pending_tasks),
+                    },
+                )
+            elif t.exception() is not None:
+                exc = t.exception()
+                logger.error(
+                    "Background task failed",
+                    extra={
+                        "task_name": t.get_name(),
+                        "error": str(exc)[:200],
+                        "pending_tasks": len(self._pending_tasks),
+                        **context,
+                    },
+                )
+            else:
+                logger.debug(
+                    "Background task completed",
+                    extra={
+                        "task_name": t.get_name(),
+                        "pending_tasks": len(self._pending_tasks),
+                    },
+                )
+
+        task.add_done_callback(_on_task_done)
+        return task
+
+    async def _wait_for_pending_tasks(self, timeout_seconds: float = 30) -> None:
+        """
+        Wait for pending background tasks to complete with timeout.
+
+        Logs task information and handles cancellation of tasks that
+        don't complete within the timeout.
+
+        Args:
+            timeout_seconds: Maximum time to wait for tasks (default: 30s)
+        """
+        if not self._pending_tasks:
+            logger.debug("No pending background tasks to wait for")
+            return
+
+        pending_count = len(self._pending_tasks)
+        task_names = [t.get_name() for t in self._pending_tasks]
+
+        logger.info(
+            "Waiting for pending background tasks to complete",
+            extra={
+                "pending_count": pending_count,
+                "task_names": task_names,
+                "timeout_seconds": timeout_seconds,
+            },
+        )
+
+        # Copy the set since it may be modified by callbacks during gather
+        tasks_to_wait = list(self._pending_tasks)
+
+        try:
+            # Wait with timeout
+            done, pending = await asyncio.wait(
+                tasks_to_wait,
+                timeout=timeout_seconds,
+                return_when=asyncio.ALL_COMPLETED,
+            )
+
+            if pending:
+                # Log and cancel tasks that didn't complete
+                pending_names = [t.get_name() for t in pending]
+                logger.warning(
+                    "Cancelling background tasks that did not complete in time",
+                    extra={
+                        "pending_count": len(pending),
+                        "pending_task_names": pending_names,
+                        "timeout_seconds": timeout_seconds,
+                    },
+                )
+
+                for task in pending:
+                    task.cancel()
+                    logger.warning(
+                        "Cancelled pending task",
+                        extra={"task_name": task.get_name()},
+                    )
+
+                # Wait briefly for cancellations to propagate
+                await asyncio.gather(*pending, return_exceptions=True)
+
+            # Log summary of completed tasks
+            completed_count = len(done)
+            failed_count = sum(1 for t in done if t.exception() is not None)
+
+            logger.info(
+                "Background task cleanup complete",
+                extra={
+                    "completed": completed_count,
+                    "failed": failed_count,
+                    "cancelled": len(pending),
+                },
+            )
+
+        except Exception as e:
+            logger.error(
+                "Error waiting for pending tasks",
+                extra={"error": str(e)[:200]},
+                exc_info=True,
+            )
 
     async def _handle_event_message(self, record: ConsumerRecord) -> None:
         """
@@ -206,8 +364,13 @@ class EventIngesterWorker:
 
         # Write event to Delta Lake for analytics (non-blocking)
         # Uses flatten_events() from verisk_pipeline for proper schema
+        # Tracked for graceful shutdown
         if self.delta_writer:
-            asyncio.create_task(self._write_event_to_delta(event))
+            self._create_tracked_task(
+                self._write_event_to_delta(event),
+                task_name="delta_write",
+                context={"trace_id": event.trace_id},
+            )
 
         # Skip events without attachments (many events are just status updates)
         if not event.attachments:
