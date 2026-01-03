@@ -1,12 +1,16 @@
 """
 Retry handling for Kafka pipeline.
 
-Provides retry routing logic with exponential backoff topics,
-delayed redelivery scheduling, and dead-letter queue (DLQ) handling.
+DEPRECATED: This module has been moved to kafka_pipeline.common.retry.
+This location provides backward compatibility and will be removed in a future version.
+Please update imports to use kafka_pipeline.common.retry instead.
 """
 
-from kafka_pipeline.retry.handler import RetryHandler
-from kafka_pipeline.retry.scheduler import DelayedRedeliveryScheduler
+# Re-export from new location for backward compatibility
+from kafka_pipeline.common.retry import (
+    DelayedRedeliveryScheduler,
+    RetryHandler,
+)
 
 __all__ = [
     "RetryHandler",

@@ -15,12 +15,13 @@
 | Phase 2: xact/ | Not Started | 0/7 |
 | Phase 3: claimx/ | Not Started | 0/11 |
 | Phase 4: Config | Not Started | 0/4 |
+| Phase 5: Remove verisk_pipeline/ | Not Started | 0/6 |
 
 ---
 
 ## Phase 1: Create common/ Infrastructure
 
-**REORG-102: Move Core Infrastructure to common/** (P2)
+**REORG-102: Move Core Infrastructure to common/** [ASSIGNED] (P2)
 - Move `consumer.py` → `common/consumer.py`
 - Move `producer.py` → `common/producer.py`
 - Move `metrics.py` → `common/metrics.py`
@@ -30,7 +31,7 @@
 - Size: Medium
 - Dependencies: REORG-101
 
-**REORG-103: Move retry/ Module to common/** (P2)
+**REORG-103: Move retry/ Module to common/** [ASSIGNED] (P2)
 - Move `retry/handler.py` → `common/retry/handler.py`
 - Move `retry/scheduler.py` → `common/retry/scheduler.py`
 - Update imports
@@ -294,6 +295,63 @@
 
 ---
 
+## Phase 5: Remove verisk_pipeline/
+
+**REORG-501: Audit verisk_pipeline Dependencies** (P2)
+- Identify all imports from `verisk_pipeline/` to `kafka_pipeline/`
+- Identify all imports from `kafka_pipeline/` to `verisk_pipeline/`
+- Document functionality that needs to be migrated vs. removed
+- Create migration checklist for each dependency
+- Size: Medium
+- Dependencies: REORG-311
+
+**REORG-502: Migrate Storage Layer Dependencies** (P2)
+- Move or replicate `verisk_pipeline.storage.delta.DeltaTableWriter` to `common/writers/base.py`
+- Move or replicate `verisk_pipeline.storage.onelake.OneLakeClient` to `common/storage/onelake_client.py`
+- Ensure feature parity with legacy implementations
+- Update `kafka_pipeline/storage/onelake_client.py` to remove legacy dependency
+- Update `kafka_pipeline/writers/delta_*.py` to use new implementations
+- Size: Medium
+- Dependencies: REORG-501, REORG-106, REORG-105
+
+**REORG-503: Migrate Xact Model Dependencies** (P2)
+- Move or replicate `verisk_pipeline.xact.xact_models` to `xact/schemas/`
+- Ensure `EventRecord`, `Task`, and `XACT_PRIMARY_KEYS` are available
+- Move `flatten_events()` from `verisk_pipeline.xact.stages.transform` to `xact/` (appropriate module)
+- Update `kafka_pipeline/schemas/events.py` and `schemas/tasks.py` imports
+- Update `kafka_pipeline/writers/delta_events.py` and `eventhouse/poller.py` imports
+- Size: Large
+- Dependencies: REORG-501, REORG-202
+
+**REORG-504: Migrate Common Utilities** (P2)
+- Move or replicate `verisk_pipeline.common.security.sanitize_url` to `common/` (appropriate module)
+- Audit other `verisk_pipeline/common/` utilities for reusability:
+  - `auth.py`, `circuit_breaker.py`, `retry.py`, `logging/`, etc.
+- Migrate useful utilities to `kafka_pipeline/common/`
+- Update `kafka_pipeline/workers/event_ingester.py` imports
+- Size: Medium
+- Dependencies: REORG-501, REORG-108
+
+**REORG-505: Remove verisk_pipeline Folder** (P2)
+- Verify no remaining imports from `verisk_pipeline/` in `kafka_pipeline/` or `tests/`
+- Verify all necessary functionality has been migrated
+- Delete `src/verisk_pipeline/` directory
+- Remove `verisk_pipeline/requirements.txt` dependencies from main project if duplicated
+- Update any documentation references to `verisk_pipeline/`
+- Size: Small
+- Dependencies: REORG-502, REORG-503, REORG-504
+
+**REORG-506: Validation and Testing** (P2)
+- Run full test suite to ensure no regressions
+- Verify all xact and claimx pipelines function correctly
+- Verify all workers start and run without errors
+- Test end-to-end flows for both domains
+- Update integration tests to cover migrated functionality
+- Size: Large
+- Dependencies: REORG-505
+
+---
+
 ## Dependency Graph
 
 ```
@@ -310,6 +368,9 @@ Phase 3: claimx/
 Phase 4: Config & Entry Points
   REORG-108 → REORG-401
   REORG-206 + claimx workers → REORG-402 → REORG-403 → REORG-404
+
+Phase 5: Remove verisk_pipeline/
+  REORG-311 → REORG-501 → REORG-502, 503, 504 → REORG-505 → REORG-506
 ```
 
 ---
@@ -322,7 +383,8 @@ Phase 4: Config & Entry Points
 | Phase 2 | 7 | 2 | 3 | 2 |
 | Phase 3 | 11 | 1 | 4 | 6 |
 | Phase 4 | 4 | 0 | 4 | 0 |
-| **Total** | **31** | **7** | **15** | **9** |
+| Phase 5 | 6 | 1 | 3 | 2 |
+| **Total** | **37** | **8** | **18** | **11** |
 
 ---
 
