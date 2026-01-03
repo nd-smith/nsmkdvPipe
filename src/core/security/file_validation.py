@@ -14,6 +14,7 @@ ALLOWED_EXTENSIONS: Set[str] = {
     # Documents
     "pdf",
     "xml",
+    "txt",
     # Images
     "jpg",
     "jpeg",
@@ -31,6 +32,7 @@ ALLOWED_CONTENT_TYPES: Set[str] = {
     "application/pdf",
     "application/xml",
     "text/xml",
+    "text/plain",
     # Images
     "image/jpeg",
     "image/png",
@@ -44,6 +46,7 @@ ALLOWED_CONTENT_TYPES: Set[str] = {
 EXTENSION_TO_MIME = {
     "pdf": "application/pdf",
     "xml": {"application/xml", "text/xml"},
+    "txt": "text/plain",
     "jpg": "image/jpeg",
     "jpeg": "image/jpeg",
     "png": "image/png",
