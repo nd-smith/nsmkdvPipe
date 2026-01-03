@@ -13,7 +13,7 @@
 |-------|--------|----------|
 | Phase 1: common/ | In Progress | 8/9 |
 | Phase 2: xact/ | In Progress | 1/7 |
-| Phase 3: claimx/ | Not Started | 0/11 |
+| Phase 3: claimx/ | In Progress | 1/11 |
 | Phase 4: Config | Not Started | 0/4 |
 | Phase 5: Remove verisk_pipeline/ | Not Started | 0/6 |
 
@@ -100,13 +100,6 @@
 ---
 
 ## Phase 3: Create claimx/ Domain
-
-**REORG-301: Create claimx/ Directory Structure** (P2) [ASSIGNED]
-- Create `kafka_pipeline/claimx/` with `__init__.py`
-- Create subdirectories: `schemas/`, `workers/`, `handlers/`, `writers/`
-- Add `__init__.py` to each subdirectory
-- Size: Small
-- Dependencies: REORG-108
 
 **REORG-302: Implement claimx Schemas** (P2)
 - Create `claimx/schemas/events.py` with `ClaimXEventMessage`
@@ -415,5 +408,13 @@ Phase 5: Remove verisk_pipeline/
 - Created `kafka_pipeline/xact/` with `__init__.py`
 - Created subdirectories: `schemas/`, `workers/`, `writers/`
 - Added `__init__.py` to each subdirectory
+- Size: Small
+- Dependencies: REORG-108
+
+**REORG-301: Create claimx/ Directory Structure** (P2) - `e490b9a`
+- Created `kafka_pipeline/claimx/` with `__init__.py`
+- Created subdirectories: `schemas/`, `workers/`, `handlers/`, `writers/`
+- Added `__init__.py` to each subdirectory
+- No code moves - structure only for Phase 3
 - Size: Small
 - Dependencies: REORG-108
