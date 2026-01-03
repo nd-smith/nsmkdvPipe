@@ -11,15 +11,14 @@ Uses flatten_events() from verisk_pipeline to ensure schema compatibility.
 """
 
 import asyncio
-import json
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import polars as pl
 
 from core.logging.setup import get_logger
 from verisk_pipeline.storage.delta import DeltaTableWriter
-from verisk_pipeline.xact.stages.transform import flatten_events, FLATTENED_SCHEMA
+from verisk_pipeline.xact.stages.transform import flatten_events
 
 logger = get_logger(__name__)
 
@@ -150,65 +149,6 @@ class DeltaEventsWriter:
                 exc_info=True,
             )
             return False
-
-    async def write_dataframe(self, df: pl.DataFrame) -> bool:
-        """
-        Write a pre-flattened DataFrame to Delta table.
-
-        Use this when you already have a DataFrame in the correct schema
-        (e.g., from a direct Eventhouse query that was already flattened).
-
-        Args:
-            df: Polars DataFrame with xact_events schema
-
-        Returns:
-            True if write succeeded, False otherwise
-        """
-        if df.is_empty():
-            return True
-
-        try:
-            # Add created_at if not present
-            if "created_at" not in df.columns:
-                now = datetime.now(timezone.utc)
-                df = df.with_columns(pl.lit(now).alias("created_at"))
-
-            # Perform write in thread pool to avoid blocking
-            await asyncio.to_thread(
-                self._delta_writer.append,
-                df,
-                dedupe=True,
-            )
-
-            logger.info(
-                "Successfully wrote DataFrame to Delta",
-                extra={
-                    "row_count": len(df),
-                    "table_path": self.table_path,
-                },
-            )
-            return True
-
-        except Exception as e:
-            logger.error(
-                "Failed to write DataFrame to Delta",
-                extra={
-                    "row_count": len(df),
-                    "table_path": self.table_path,
-                    "error": str(e),
-                },
-                exc_info=True,
-            )
-            return False
-
-    def get_expected_schema(self) -> Dict[str, Any]:
-        """
-        Get the expected output schema for xact_events table.
-
-        Returns:
-            Dict mapping column names to Polars data types
-        """
-        return FLATTENED_SCHEMA.copy()
 
 
 __all__ = ["DeltaEventsWriter"]
