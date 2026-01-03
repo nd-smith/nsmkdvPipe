@@ -32,6 +32,15 @@
 - Size: Medium
 - See: [Research Notes](#tech-003-research-notes)
 
+**TECH-008: Review main.py Structure and Remove Dead Code**
+- Location: `kafka_pipeline/__main__.py`
+- Review overall code structure and organization
+- Remove dead/unreachable code paths
+- Apply best practices (single responsibility, reduce complexity)
+- Consider refactoring large functions into smaller units
+- Increase readability
+- Size: Medium
+
 ---
 
 ## Ready
@@ -78,26 +87,8 @@
 - Document expected shutdown behavior
 - Size: Medium
 
-**TECH-008: Review main.py Structure and Remove Dead Code**
-- Location: `kafka_pipeline/__main__.py`
-- Review overall code structure and organization
-- Remove dead/unreachable code paths
-- Apply best practices (single responsibility, reduce complexity)
-- Consider refactoring large functions into smaller units
-- Increase readability
-- Size: Medium
-
 **TECH-009: Review poller.py Structure and Remove Dead Code**
 - Location: `kafka_pipeline/eventhouse/poller.py`
-- Review overall code structure and organization
-- Remove dead/unreachable code paths
-- Apply best practices (single responsibility, reduce complexity)
-- Consider refactoring large functions into smaller units
-- Increase readability
-- Size: Medium
-
-**TECH-010: Review download_worker.py Structure and Remove Dead Code**
-- Location: `kafka_pipeline/workers/download_worker.py`
 - Review overall code structure and organization
 - Remove dead/unreachable code paths
 - Apply best practices (single responsibility, reduce complexity)
@@ -137,14 +128,6 @@
 - Increase readability
 - Size: Medium
 
-**TECH-015: Review config.py Structure and Remove Dead Code**
-- Location: `kafka_pipeline/config.py`
-- Review overall code structure and organization
-- Remove dead/unreachable code paths
-- Apply best practices (single responsibility, reduce complexity)
-- Increase readability
-- Size: Medium
-
 **TECH-017: Review delta_events.py Structure and Remove Dead Code**
 - Location: `kafka_pipeline/writers/delta_events.py`
 - Review overall code structure and organization
@@ -166,6 +149,21 @@
 ## Completed
 
 <!-- Done tasks with commit references -->
+
+**TECH-015: Review config.py Structure and Remove Dead Code** ✓
+- Reviewed `kafka_pipeline/config.py` (423 lines)
+- **Finding**: No dead code found - file is well-structured
+- All public symbols in use:
+  - `KafkaConfig` - heavily used across the codebase (workers, DLQ, tests)
+  - `load_config()` - used in poller.py and internally by `get_config()`
+  - `get_config()`, `set_config()`, `reset_config()` - singleton pattern, used in tests
+  - `from_env()` - deprecated but still actively used (DLQ CLI, poller, conftest)
+  - `get_retry_topic()` - used in RetryHandler, DelayedRedeliveryScheduler, DownloadWorker
+  - `get_consumer_group()` - used in DLQ CLI, DLQHandler, DelayedRedeliveryScheduler
+- Private helpers (`_get_default_cache_dir`, `_deep_merge`, `_apply_env_overrides`) all in use
+- Code quality is good: clear docstrings, type hints, proper configuration precedence
+- No changes required
+- Size: Small (review only)
 
 **TECH-020: Ensure File Names are Logical and Descriptive** ✓
 - Audited all file names across `kafka_pipeline/` and `core/` packages
