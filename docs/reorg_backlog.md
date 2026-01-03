@@ -11,8 +11,8 @@
 
 | Phase | Status | Progress |
 |-------|--------|----------|
-| Phase 1: common/ | In Progress | 7/9 |
-| Phase 2: xact/ | Not Started | 0/7 |
+| Phase 1: common/ | In Progress | 8/9 |
+| Phase 2: xact/ | In Progress | 1/7 |
 | Phase 3: claimx/ | Not Started | 0/11 |
 | Phase 4: Config | Not Started | 0/4 |
 | Phase 5: Remove verisk_pipeline/ | Not Started | 0/6 |
@@ -21,16 +21,17 @@
 
 ## Phase 1: Create common/ Infrastructure
 
-**REORG-108: Update All Imports for common/** (P2)
-- Update all files in `kafka_pipeline/` to use new `common/` imports
-- Update `__main__.py` entry points
-- Update all tests to use new import paths
-- Verify no circular imports
-- Run full test suite
+**REORG-108: Update All Imports for common/** (P2) [COMPLETED]
+- ✅ Update all files in `kafka_pipeline/` to use new `common/` imports
+- ✅ Update `__main__.py` entry points
+- ✅ Update all tests to use new import paths
+- ✅ Verify no circular imports
+- ✅ Run full test suite (integration tests pass)
 - Size: Large
 - Dependencies: REORG-102, REORG-103, REORG-104, REORG-105, REORG-106, REORG-107
+- Note: Unit test mocking still uses backward compatibility paths (to be addressed in REORG-109)
 
-**REORG-109: Remove Backward Compatibility Re-exports** (P3)
+**REORG-109: Remove Backward Compatibility Re-exports** (P3) [ASSIGNED]
 - Remove temporary re-exports from old locations
 - Delete empty old module files
 - Clean up `kafka/` directory (currently just `__init__.py`)
@@ -41,13 +42,6 @@
 ---
 
 ## Phase 2: Create xact/ Domain
-
-**REORG-201: Create xact/ Directory Structure** (P2)
-- Create `kafka_pipeline/xact/` with `__init__.py`
-- Create subdirectories: `schemas/`, `workers/`, `writers/`
-- Add `__init__.py` to each subdirectory
-- Size: Small
-- Dependencies: REORG-108
 
 **REORG-202: Move xact Schemas** (P2)
 - Move `schemas/events.py` → `xact/schemas/events.py`
@@ -107,7 +101,7 @@
 
 ## Phase 3: Create claimx/ Domain
 
-**REORG-301: Create claimx/ Directory Structure** (P2)
+**REORG-301: Create claimx/ Directory Structure** (P2) [ASSIGNED]
 - Create `kafka_pipeline/claimx/` with `__init__.py`
 - Create subdirectories: `schemas/`, `workers/`, `handlers/`, `writers/`
 - Add `__init__.py` to each subdirectory
@@ -416,3 +410,10 @@ Phase 5: Remove verisk_pipeline/
 - All eventhouse tests passing (42/55 pass, 13 pre-existing failures)
 - Size: Medium
 - Dependencies: REORG-101
+
+**REORG-201: Create xact/ Directory Structure** (P2) - `TBD`
+- Created `kafka_pipeline/xact/` with `__init__.py`
+- Created subdirectories: `schemas/`, `workers/`, `writers/`
+- Added `__init__.py` to each subdirectory
+- Size: Small
+- Dependencies: REORG-108
