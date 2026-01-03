@@ -11,7 +11,7 @@
 
 | Phase | Status | Progress |
 |-------|--------|----------|
-| Phase 1: common/ | In Progress | 3/9 |
+| Phase 1: common/ | In Progress | 6/9 |
 | Phase 2: xact/ | Not Started | 0/7 |
 | Phase 3: claimx/ | Not Started | 0/11 |
 | Phase 4: Config | Not Started | 0/4 |
@@ -20,29 +20,6 @@
 ---
 
 ## Phase 1: Create common/ Infrastructure
-
-**REORG-104: Move dlq/ Module to common/** [ASSIGNED] (P2)
-- Move `dlq/handler.py` → `common/dlq/handler.py`
-- Move `dlq/cli.py` → `common/dlq/cli.py`
-- Update imports
-- Add re-exports from old location
-- Size: Small
-- Dependencies: REORG-101
-
-**REORG-105: Move storage/ Module to common/** [ASSIGNED] (P2)
-- Move `storage/onelake_client.py` → `common/storage/onelake_client.py`
-- Update imports
-- Add re-exports from old location
-- Size: Small
-- Dependencies: REORG-101
-
-**REORG-106: Create common/writers/base.py** [ASSIGNED] (P2)
-- Extract base Delta writer functionality from existing writers
-- Create `common/writers/base.py` with `BaseDeltaWriter` class
-- Create `common/writers/delta_writer.py` for generic operations
-- Domain writers will inherit from this base
-- Size: Medium
-- Dependencies: REORG-101
 
 **REORG-107: Move eventhouse/ Module to common/** (P2)
 - Move `eventhouse/kql_client.py` → `common/eventhouse/kql_client.py`
@@ -400,4 +377,39 @@ Phase 5: Remove verisk_pipeline/
 - Added re-exports from old location for backward compatibility
 - All retry flow tests passing
 - Size: Small
+- Dependencies: REORG-101
+
+**REORG-104: Move dlq/ Module to common/** (P2) - `566f9fd`
+- Moved `dlq/handler.py` → `common/dlq/handler.py`
+- Moved `dlq/cli.py` → `common/dlq/cli.py`
+- Updated imports in moved files to use `common.consumer` and `common.producer`
+- Added re-exports from old location for backward compatibility
+- Created stub files in old location for backward compatibility
+- Updated `common/dlq/__init__.py` to expose DLQHandler
+- DLQ tests passing (9/11 pass, 2 pre-existing failures unrelated to refactoring)
+- Size: Small
+- Dependencies: REORG-101
+
+**REORG-105: Move storage/ Module to common/** (P2) - `566f9fd`
+- Moved `storage/onelake_client.py` → `common/storage/onelake_client.py`
+- Updated imports in moved file
+- Added re-exports from old location for backward compatibility
+- Created stub file in old location
+- Updated `common/storage/__init__.py` to expose OneLakeClient
+- Size: Small
+- Dependencies: REORG-101
+
+**REORG-106: Create common/writers/base.py** (P2) - `566f9fd`
+- Created `common/writers/base.py` with `BaseDeltaWriter` class
+  - Wraps verisk_pipeline.storage.delta.DeltaTableWriter
+  - Provides async append/merge wrapper methods using asyncio.to_thread
+  - Common error handling and logging patterns
+  - Configurable deduplication, partitioning, and Z-ordering
+- Created `common/writers/delta_writer.py` with `DeltaWriter` class
+  - Generic writer for simple DataFrame/record operations
+  - Convenience methods for write/merge operations
+  - No domain-specific transformations needed
+- Updated `common/writers/__init__.py` to export new classes
+- Domain writers (xact, claimx) will inherit from BaseDeltaWriter
+- Size: Medium
 - Dependencies: REORG-101
