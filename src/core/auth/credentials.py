@@ -135,6 +135,10 @@ class AzureCredentialProvider:
         self._cache = cache or TokenCache()
         self._credential: Optional[Union[ClientSecretCredential, CertificateCredential, DefaultAzureCredential]] = None
 
+        # File token caching - tracks file mtime to avoid re-reading unchanged files
+        self._token_file_mtime: Optional[float] = None
+        self._token_file_cache: Dict[str, str] = {}  # resource -> token
+
         # Store configuration
         self.use_cli = use_cli
         self.use_default_credential = use_default_credential
@@ -170,6 +174,39 @@ class AzureCredentialProvider:
         # If no specific auth mode configured, default to DefaultAzureCredential
         if not any([self.use_cli, self.token_file, self.client_id]):
             self.use_default_credential = True
+
+    def _is_token_file_modified(self) -> bool:
+        """
+        Check if token file has been modified since last read.
+
+        Uses file modification time (mtime) to detect changes. Returns True
+        if the file should be re-read (modified, first read, or inaccessible).
+
+        Returns:
+            True if file has been modified or hasn't been read yet
+        """
+        if not self.token_file:
+            return False
+
+        try:
+            current_mtime = os.path.getmtime(self.token_file)
+            if self._token_file_mtime is None:
+                # First read - treat as "modified"
+                return True
+            if current_mtime > self._token_file_mtime:
+                logger.debug(
+                    "Token file modified, will re-read",
+                    extra={
+                        "token_file": self.token_file,
+                        "previous_mtime": self._token_file_mtime,
+                        "current_mtime": current_mtime,
+                    }
+                )
+                return True
+            return False
+        except OSError:
+            # File doesn't exist or can't be accessed - let _read_token_file handle error
+            return True
 
     @property
     def has_spn_credentials(self) -> bool:
@@ -270,7 +307,10 @@ class AzureCredentialProvider:
 
     def _read_token_file(self, resource: str) -> str:
         """
-        Read token from JSON file.
+        Read token from JSON file with caching.
+
+        Uses file modification time to avoid re-reading unchanged files.
+        Only re-reads when the file has been modified since last read.
 
         Supports two formats:
         1. JSON: {"https://storage.azure.com/": "token", ...}
@@ -290,6 +330,24 @@ class AzureCredentialProvider:
                 "Token file authentication requested but AZURE_TOKEN_FILE not set"
             )
 
+        # Check cache first - return cached token if file hasn't changed
+        if not self._is_token_file_modified():
+            if resource in self._token_file_cache:
+                logger.debug(
+                    "Using cached token from file",
+                    extra={"token_file": self.token_file, "resource": resource}
+                )
+                return self._token_file_cache[resource]
+            # Check normalized match in cache
+            for cached_resource in self._token_file_cache:
+                if resource.rstrip("/") == cached_resource.rstrip("/"):
+                    logger.debug(
+                        "Using cached token from file (normalized match)",
+                        extra={"resource": resource, "cached_key": cached_resource}
+                    )
+                    return self._token_file_cache[cached_resource]
+
+        # File modified or not in cache - read fresh
         token_path = Path(self.token_file)
         if not token_path.exists():
             raise AzureAuthError(
@@ -299,6 +357,8 @@ class AzureCredentialProvider:
 
         try:
             content = token_path.read_text(encoding="utf-8").strip()
+            # Update mtime after successful read
+            self._token_file_mtime = os.path.getmtime(self.token_file)
         except IOError as e:
             raise AzureAuthError(
                 f"Failed to read token file: {self.token_file}\n"
@@ -317,21 +377,23 @@ class AzureCredentialProvider:
             tokens = json.loads(content)
 
             if isinstance(tokens, dict):
+                # Update entire cache with all tokens from file
+                self._token_file_cache = tokens.copy()
+                logger.debug(
+                    "Refreshed token file cache",
+                    extra={
+                        "token_file": self.token_file,
+                        "resources": list(tokens.keys()),
+                    }
+                )
+
                 # Try exact match first
                 if resource in tokens:
-                    logger.debug(
-                        "Read token from JSON file",
-                        extra={"token_file": self.token_file, "resource": resource}
-                    )
                     return tokens[resource]
 
                 # Try normalized match (with/without trailing slash)
                 for key in tokens:
                     if resource.rstrip("/") == key.rstrip("/"):
-                        logger.debug(
-                            "Read token from JSON file (normalized match)",
-                            extra={"resource": resource, "matched_key": key}
-                        )
                         return tokens[key]
 
                 # Resource not found
@@ -344,6 +406,8 @@ class AzureCredentialProvider:
 
         except json.JSONDecodeError:
             # Not JSON - treat as plain text token (legacy)
+            # Cache with empty string key for legacy format
+            self._token_file_cache = {"": content}
             logger.debug(
                 "Read token from plain text file (legacy format)",
                 extra={"token_file": self.token_file}
@@ -595,16 +659,33 @@ class AzureCredentialProvider:
 
     def clear_cache(self, resource: Optional[str] = None) -> None:
         """
-        Clear cached tokens.
+        Clear cached tokens (both in-memory cache and file token cache).
 
         Args:
             resource: Specific resource to clear, or None to clear all
         """
         self._cache.clear(resource)
+        # Also clear file cache
+        if resource is None:
+            self._token_file_cache.clear()
+            self._token_file_mtime = None
+        else:
+            self._token_file_cache.pop(resource, None)
         logger.debug(
             "Cleared token cache",
             extra={"resource": resource if resource else "all"}
         )
+
+    def clear_file_cache(self) -> None:
+        """
+        Clear only the file token cache, forcing re-read on next access.
+
+        This is useful when you know the token file has been updated
+        but the mtime-based detection might not work (e.g., sub-second updates).
+        """
+        self._token_file_cache.clear()
+        self._token_file_mtime = None
+        logger.debug("Cleared file token cache")
 
     def get_diagnostics(self) -> Dict:
         """
@@ -625,6 +706,11 @@ class AzureCredentialProvider:
         storage_age = self._cache.get_age(STORAGE_RESOURCE)
         if storage_age:
             diag["storage_token_age_seconds"] = storage_age.total_seconds()
+
+        # Add file cache info
+        if self.token_file:
+            diag["file_cache_resources"] = list(self._token_file_cache.keys())
+            diag["file_cache_mtime"] = self._token_file_mtime
 
         return diag
 

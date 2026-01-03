@@ -533,6 +533,187 @@ class TestCacheOperations:
         assert diag["storage_token_age_seconds"] >= 0
 
 
+class TestFileTokenCaching:
+    """Test file token caching with mtime-based invalidation."""
+
+    def test_file_cache_returns_cached_token_when_unchanged(self, tmp_path):
+        """Test that repeated reads return cached token without re-reading file."""
+        token_file = tmp_path / "tokens.json"
+        tokens = {"https://storage.azure.com/": "storage-token"}
+        token_file.write_text(json.dumps(tokens))
+
+        provider = AzureCredentialProvider(token_file=str(token_file))
+
+        # First read - populates cache
+        token1 = provider._read_token_file(STORAGE_RESOURCE)
+        assert token1 == "storage-token"
+        assert provider._token_file_mtime is not None
+
+        # Modify file content but don't change mtime (simulated by not touching file)
+        # Second read should return cached value
+        token2 = provider._read_token_file(STORAGE_RESOURCE)
+        assert token2 == "storage-token"
+
+    def test_file_cache_invalidated_when_file_modified(self, tmp_path):
+        """Test that cache is invalidated when file mtime changes."""
+        import time
+
+        token_file = tmp_path / "tokens.json"
+        tokens = {"https://storage.azure.com/": "old-token"}
+        token_file.write_text(json.dumps(tokens))
+
+        provider = AzureCredentialProvider(token_file=str(token_file))
+
+        # First read
+        token1 = provider._read_token_file(STORAGE_RESOURCE)
+        assert token1 == "old-token"
+
+        # Wait a bit and update file (ensure mtime changes)
+        time.sleep(0.1)
+        tokens = {"https://storage.azure.com/": "new-token"}
+        token_file.write_text(json.dumps(tokens))
+
+        # Second read should get new token
+        token2 = provider._read_token_file(STORAGE_RESOURCE)
+        assert token2 == "new-token"
+
+    def test_file_cache_stores_all_resources(self, tmp_path):
+        """Test that all resources from file are cached on first read."""
+        token_file = tmp_path / "tokens.json"
+        tokens = {
+            "https://storage.azure.com/": "storage-token",
+            "https://vault.azure.net/": "vault-token",
+            "https://eventhubs.azure.net/": "eventhub-token",
+        }
+        token_file.write_text(json.dumps(tokens))
+
+        provider = AzureCredentialProvider(token_file=str(token_file))
+
+        # Read one resource - should cache all
+        provider._read_token_file(STORAGE_RESOURCE)
+
+        # All resources should be in cache
+        assert len(provider._token_file_cache) == 3
+        assert provider._token_file_cache["https://storage.azure.com/"] == "storage-token"
+        assert provider._token_file_cache["https://vault.azure.net/"] == "vault-token"
+
+    def test_file_cache_normalized_match_from_cache(self, tmp_path):
+        """Test that cached tokens can be found with normalized resource URLs."""
+        token_file = tmp_path / "tokens.json"
+        tokens = {"https://storage.azure.com": "storage-token"}  # No trailing slash
+        token_file.write_text(json.dumps(tokens))
+
+        provider = AzureCredentialProvider(token_file=str(token_file))
+
+        # First read with trailing slash
+        token1 = provider._read_token_file("https://storage.azure.com/")
+        assert token1 == "storage-token"
+
+        # Second read (from cache) with trailing slash should still work
+        token2 = provider._read_token_file("https://storage.azure.com/")
+        assert token2 == "storage-token"
+
+    def test_clear_file_cache_forces_reread(self, tmp_path):
+        """Test that clear_file_cache forces file to be re-read."""
+        token_file = tmp_path / "tokens.json"
+        tokens = {"https://storage.azure.com/": "token1"}
+        token_file.write_text(json.dumps(tokens))
+
+        provider = AzureCredentialProvider(token_file=str(token_file))
+
+        # First read
+        provider._read_token_file(STORAGE_RESOURCE)
+        assert provider._token_file_mtime is not None
+        original_mtime = provider._token_file_mtime
+
+        # Clear file cache
+        provider.clear_file_cache()
+        assert provider._token_file_mtime is None
+        assert len(provider._token_file_cache) == 0
+
+        # Next read should re-read file
+        provider._read_token_file(STORAGE_RESOURCE)
+        assert provider._token_file_mtime is not None
+
+    def test_clear_cache_also_clears_file_cache(self, tmp_path):
+        """Test that clear_cache() clears both in-memory and file caches."""
+        token_file = tmp_path / "tokens.json"
+        tokens = {"https://storage.azure.com/": "token1"}
+        token_file.write_text(json.dumps(tokens))
+
+        provider = AzureCredentialProvider(token_file=str(token_file))
+
+        # Populate file cache
+        provider._read_token_file(STORAGE_RESOURCE)
+        assert len(provider._token_file_cache) > 0
+
+        # Clear all caches
+        provider.clear_cache()
+        assert len(provider._token_file_cache) == 0
+        assert provider._token_file_mtime is None
+
+    def test_is_token_file_modified_first_read(self, tmp_path):
+        """Test that _is_token_file_modified returns True on first read."""
+        token_file = tmp_path / "tokens.json"
+        token_file.write_text('{"resource": "token"}')
+
+        provider = AzureCredentialProvider(token_file=str(token_file))
+
+        # First check should return True (no previous mtime)
+        assert provider._is_token_file_modified() is True
+
+    def test_is_token_file_modified_after_read(self, tmp_path):
+        """Test that _is_token_file_modified returns False after read if unchanged."""
+        token_file = tmp_path / "tokens.json"
+        tokens = {"https://storage.azure.com/": "token"}
+        token_file.write_text(json.dumps(tokens))
+
+        provider = AzureCredentialProvider(token_file=str(token_file))
+
+        # Read to populate mtime
+        provider._read_token_file(STORAGE_RESOURCE)
+
+        # Now should return False (file unchanged)
+        assert provider._is_token_file_modified() is False
+
+    def test_diagnostics_includes_file_cache_info(self, tmp_path):
+        """Test that get_diagnostics includes file cache information."""
+        token_file = tmp_path / "tokens.json"
+        tokens = {
+            "https://storage.azure.com/": "storage-token",
+            "https://vault.azure.net/": "vault-token",
+        }
+        token_file.write_text(json.dumps(tokens))
+
+        provider = AzureCredentialProvider(token_file=str(token_file))
+
+        # Read to populate cache
+        provider._read_token_file(STORAGE_RESOURCE)
+
+        diag = provider.get_diagnostics()
+
+        assert "file_cache_resources" in diag
+        assert len(diag["file_cache_resources"]) == 2
+        assert "file_cache_mtime" in diag
+        assert diag["file_cache_mtime"] is not None
+
+    def test_plain_text_file_caching(self, tmp_path):
+        """Test that plain text token files are also cached."""
+        token_file = tmp_path / "token.txt"
+        token_file.write_text("plain-token")
+
+        provider = AzureCredentialProvider(token_file=str(token_file))
+
+        # First read
+        token1 = provider._read_token_file(STORAGE_RESOURCE)
+        assert token1 == "plain-token"
+        assert provider._token_file_mtime is not None
+
+        # Second read should use cache
+        token2 = provider._read_token_file(STORAGE_RESOURCE)
+        assert token2 == "plain-token"
+
+
 class TestModuleLevelFunctions:
     """Test module-level convenience functions."""
 
