@@ -79,13 +79,6 @@
 - If redundant, remove; if needed, document the use case
 - Size: Small
 
-**TECH-006: Verify Logger Usage in run_eventhouse_poller**
-- Location: `kafka_pipeline/__main__.py` in `run_eventhouse_poller()`
-- TODO asks: "Is this using the correct logger?"
-- Verify `set_log_context(stage="event-ingester")` is appropriate for poller
-- Check if logger instance is correctly scoped after context set
-- Size: Small
-
 **TECH-007: Confirm Consistent CTRL+C / Graceful Shutdown Behavior**
 - Verify all workers handle KeyboardInterrupt consistently
 - CTRL+C should initiate graceful shutdown: finish current batch, then exit
@@ -213,6 +206,13 @@
 
 <!-- Done tasks with commit references -->
 
+**TECH-006: Verify Logger Usage in run_eventhouse_poller** ✓
+- Verified logger scoping: module-level `logger` is correct (context attached at format time via `ContextVar`)
+- Found: `stage="event-ingester"` was inappropriate for the poller (same name as `run_local_event_ingester`)
+- Fixed: Changed to `stage="eventhouse-poller"` to distinguish poller logs from event ingester logs
+- All 61 logging tests pass
+- Size: Small
+
 **TECH-004: Review JSON_LOGS / Logging Configuration Redundancy** ✓
 - Reviewed `--json-logs` CLI arg and `JSON_LOGS` env var usage
 - Found: `setup_logging()` and `setup_multi_worker_logging()` already default to `json_format=True`
@@ -306,7 +306,11 @@ Establish consistent configuration loading across the codebase with clear preced
 
 ## Future Work
 
+### Kafka Pipeline Reorganization
+See **[reorg_backlog.md](reorg_backlog.md)** for the full epic (31 work packages across 4 phases).
+
 ### Phase 6: Migration (Not Yet Scoped)
 - WP-601: Parallel run validation (Event Hub vs Eventhouse)
 - WP-602: Cutover procedure
 - WP-603: Decommission Event Hub consumer (optional)
+

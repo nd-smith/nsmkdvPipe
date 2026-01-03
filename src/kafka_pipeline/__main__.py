@@ -169,7 +169,7 @@ async def run_eventhouse_poller(pipeline_config):
     from kafka_pipeline.eventhouse.kql_client import EventhouseConfig
     from kafka_pipeline.eventhouse.poller import KQLEventPoller, PollerConfig
 
-    set_log_context(stage="event-ingester")
+    set_log_context(stage="eventhouse-poller")
     logger.info("Starting Eventhouse Poller...")
 
     eventhouse_source = pipeline_config.eventhouse
