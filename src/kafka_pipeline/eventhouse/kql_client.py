@@ -134,6 +134,11 @@ class FileBackedKustoCredential:
         )
         return AccessToken(self._cached_token, expires_on)
 
+    def close(self) -> None:
+        """Close the credential (no-op for file-backed credential)."""
+        # No resources to clean up - the file handle is not kept open
+        pass
+
 
 @dataclass
 class EventhouseConfig:
