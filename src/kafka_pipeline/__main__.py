@@ -379,14 +379,14 @@ async def run_all_workers(
             asyncio.create_task(
                 run_local_event_ingester(
                     local_kafka_config,
-                    enable_delta_writes,
+                    enable_delta_writes=False,  # Poller already writes to Delta
                     events_table_path=eventhouse_events_path,
                     domain=pipeline_config.domain,
                 ),
                 name="event-ingester",
             )
         )
-        logger.info("Using Eventhouse as event source")
+        logger.info("Using Eventhouse as event source (Delta writes handled by poller)")
     else:
         # EventHub mode: EventHub → events.raw → EventIngester → downloads.pending
         eventhub_config = pipeline_config.eventhub.to_kafka_config()
