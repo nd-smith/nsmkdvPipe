@@ -11,7 +11,7 @@
 
 | Phase | Status | Progress |
 |-------|--------|----------|
-| Phase 1: common/ | In Progress | 1/9 |
+| Phase 1: common/ | In Progress | 2/9 |
 | Phase 2: xact/ | Not Started | 0/7 |
 | Phase 3: claimx/ | Not Started | 0/11 |
 | Phase 4: Config | Not Started | 0/4 |
@@ -29,14 +29,6 @@
 - Update all imports in moved files
 - Add re-exports from old locations for backward compatibility (temporary)
 - Size: Medium
-- Dependencies: REORG-101
-
-**REORG-103: Move retry/ Module to common/** [ASSIGNED] (P2)
-- Move `retry/handler.py` → `common/retry/handler.py`
-- Move `retry/scheduler.py` → `common/retry/scheduler.py`
-- Update imports
-- Add re-exports from old location
-- Size: Small
 - Dependencies: REORG-101
 
 **REORG-104: Move dlq/ Module to common/** (P2)
@@ -399,3 +391,12 @@ Phase 5: Remove verisk_pipeline/
 - No code moves - structure only
 - Size: Small
 - Dependencies: None
+
+**REORG-103: Move retry/ Module to common/** (P2) - `c70d8f5`
+- Moved `retry/handler.py` → `common/retry/handler.py`
+- Moved `retry/scheduler.py` → `common/retry/scheduler.py`
+- Updated imports to use `common.consumer` and `common.producer`
+- Added re-exports from old location for backward compatibility
+- All retry flow tests passing
+- Size: Small
+- Dependencies: REORG-101
