@@ -1,12 +1,28 @@
 """
-Delta Lake writers for Kafka pipeline.
+DEPRECATED: Writers have moved to domain-specific packages.
 
-Provides specialized writers for:
-- Event analytics (xact_events table)
-- Download inventory (xact_attachments table)
+This is a temporary backward compatibility shim.
+Please update your imports to use:
+    from kafka_pipeline.xact.writers import DeltaEventsWriter, DeltaInventoryWriter
+
+Xact writers are now in kafka_pipeline.xact.writers
 """
 
-from kafka_pipeline.writers.delta_events import DeltaEventsWriter
-from kafka_pipeline.writers.delta_inventory import DeltaInventoryWriter
+import warnings
 
-__all__ = ["DeltaEventsWriter", "DeltaInventoryWriter"]
+# Re-export from new location for backward compatibility
+from kafka_pipeline.xact.writers import (
+    DeltaEventsWriter,
+    DeltaFailedAttachmentsWriter,
+    DeltaInventoryWriter,
+)
+
+# Warn about deprecated import path
+warnings.warn(
+    "Importing from kafka_pipeline.writers is deprecated. "
+    "Please use kafka_pipeline.xact.writers instead.",
+    DeprecationWarning,
+    stacklevel=2,
+)
+
+__all__ = ["DeltaEventsWriter", "DeltaInventoryWriter", "DeltaFailedAttachmentsWriter"]

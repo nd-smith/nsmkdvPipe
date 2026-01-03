@@ -412,4 +412,9 @@ class BaseKafkaProducer:
 
 __all__ = [
     "BaseKafkaProducer",
+    "AIOKafkaProducer",
+    "get_circuit_breaker",
+    "CircuitBreaker",
+    "RecordMetadata",
+    "create_kafka_oauth_callback",
 ]

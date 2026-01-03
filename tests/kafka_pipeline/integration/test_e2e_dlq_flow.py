@@ -35,8 +35,8 @@ from aiokafka import AIOKafkaProducer
 from core.download.models import DownloadOutcome
 from core.types import ErrorCategory
 from kafka_pipeline.config import KafkaConfig
-from kafka_pipeline.dlq.cli import DLQCLIManager
-from kafka_pipeline.dlq.handler import DLQHandler
+from kafka_pipeline.common.dlq.cli import DLQCLIManager
+from kafka_pipeline.common.dlq.handler import DLQHandler
 from kafka_pipeline.schemas.results import FailedDownloadMessage
 from kafka_pipeline.schemas.tasks import DownloadTaskMessage
 
@@ -326,7 +326,7 @@ async def test_dlq_handler_parses_and_validates_messages(
             dlq_handler = DLQHandler(test_kafka_config)
 
             # Start producer only (we'll manually fetch from DLQ)
-            from kafka_pipeline.producer import BaseKafkaProducer
+            from kafka_pipeline.common.producer import BaseKafkaProducer
 
             dlq_handler._producer = BaseKafkaProducer(test_kafka_config)
             await dlq_handler._producer.start()
@@ -597,7 +597,7 @@ async def test_dlq_cli_replay_operation(
             dlq_handler = DLQHandler(test_kafka_config)
 
             # Start producer for replay
-            from kafka_pipeline.producer import BaseKafkaProducer
+            from kafka_pipeline.common.producer import BaseKafkaProducer
 
             dlq_handler._producer = BaseKafkaProducer(test_kafka_config)
             await dlq_handler._producer.start()

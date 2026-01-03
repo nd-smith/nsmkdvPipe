@@ -33,7 +33,7 @@ from aiokafka import AIOKafkaProducer
 from core.download.models import DownloadOutcome
 from core.types import ErrorCategory
 from kafka_pipeline.config import KafkaConfig
-from kafka_pipeline.retry.scheduler import DelayedRedeliveryScheduler
+from kafka_pipeline.common.retry.scheduler import DelayedRedeliveryScheduler
 from kafka_pipeline.schemas.results import DownloadResultMessage, FailedDownloadMessage
 from kafka_pipeline.schemas.tasks import DownloadTaskMessage
 
@@ -219,7 +219,7 @@ async def test_scheduler_redelivers_after_delay(
         worker_task = await start_worker_background(download_worker)
 
         # Create and start scheduler
-        from kafka_pipeline.producer import BaseKafkaProducer
+        from kafka_pipeline.common.producer import BaseKafkaProducer
 
         producer = BaseKafkaProducer(test_kafka_config)
         await producer.start()

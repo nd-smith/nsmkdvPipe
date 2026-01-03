@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from core.errors.exceptions import KustoError, KustoQueryError
-from kafka_pipeline.eventhouse.kql_client import (
+from kafka_pipeline.common.eventhouse.kql_client import (
     EventhouseConfig,
     KQLClient,
     KQLQueryResult,
@@ -148,13 +148,13 @@ class TestKQLClient:
         """Test successful connection."""
         with (
             patch(
-                "kafka_pipeline.eventhouse.kql_client.DefaultAzureCredential"
+                "kafka_pipeline.common.eventhouse.kql_client.DefaultAzureCredential"
             ) as mock_cred,
             patch(
-                "kafka_pipeline.eventhouse.kql_client.KustoConnectionStringBuilder"
+                "kafka_pipeline.common.eventhouse.kql_client.KustoConnectionStringBuilder"
             ) as mock_kcsb,
             patch(
-                "kafka_pipeline.eventhouse.kql_client.KustoClient"
+                "kafka_pipeline.common.eventhouse.kql_client.KustoClient"
             ) as mock_client_class,
         ):
             mock_cred.return_value = MagicMock()
@@ -179,13 +179,13 @@ class TestKQLClient:
         """Test async context manager."""
         with (
             patch(
-                "kafka_pipeline.eventhouse.kql_client.DefaultAzureCredential"
+                "kafka_pipeline.common.eventhouse.kql_client.DefaultAzureCredential"
             ) as mock_cred,
             patch(
-                "kafka_pipeline.eventhouse.kql_client.KustoConnectionStringBuilder"
+                "kafka_pipeline.common.eventhouse.kql_client.KustoConnectionStringBuilder"
             ) as mock_kcsb,
             patch(
-                "kafka_pipeline.eventhouse.kql_client.KustoClient"
+                "kafka_pipeline.common.eventhouse.kql_client.KustoClient"
             ) as mock_client_class,
         ):
             mock_cred.return_value = MagicMock()
@@ -202,13 +202,13 @@ class TestKQLClient:
         """Test successful query execution."""
         with (
             patch(
-                "kafka_pipeline.eventhouse.kql_client.DefaultAzureCredential"
+                "kafka_pipeline.common.eventhouse.kql_client.DefaultAzureCredential"
             ) as mock_cred,
             patch(
-                "kafka_pipeline.eventhouse.kql_client.KustoConnectionStringBuilder"
+                "kafka_pipeline.common.eventhouse.kql_client.KustoConnectionStringBuilder"
             ) as mock_kcsb,
             patch(
-                "kafka_pipeline.eventhouse.kql_client.KustoClient"
+                "kafka_pipeline.common.eventhouse.kql_client.KustoClient"
             ) as mock_client_class,
         ):
             mock_cred.return_value = MagicMock()
@@ -235,13 +235,13 @@ class TestKQLClient:
 
         with (
             patch(
-                "kafka_pipeline.eventhouse.kql_client.DefaultAzureCredential"
+                "kafka_pipeline.common.eventhouse.kql_client.DefaultAzureCredential"
             ) as mock_cred,
             patch(
-                "kafka_pipeline.eventhouse.kql_client.KustoConnectionStringBuilder"
+                "kafka_pipeline.common.eventhouse.kql_client.KustoConnectionStringBuilder"
             ) as mock_kcsb,
             patch(
-                "kafka_pipeline.eventhouse.kql_client.KustoClient"
+                "kafka_pipeline.common.eventhouse.kql_client.KustoClient"
             ) as mock_client_class,
         ):
             mock_cred.return_value = MagicMock()
@@ -265,13 +265,13 @@ class TestKQLClient:
 
         with (
             patch(
-                "kafka_pipeline.eventhouse.kql_client.DefaultAzureCredential"
+                "kafka_pipeline.common.eventhouse.kql_client.DefaultAzureCredential"
             ) as mock_cred,
             patch(
-                "kafka_pipeline.eventhouse.kql_client.KustoConnectionStringBuilder"
+                "kafka_pipeline.common.eventhouse.kql_client.KustoConnectionStringBuilder"
             ) as mock_kcsb,
             patch(
-                "kafka_pipeline.eventhouse.kql_client.KustoClient"
+                "kafka_pipeline.common.eventhouse.kql_client.KustoClient"
             ) as mock_client_class,
         ):
             mock_cred.return_value = MagicMock()
@@ -292,13 +292,13 @@ class TestKQLClient:
         """Test retry logic on transient errors."""
         with (
             patch(
-                "kafka_pipeline.eventhouse.kql_client.DefaultAzureCredential"
+                "kafka_pipeline.common.eventhouse.kql_client.DefaultAzureCredential"
             ) as mock_cred,
             patch(
-                "kafka_pipeline.eventhouse.kql_client.KustoConnectionStringBuilder"
+                "kafka_pipeline.common.eventhouse.kql_client.KustoConnectionStringBuilder"
             ) as mock_kcsb,
             patch(
-                "kafka_pipeline.eventhouse.kql_client.KustoClient"
+                "kafka_pipeline.common.eventhouse.kql_client.KustoClient"
             ) as mock_client_class,
         ):
             mock_cred.return_value = MagicMock()
@@ -323,13 +323,13 @@ class TestKQLClient:
         """Test error raised when max retries exceeded."""
         with (
             patch(
-                "kafka_pipeline.eventhouse.kql_client.DefaultAzureCredential"
+                "kafka_pipeline.common.eventhouse.kql_client.DefaultAzureCredential"
             ) as mock_cred,
             patch(
-                "kafka_pipeline.eventhouse.kql_client.KustoConnectionStringBuilder"
+                "kafka_pipeline.common.eventhouse.kql_client.KustoConnectionStringBuilder"
             ) as mock_kcsb,
             patch(
-                "kafka_pipeline.eventhouse.kql_client.KustoClient"
+                "kafka_pipeline.common.eventhouse.kql_client.KustoClient"
             ) as mock_client_class,
         ):
             mock_cred.return_value = MagicMock()
@@ -366,13 +366,13 @@ class TestKQLClient:
 
         with (
             patch(
-                "kafka_pipeline.eventhouse.kql_client.DefaultAzureCredential"
+                "kafka_pipeline.common.eventhouse.kql_client.DefaultAzureCredential"
             ) as mock_cred,
             patch(
-                "kafka_pipeline.eventhouse.kql_client.KustoConnectionStringBuilder"
+                "kafka_pipeline.common.eventhouse.kql_client.KustoConnectionStringBuilder"
             ) as mock_kcsb,
             patch(
-                "kafka_pipeline.eventhouse.kql_client.KustoClient"
+                "kafka_pipeline.common.eventhouse.kql_client.KustoClient"
             ) as mock_client_class,
         ):
             mock_cred.return_value = MagicMock()
@@ -392,13 +392,13 @@ class TestKQLClient:
         """Test failed health check."""
         with (
             patch(
-                "kafka_pipeline.eventhouse.kql_client.DefaultAzureCredential"
+                "kafka_pipeline.common.eventhouse.kql_client.DefaultAzureCredential"
             ) as mock_cred,
             patch(
-                "kafka_pipeline.eventhouse.kql_client.KustoConnectionStringBuilder"
+                "kafka_pipeline.common.eventhouse.kql_client.KustoConnectionStringBuilder"
             ) as mock_kcsb,
             patch(
-                "kafka_pipeline.eventhouse.kql_client.KustoClient"
+                "kafka_pipeline.common.eventhouse.kql_client.KustoClient"
             ) as mock_client_class,
         ):
             mock_cred.return_value = MagicMock()
@@ -434,13 +434,13 @@ class TestKQLClient:
 
         with (
             patch(
-                "kafka_pipeline.eventhouse.kql_client.DefaultAzureCredential"
+                "kafka_pipeline.common.eventhouse.kql_client.DefaultAzureCredential"
             ) as mock_cred,
             patch(
-                "kafka_pipeline.eventhouse.kql_client.KustoConnectionStringBuilder"
+                "kafka_pipeline.common.eventhouse.kql_client.KustoConnectionStringBuilder"
             ) as mock_kcsb,
             patch(
-                "kafka_pipeline.eventhouse.kql_client.KustoClient"
+                "kafka_pipeline.common.eventhouse.kql_client.KustoClient"
             ) as mock_client_class,
         ):
             mock_cred.return_value = MagicMock()
@@ -460,13 +460,13 @@ class TestKQLClient:
         """Test query with custom database."""
         with (
             patch(
-                "kafka_pipeline.eventhouse.kql_client.DefaultAzureCredential"
+                "kafka_pipeline.common.eventhouse.kql_client.DefaultAzureCredential"
             ) as mock_cred,
             patch(
-                "kafka_pipeline.eventhouse.kql_client.KustoConnectionStringBuilder"
+                "kafka_pipeline.common.eventhouse.kql_client.KustoConnectionStringBuilder"
             ) as mock_kcsb,
             patch(
-                "kafka_pipeline.eventhouse.kql_client.KustoClient"
+                "kafka_pipeline.common.eventhouse.kql_client.KustoClient"
             ) as mock_client_class,
         ):
             mock_cred.return_value = MagicMock()

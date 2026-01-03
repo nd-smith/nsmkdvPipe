@@ -17,7 +17,7 @@ import polars as pl
 import pytest
 
 from kafka_pipeline.schemas.results import DownloadResultMessage
-from kafka_pipeline.writers.delta_inventory import (
+from kafka_pipeline.xact.writers.delta_inventory import (
     DeltaInventoryWriter,
     DeltaFailedAttachmentsWriter,
 )
@@ -43,7 +43,7 @@ def sample_result():
 @pytest.fixture
 def delta_writer():
     """Create a DeltaInventoryWriter with mocked Delta backend."""
-    with patch("kafka_pipeline.writers.delta_inventory.DeltaTableWriter"):
+    with patch("kafka_pipeline.common.writers.base.DeltaTableWriter"):
         writer = DeltaInventoryWriter(
             table_path="abfss://test@onelake/lakehouse/xact_attachments",
         )
@@ -241,7 +241,7 @@ class TestDeltaInventoryWriter:
         delta_writer._delta_writer.merge = MagicMock(return_value=1)
 
         # Capture log output to verify latency_ms is logged
-        with patch("kafka_pipeline.writers.delta_inventory.logger") as mock_logger:
+        with patch("kafka_pipeline.xact.writers.delta_inventory.logger") as mock_logger:
             await delta_writer.write_result(sample_result)
 
             # Verify info log was called with latency_ms
@@ -294,7 +294,7 @@ class TestDeltaInventoryWriter:
 async def test_delta_writer_integration():
     """Integration test with actual Delta writer (mocked storage)."""
     with patch(
-        "kafka_pipeline.writers.delta_inventory.DeltaTableWriter"
+        "kafka_pipeline.common.writers.base.DeltaTableWriter"
     ) as mock_delta_writer_class:
         # Setup mock
         mock_writer_instance = MagicMock()
@@ -357,7 +357,7 @@ def sample_failed_result():
 @pytest.fixture
 def failed_writer():
     """Create a DeltaFailedAttachmentsWriter with mocked Delta backend."""
-    with patch("kafka_pipeline.writers.delta_inventory.DeltaTableWriter"):
+    with patch("kafka_pipeline.common.writers.base.DeltaTableWriter"):
         writer = DeltaFailedAttachmentsWriter(
             table_path="abfss://test@onelake/lakehouse/xact_attachments_failed",
         )
@@ -505,7 +505,7 @@ class TestDeltaFailedAttachmentsWriter:
 async def test_failed_writer_integration():
     """Integration test for DeltaFailedAttachmentsWriter."""
     with patch(
-        "kafka_pipeline.writers.delta_inventory.DeltaTableWriter"
+        "kafka_pipeline.common.writers.base.DeltaTableWriter"
     ) as mock_delta_writer_class:
         mock_writer_instance = MagicMock()
         mock_writer_instance.merge = MagicMock(return_value=1)

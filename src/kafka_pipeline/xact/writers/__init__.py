@@ -6,4 +6,14 @@ Contains Delta table writers for xact domain:
 - delta_inventory: Writer for xact inventory table
 """
 
-__all__ = []
+from kafka_pipeline.xact.writers.delta_events import DeltaEventsWriter
+from kafka_pipeline.xact.writers.delta_inventory import (
+    DeltaFailedAttachmentsWriter,
+    DeltaInventoryWriter,
+)
+
+__all__ = [
+    "DeltaEventsWriter",
+    "DeltaInventoryWriter",
+    "DeltaFailedAttachmentsWriter",
+]

@@ -28,11 +28,11 @@ from aiokafka.structs import ConsumerRecord
 from core.auth.kafka_oauth import create_kafka_oauth_callback
 from core.logging.setup import get_logger
 from kafka_pipeline.config import KafkaConfig
-from kafka_pipeline.producer import BaseKafkaProducer
+from kafka_pipeline.common.producer import BaseKafkaProducer
 from kafka_pipeline.schemas.cached import CachedDownloadMessage
 from kafka_pipeline.schemas.results import DownloadResultMessage
-from kafka_pipeline.storage import OneLakeClient
-from kafka_pipeline.metrics import (
+from kafka_pipeline.common.storage import OneLakeClient
+from kafka_pipeline.common.metrics import (
     record_message_consumed,
     record_processing_error,
     update_connection_status,

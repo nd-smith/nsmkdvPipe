@@ -848,8 +848,8 @@ async def test_consumer_lag_buildup_scheduler_pauses(
     parameter but may not have exposed _should_pause_delivery() method.
     This test validates the concept of lag-based backpressure.
     """
-    from kafka_pipeline.retry.scheduler import DelayedRedeliveryScheduler
-    from kafka_pipeline.producer import BaseKafkaProducer
+    from kafka_pipeline.common.retry.scheduler import DelayedRedeliveryScheduler
+    from kafka_pipeline.common.producer import BaseKafkaProducer
 
     # Create producer (required by scheduler)
     producer = BaseKafkaProducer(config=test_kafka_config)

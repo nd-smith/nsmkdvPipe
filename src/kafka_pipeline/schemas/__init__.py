@@ -1,29 +1,23 @@
 """
-Kafka message schemas.
+Kafka message schemas - re-exports from xact domain.
 
-Pydantic models for all Kafka message types with validation and serialization.
+All schema definitions have been moved to kafka_pipeline.xact.schemas.
+This module provides convenient re-exports.
 
-Schemas:
-    events.py   - EventMessage (raw events from source)
-    tasks.py    - DownloadTaskMessage (work items for download workers)
-    cached.py   - CachedDownloadMessage (files cached locally, awaiting upload)
-    results.py  - DownloadResultMessage, FailedDownloadMessage (outcomes and DLQ)
-
-Design Decisions:
-    - Pydantic for validation and JSON serialization
-    - Explicit schemas (no dynamic/dict-based messages)
-    - Backward-compatible evolution (additive changes only)
-    - Datetime fields as ISO 8601 strings
-
-Future Consideration:
-    - Avro/Protobuf for schema registry integration
-    - Schema versioning strategy
+New code should import directly from kafka_pipeline.xact.schemas:
+    from kafka_pipeline.xact.schemas import EventMessage
+    from kafka_pipeline.xact.schemas import DownloadTaskMessage
+    etc.
 """
 
-from kafka_pipeline.schemas.cached import CachedDownloadMessage
-from kafka_pipeline.schemas.events import EventMessage
-from kafka_pipeline.schemas.results import DownloadResultMessage, FailedDownloadMessage
-from kafka_pipeline.schemas.tasks import DownloadTaskMessage
+# Re-export from xact domain schemas
+from kafka_pipeline.xact.schemas import (
+    CachedDownloadMessage,
+    DownloadResultMessage,
+    DownloadTaskMessage,
+    EventMessage,
+    FailedDownloadMessage,
+)
 
 __all__ = [
     "EventMessage",

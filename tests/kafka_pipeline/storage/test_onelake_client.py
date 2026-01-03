@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 
-from kafka_pipeline.storage.onelake_client import OneLakeClient
+from kafka_pipeline.common.storage.onelake_client import OneLakeClient
 
 
 @pytest.fixture
@@ -48,7 +48,7 @@ async def test_client_initialization():
 async def test_client_context_manager(mock_legacy_client):
     """Test async context manager creates and closes client."""
     with patch(
-        "kafka_pipeline.storage.onelake_client.LegacyOneLakeClient",
+        "kafka_pipeline.common.storage.onelake_client.LegacyOneLakeClient",
         return_value=mock_legacy_client,
     ):
         client = OneLakeClient("abfss://workspace@onelake/lakehouse/Files")
@@ -69,7 +69,7 @@ async def test_upload_file_success(mock_legacy_client, tmp_path):
     test_file.write_bytes(b"PDF content")
 
     with patch(
-        "kafka_pipeline.storage.onelake_client.LegacyOneLakeClient",
+        "kafka_pipeline.common.storage.onelake_client.LegacyOneLakeClient",
         return_value=mock_legacy_client,
     ):
         client = OneLakeClient("abfss://workspace@onelake/lakehouse/Files")
@@ -96,7 +96,7 @@ async def test_upload_file_success(mock_legacy_client, tmp_path):
 async def test_upload_file_not_found(mock_legacy_client, tmp_path):
     """Test upload fails if local file doesn't exist."""
     with patch(
-        "kafka_pipeline.storage.onelake_client.LegacyOneLakeClient",
+        "kafka_pipeline.common.storage.onelake_client.LegacyOneLakeClient",
         return_value=mock_legacy_client,
     ):
         client = OneLakeClient("abfss://workspace@onelake/lakehouse/Files")
@@ -119,7 +119,7 @@ async def test_upload_bytes_success(mock_legacy_client):
     test_data = b"Binary file content"
 
     with patch(
-        "kafka_pipeline.storage.onelake_client.LegacyOneLakeClient",
+        "kafka_pipeline.common.storage.onelake_client.LegacyOneLakeClient",
         return_value=mock_legacy_client,
     ):
         client = OneLakeClient("abfss://workspace@onelake/lakehouse/Files")
@@ -146,7 +146,7 @@ async def test_upload_bytes_success(mock_legacy_client):
 async def test_exists(mock_legacy_client):
     """Test file existence check."""
     with patch(
-        "kafka_pipeline.storage.onelake_client.LegacyOneLakeClient",
+        "kafka_pipeline.common.storage.onelake_client.LegacyOneLakeClient",
         return_value=mock_legacy_client,
     ):
         client = OneLakeClient("abfss://workspace@onelake/lakehouse/Files")
@@ -165,7 +165,7 @@ async def test_exists(mock_legacy_client):
 async def test_delete(mock_legacy_client):
     """Test file deletion."""
     with patch(
-        "kafka_pipeline.storage.onelake_client.LegacyOneLakeClient",
+        "kafka_pipeline.common.storage.onelake_client.LegacyOneLakeClient",
         return_value=mock_legacy_client,
     ):
         client = OneLakeClient("abfss://workspace@onelake/lakehouse/Files")
@@ -184,7 +184,7 @@ async def test_delete(mock_legacy_client):
 async def test_close_without_context_manager(mock_legacy_client):
     """Test explicit close without using context manager."""
     with patch(
-        "kafka_pipeline.storage.onelake_client.LegacyOneLakeClient",
+        "kafka_pipeline.common.storage.onelake_client.LegacyOneLakeClient",
         return_value=mock_legacy_client,
     ):
         client = OneLakeClient("abfss://workspace@onelake/lakehouse/Files")
@@ -205,7 +205,7 @@ async def test_multiple_operations(mock_legacy_client, tmp_path):
     test_file.write_bytes(b"PDF content")
 
     with patch(
-        "kafka_pipeline.storage.onelake_client.LegacyOneLakeClient",
+        "kafka_pipeline.common.storage.onelake_client.LegacyOneLakeClient",
         return_value=mock_legacy_client,
     ):
         client = OneLakeClient("abfss://workspace@onelake/lakehouse/Files")
@@ -242,7 +242,7 @@ async def test_upload_propagates_exceptions(mock_legacy_client, tmp_path):
     mock_legacy_client.upload_file.side_effect = Exception("Upload failed")
 
     with patch(
-        "kafka_pipeline.storage.onelake_client.LegacyOneLakeClient",
+        "kafka_pipeline.common.storage.onelake_client.LegacyOneLakeClient",
         return_value=mock_legacy_client,
     ):
         client = OneLakeClient("abfss://workspace@onelake/lakehouse/Files")

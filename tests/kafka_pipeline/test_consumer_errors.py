@@ -24,7 +24,7 @@ from core.errors.exceptions import (
 )
 from core.resilience.circuit_breaker import CircuitBreaker
 from kafka_pipeline.config import KafkaConfig
-from kafka_pipeline.consumer import BaseKafkaConsumer
+from kafka_pipeline.common.consumer import BaseKafkaConsumer
 
 
 @pytest.fixture

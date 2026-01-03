@@ -22,7 +22,7 @@ from aiokafka.structs import ConsumerRecord
 
 from core.logging.setup import get_logger
 from kafka_pipeline.config import KafkaConfig
-from kafka_pipeline.consumer import BaseKafkaConsumer
+from kafka_pipeline.common.consumer import BaseKafkaConsumer
 from kafka_pipeline.schemas.results import DownloadResultMessage
 from kafka_pipeline.writers.delta_inventory import (
     DeltaInventoryWriter,

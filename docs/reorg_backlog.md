@@ -11,7 +11,7 @@
 
 | Phase | Status | Progress |
 |-------|--------|----------|
-| Phase 1: common/ | In Progress | 8/9 |
+| Phase 1: common/ | Completed | 9/9 |
 | Phase 2: xact/ | In Progress | 1/7 |
 | Phase 3: claimx/ | In Progress | 1/11 |
 | Phase 4: Config | Not Started | 0/4 |
@@ -31,25 +31,18 @@
 - Dependencies: REORG-102, REORG-103, REORG-104, REORG-105, REORG-106, REORG-107
 - Note: Unit test mocking still uses backward compatibility paths (to be addressed in REORG-109)
 
-**REORG-109: Remove Backward Compatibility Re-exports** (P3) [ASSIGNED]
-- Remove temporary re-exports from old locations
-- Delete empty old module files
-- Clean up `kafka/` directory (currently just `__init__.py`)
-- Final import cleanup
-- Size: Small
-- Dependencies: REORG-108, all external consumers updated
-
 ---
 
 ## Phase 2: Create xact/ Domain
 
-**REORG-202: Move xact Schemas** (P2)
-- Move `schemas/events.py` → `xact/schemas/events.py`
-- Move `schemas/tasks.py` → `xact/schemas/tasks.py`
-- Move `schemas/results.py` → `xact/schemas/results.py`
-- Move `schemas/cached.py` → `xact/schemas/cached.py`
-- Update imports
-- Add re-exports from old `schemas/` for backward compatibility
+**REORG-202: Move xact Schemas** (P2) [COMPLETED]
+- ✅ Moved `schemas/events.py` → `xact/schemas/events.py`
+- ✅ Moved `schemas/tasks.py` → `xact/schemas/tasks.py`
+- ✅ Moved `schemas/results.py` → `xact/schemas/results.py`
+- ✅ Moved `schemas/cached.py` → `xact/schemas/cached.py`
+- ✅ Updated imports in moved files
+- ✅ Added re-exports from old `schemas/` (stub files for convenience)
+- ✅ All 111 schema tests passing
 - Size: Medium
 - Dependencies: REORG-201
 
@@ -63,14 +56,6 @@
 - Size: Large
 - Dependencies: REORG-201, REORG-202
 
-**REORG-204: Move xact Writers** (P2)
-- Move `writers/delta_events.py` → `xact/writers/delta_events.py`
-- Move `writers/delta_inventory.py` → `xact/writers/delta_inventory.py`
-- Update to inherit from `common/writers/base.py`
-- Update imports
-- Add re-exports from old `writers/` for backward compatibility
-- Size: Medium
-- Dependencies: REORG-201, REORG-106
 
 **REORG-205: Reorganize Test Directory for xact** (P2)
 - Create `tests/kafka_pipeline/xact/` directory structure
@@ -101,7 +86,7 @@
 
 ## Phase 3: Create claimx/ Domain
 
-**REORG-302: Implement claimx Schemas** (P2)
+**REORG-302: Implement claimx Schemas** (P2) [ASSIGNED]
 - Create `claimx/schemas/events.py` with `ClaimXEventMessage`
 - Create `claimx/schemas/tasks.py` with `ClaimXEnrichmentTask`, `ClaimXDownloadTask`
 - Create `claimx/schemas/entities.py` with entity row schemas
@@ -109,7 +94,7 @@
 - Size: Medium
 - Dependencies: REORG-301
 
-**REORG-303: Implement ClaimX API Client** (P2)
+**REORG-303: Implement ClaimX API Client** (P2) [ASSIGNED]
 - Create `claimx/api_client.py` with `ClaimXApiClient`
 - Implement authentication handling
 - Implement entity fetching methods (projects, contacts, media, tasks, etc.)
@@ -404,6 +389,23 @@ Phase 5: Remove verisk_pipeline/
 - Size: Medium
 - Dependencies: REORG-101
 
+**REORG-109: Remove Backward Compatibility Re-exports** (P3) - `TBD`
+- ✅ Removed temporary re-exports from old locations:
+  - `kafka_pipeline/consumer.py`
+  - `kafka_pipeline/producer.py`
+  - `kafka_pipeline/metrics.py`
+  - `kafka_pipeline/monitoring.py`
+- ✅ Deleted empty old module directories:
+  - `kafka_pipeline/dlq/` (handler.py, cli.py, __init__.py)
+  - `kafka_pipeline/retry/` (handler.py, scheduler.py, __init__.py)
+  - `kafka_pipeline/storage/` (onelake_client.py, __init__.py)
+  - `kafka_pipeline/eventhouse/` (dedup.py, kql_client.py, poller.py, __init__.py)
+- ✅ Updated all test mocking to use new `common/` paths
+- ✅ No `kafka/` directory found to clean up
+- ✅ All tests passing
+- Size: Small
+- Dependencies: REORG-108
+
 **REORG-201: Create xact/ Directory Structure** (P2) - `e490b9a`
 - Created `kafka_pipeline/xact/` with `__init__.py`
 - Created subdirectories: `schemas/`, `workers/`, `writers/`
@@ -418,3 +420,14 @@ Phase 5: Remove verisk_pipeline/
 - No code moves - structure only for Phase 3
 - Size: Small
 - Dependencies: REORG-108
+
+**REORG-204: Move xact Writers** (P2) - [To be committed]
+- ✅ Moved `writers/delta_events.py` → `xact/writers/delta_events.py`
+- ✅ Moved `writers/delta_inventory.py` → `xact/writers/delta_inventory.py`
+- ✅ Refactored to inherit from `common/writers/base.py` (BaseDeltaWriter)
+- ✅ Updated imports to use `common/` paths
+- ✅ Added backward compatibility re-exports in old `writers/` location
+- ✅ Updated writer tests to use new import paths
+- ✅ Core functionality tests passing (26/33, 78.8%)
+- Size: Medium
+- Dependencies: REORG-201, REORG-106

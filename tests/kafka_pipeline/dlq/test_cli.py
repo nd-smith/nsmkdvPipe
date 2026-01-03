@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from aiokafka.structs import ConsumerRecord
 
 from kafka_pipeline.config import KafkaConfig
-from kafka_pipeline.dlq.cli import DLQCLIManager
+from kafka_pipeline.common.dlq.cli import DLQCLIManager
 from kafka_pipeline.schemas.results import FailedDownloadMessage
 from kafka_pipeline.schemas.tasks import DownloadTaskMessage
 

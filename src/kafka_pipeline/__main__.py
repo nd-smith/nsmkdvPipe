@@ -186,9 +186,9 @@ async def run_eventhouse_poller(pipeline_config):
     Supports graceful shutdown: when shutdown event is set, the poller
     finishes its current poll cycle before exiting.
     """
-    from kafka_pipeline.eventhouse.dedup import DedupConfig
-    from kafka_pipeline.eventhouse.kql_client import EventhouseConfig
-    from kafka_pipeline.eventhouse.poller import KQLEventPoller, PollerConfig
+    from kafka_pipeline.common.eventhouse.dedup import DedupConfig
+    from kafka_pipeline.common.eventhouse.kql_client import EventhouseConfig
+    from kafka_pipeline.common.eventhouse.poller import KQLEventPoller, PollerConfig
 
     set_log_context(stage="eventhouse-poller")
     logger.info("Starting Eventhouse Poller...")

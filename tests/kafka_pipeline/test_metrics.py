@@ -11,7 +11,7 @@ Validates:
 import pytest
 from prometheus_client import REGISTRY
 
-from kafka_pipeline.metrics import (
+from kafka_pipeline.common.metrics import (
     # Metrics
     messages_produced_total,
     messages_produced_bytes,

@@ -9,7 +9,7 @@ from aiokafka.structs import ConsumerRecord, TopicPartition
 
 from core.resilience.circuit_breaker import CircuitBreaker, CircuitOpenError
 from kafka_pipeline.config import KafkaConfig
-from kafka_pipeline.consumer import BaseKafkaConsumer
+from kafka_pipeline.common.consumer import BaseKafkaConsumer
 
 
 @pytest.fixture
@@ -106,7 +106,7 @@ class TestBaseKafkaConsumerInit:
         self, kafka_config, mock_message_handler
     ):
         """Consumer creates default circuit breaker if not provided."""
-        with patch("kafka_pipeline.consumer.get_circuit_breaker") as mock_get_breaker:
+        with patch("kafka_pipeline.common.consumer.get_circuit_breaker") as mock_get_breaker:
             mock_breaker = MagicMock(spec=CircuitBreaker)
             mock_get_breaker.return_value = mock_breaker
 
@@ -159,9 +159,9 @@ class TestBaseKafkaConsumerStartStop:
     ):
         """Consumer start creates and starts aiokafka consumer."""
         with patch(
-            "kafka_pipeline.consumer.AIOKafkaConsumer", return_value=mock_aiokafka_consumer
+            "kafka_pipeline.common.consumer.AIOKafkaConsumer", return_value=mock_aiokafka_consumer
         ):
-            with patch("kafka_pipeline.consumer.create_kafka_oauth_callback") as mock_oauth:
+            with patch("kafka_pipeline.common.consumer.create_kafka_oauth_callback") as mock_oauth:
                 mock_oauth_callback = Mock()
                 mock_oauth.return_value = mock_oauth_callback
 

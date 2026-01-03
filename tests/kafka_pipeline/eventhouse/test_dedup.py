@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import polars as pl
 import pytest
 
-from kafka_pipeline.eventhouse.dedup import (
+from kafka_pipeline.common.eventhouse.dedup import (
     DedupConfig,
     EventhouseDeduplicator,
     get_recent_trace_ids_sync,

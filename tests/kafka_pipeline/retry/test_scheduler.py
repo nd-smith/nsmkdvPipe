@@ -13,8 +13,8 @@ import pytest
 from aiokafka.structs import ConsumerRecord, TopicPartition
 
 from kafka_pipeline.config import KafkaConfig
-from kafka_pipeline.producer import BaseKafkaProducer
-from kafka_pipeline.retry.scheduler import DelayedRedeliveryScheduler
+from kafka_pipeline.common.producer import BaseKafkaProducer
+from kafka_pipeline.common.retry.scheduler import DelayedRedeliveryScheduler
 from kafka_pipeline.schemas.tasks import DownloadTaskMessage
 
 

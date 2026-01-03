@@ -31,8 +31,8 @@ def sample_raw_event():
 @pytest.fixture
 def delta_writer():
     """Create a DeltaEventsWriter with mocked Delta backend."""
-    with patch("kafka_pipeline.writers.delta_events.DeltaTableWriter"):
-        from kafka_pipeline.writers.delta_events import DeltaEventsWriter
+    with patch("kafka_pipeline.common.writers.base.DeltaTableWriter"):
+        from kafka_pipeline.xact.writers.delta_events import DeltaEventsWriter
 
         writer = DeltaEventsWriter(
             table_path="abfss://test@onelake/lakehouse/xact_events",
@@ -63,7 +63,7 @@ class TestDeltaEventsWriter:
         )
 
         with patch(
-            "kafka_pipeline.writers.delta_events.flatten_events", return_value=mock_df
+            "kafka_pipeline.xact.writers.delta_events.flatten_events", return_value=mock_df
         ):
             result = await delta_writer.write_raw_events([sample_raw_event])
 
@@ -97,7 +97,7 @@ class TestDeltaEventsWriter:
         )
 
         with patch(
-            "kafka_pipeline.writers.delta_events.flatten_events", return_value=mock_df
+            "kafka_pipeline.xact.writers.delta_events.flatten_events", return_value=mock_df
         ):
             result = await delta_writer.write_raw_events(events)
 
@@ -129,7 +129,7 @@ class TestDeltaEventsWriter:
         )
 
         with patch(
-            "kafka_pipeline.writers.delta_events.flatten_events", return_value=mock_df
+            "kafka_pipeline.xact.writers.delta_events.flatten_events", return_value=mock_df
         ):
             # Mock append to raise an exception
             delta_writer._delta_writer.append = MagicMock(
@@ -158,10 +158,10 @@ class TestDeltaEventsWriter:
             return func(*args, **kwargs)
 
         with patch(
-            "kafka_pipeline.writers.delta_events.flatten_events", return_value=mock_df
+            "kafka_pipeline.xact.writers.delta_events.flatten_events", return_value=mock_df
         ):
             with patch(
-                "kafka_pipeline.writers.delta_events.asyncio.to_thread",
+                "kafka_pipeline.common.writers.base.asyncio.to_thread",
                 side_effect=mock_to_thread_impl,
             ) as mock_to_thread:
                 result = await delta_writer.write_raw_events([sample_raw_event])
@@ -184,7 +184,7 @@ class TestDeltaEventsWriter:
         before = datetime.now(timezone.utc)
 
         with patch(
-            "kafka_pipeline.writers.delta_events.flatten_events", return_value=mock_df
+            "kafka_pipeline.xact.writers.delta_events.flatten_events", return_value=mock_df
         ):
             await delta_writer.write_raw_events([sample_raw_event])
 
@@ -203,14 +203,14 @@ class TestDeltaEventsWriter:
 async def test_delta_writer_integration():
     """Integration test with DeltaTableWriter mocked."""
     with patch(
-        "kafka_pipeline.writers.delta_events.DeltaTableWriter"
+        "kafka_pipeline.common.writers.base.DeltaTableWriter"
     ) as mock_delta_writer_class:
         # Setup mock
         mock_writer_instance = MagicMock()
         mock_writer_instance.append = MagicMock(return_value=1)
         mock_delta_writer_class.return_value = mock_writer_instance
 
-        from kafka_pipeline.writers.delta_events import DeltaEventsWriter
+        from kafka_pipeline.xact.writers.delta_events import DeltaEventsWriter
 
         # Create writer
         writer = DeltaEventsWriter(
@@ -224,6 +224,8 @@ async def test_delta_writer_integration():
             dedupe_column="trace_id",
             dedupe_window_hours=24,
             timestamp_column="ingested_at",
+            partition_column="event_date",
+            z_order_columns=[],
         )
 
         # Write a raw event
@@ -244,7 +246,7 @@ async def test_delta_writer_integration():
         )
 
         with patch(
-            "kafka_pipeline.writers.delta_events.flatten_events", return_value=mock_df
+            "kafka_pipeline.xact.writers.delta_events.flatten_events", return_value=mock_df
         ):
             result = await writer.write_raw_events([raw_event])
 

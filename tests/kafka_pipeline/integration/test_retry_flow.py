@@ -16,9 +16,9 @@ import pytest
 
 from core.types import ErrorCategory
 from kafka_pipeline.config import KafkaConfig
-from kafka_pipeline.consumer import BaseKafkaConsumer
-from kafka_pipeline.producer import BaseKafkaProducer
-from kafka_pipeline.retry.handler import RetryHandler
+from kafka_pipeline.common.consumer import BaseKafkaConsumer
+from kafka_pipeline.common.producer import BaseKafkaProducer
+from kafka_pipeline.common.retry.handler import RetryHandler
 from kafka_pipeline.schemas.results import FailedDownloadMessage
 from kafka_pipeline.schemas.tasks import DownloadTaskMessage
 

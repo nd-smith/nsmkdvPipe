@@ -7,9 +7,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from kafka_pipeline.config import KafkaConfig
-from kafka_pipeline.eventhouse.dedup import DedupConfig
-from kafka_pipeline.eventhouse.kql_client import EventhouseConfig, KQLQueryResult
-from kafka_pipeline.eventhouse.poller import KQLEventPoller, PollerConfig
+from kafka_pipeline.common.eventhouse.dedup import DedupConfig
+from kafka_pipeline.common.eventhouse.kql_client import EventhouseConfig, KQLQueryResult
+from kafka_pipeline.common.eventhouse.poller import KQLEventPoller, PollerConfig
 from kafka_pipeline.schemas.events import EventMessage
 
 
@@ -263,13 +263,13 @@ class TestKQLEventPoller:
         """Test starting and stopping the poller."""
         with (
             patch(
-                "kafka_pipeline.eventhouse.poller.KQLClient"
+                "kafka_pipeline.common.eventhouse.poller.KQLClient"
             ) as mock_kql_class,
             patch(
-                "kafka_pipeline.eventhouse.poller.BaseKafkaProducer"
+                "kafka_pipeline.common.eventhouse.poller.BaseKafkaProducer"
             ) as mock_producer_class,
             patch(
-                "kafka_pipeline.eventhouse.poller.EventhouseDeduplicator"
+                "kafka_pipeline.common.eventhouse.poller.EventhouseDeduplicator"
             ),
         ):
             mock_kql = AsyncMock()
@@ -297,13 +297,13 @@ class TestKQLEventPoller:
         """Test async context manager."""
         with (
             patch(
-                "kafka_pipeline.eventhouse.poller.KQLClient"
+                "kafka_pipeline.common.eventhouse.poller.KQLClient"
             ) as mock_kql_class,
             patch(
-                "kafka_pipeline.eventhouse.poller.BaseKafkaProducer"
+                "kafka_pipeline.common.eventhouse.poller.BaseKafkaProducer"
             ) as mock_producer_class,
             patch(
-                "kafka_pipeline.eventhouse.poller.EventhouseDeduplicator"
+                "kafka_pipeline.common.eventhouse.poller.EventhouseDeduplicator"
             ),
         ):
             mock_kql = AsyncMock()
@@ -322,13 +322,13 @@ class TestKQLEventPoller:
         """Test a single poll cycle."""
         with (
             patch(
-                "kafka_pipeline.eventhouse.poller.KQLClient"
+                "kafka_pipeline.common.eventhouse.poller.KQLClient"
             ) as mock_kql_class,
             patch(
-                "kafka_pipeline.eventhouse.poller.BaseKafkaProducer"
+                "kafka_pipeline.common.eventhouse.poller.BaseKafkaProducer"
             ) as mock_producer_class,
             patch(
-                "kafka_pipeline.eventhouse.poller.EventhouseDeduplicator"
+                "kafka_pipeline.common.eventhouse.poller.EventhouseDeduplicator"
             ) as mock_dedup_class,
         ):
             # Setup mock KQL client
@@ -374,13 +374,13 @@ class TestKQLEventPoller:
         """Test tracking of consecutive empty polls."""
         with (
             patch(
-                "kafka_pipeline.eventhouse.poller.KQLClient"
+                "kafka_pipeline.common.eventhouse.poller.KQLClient"
             ) as mock_kql_class,
             patch(
-                "kafka_pipeline.eventhouse.poller.BaseKafkaProducer"
+                "kafka_pipeline.common.eventhouse.poller.BaseKafkaProducer"
             ) as mock_producer_class,
             patch(
-                "kafka_pipeline.eventhouse.poller.EventhouseDeduplicator"
+                "kafka_pipeline.common.eventhouse.poller.EventhouseDeduplicator"
             ) as mock_dedup_class,
         ):
             # Setup mock KQL client

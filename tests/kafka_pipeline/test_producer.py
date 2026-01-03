@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from core.resilience.circuit_breaker import CircuitBreaker, CircuitOpenError
 from kafka_pipeline.config import KafkaConfig
-from kafka_pipeline.producer import BaseKafkaProducer
+from kafka_pipeline.common.producer import BaseKafkaProducer
 
 
 class SampleMessage(BaseModel):
@@ -77,7 +77,7 @@ class TestBaseKafkaProducerInit:
 
     def test_init_creates_default_circuit_breaker(self, kafka_config):
         """Producer creates default circuit breaker if not provided."""
-        with patch("kafka_pipeline.producer.get_circuit_breaker") as mock_get_breaker:
+        with patch("kafka_pipeline.common.producer.get_circuit_breaker") as mock_get_breaker:
             mock_breaker = MagicMock(spec=CircuitBreaker)
             mock_get_breaker.return_value = mock_breaker
 
@@ -93,8 +93,8 @@ class TestBaseKafkaProducerStartStop:
     @pytest.mark.asyncio
     async def test_start_success(self, producer, mock_aiokafka_producer):
         """Producer starts successfully with OAuth authentication."""
-        with patch("kafka_pipeline.producer.AIOKafkaProducer", return_value=mock_aiokafka_producer):
-            with patch("kafka_pipeline.producer.create_kafka_oauth_callback") as mock_oauth:
+        with patch("kafka_pipeline.common.producer.AIOKafkaProducer", return_value=mock_aiokafka_producer):
+            with patch("kafka_pipeline.common.producer.create_kafka_oauth_callback") as mock_oauth:
                 mock_oauth_callback = Mock()
                 mock_oauth.return_value = mock_oauth_callback
 
@@ -112,8 +112,8 @@ class TestBaseKafkaProducerStartStop:
     @pytest.mark.asyncio
     async def test_start_idempotent(self, producer, mock_aiokafka_producer):
         """Starting producer multiple times is safe."""
-        with patch("kafka_pipeline.producer.AIOKafkaProducer", return_value=mock_aiokafka_producer):
-            with patch("kafka_pipeline.producer.create_kafka_oauth_callback"):
+        with patch("kafka_pipeline.common.producer.AIOKafkaProducer", return_value=mock_aiokafka_producer):
+            with patch("kafka_pipeline.common.producer.create_kafka_oauth_callback"):
                 await producer.start()
                 await producer.start()  # Second call
 
@@ -123,8 +123,8 @@ class TestBaseKafkaProducerStartStop:
     @pytest.mark.asyncio
     async def test_stop_success(self, producer, mock_aiokafka_producer):
         """Producer stops successfully and flushes messages."""
-        with patch("kafka_pipeline.producer.AIOKafkaProducer", return_value=mock_aiokafka_producer):
-            with patch("kafka_pipeline.producer.create_kafka_oauth_callback"):
+        with patch("kafka_pipeline.common.producer.AIOKafkaProducer", return_value=mock_aiokafka_producer):
+            with patch("kafka_pipeline.common.producer.create_kafka_oauth_callback"):
                 await producer.start()
                 await producer.stop()
 
@@ -142,14 +142,14 @@ class TestBaseKafkaProducerStartStop:
         await producer.stop()  # Should not raise
 
         # Start and stop twice
-        with patch("kafka_pipeline.producer.AIOKafkaProducer") as mock_producer_class:
+        with patch("kafka_pipeline.common.producer.AIOKafkaProducer") as mock_producer_class:
             mock_aiokafka = MagicMock()
             mock_aiokafka.start = AsyncMock()
             mock_aiokafka.stop = AsyncMock()
             mock_aiokafka.flush = AsyncMock()
             mock_producer_class.return_value = mock_aiokafka
 
-            with patch("kafka_pipeline.producer.create_kafka_oauth_callback"):
+            with patch("kafka_pipeline.common.producer.create_kafka_oauth_callback"):
                 await producer.start()
                 await producer.stop()
                 await producer.stop()  # Second stop
@@ -164,8 +164,8 @@ class TestBaseKafkaProducerSend:
     @pytest.mark.asyncio
     async def test_send_success(self, producer, mock_aiokafka_producer, mock_circuit_breaker):
         """Send message successfully returns metadata."""
-        with patch("kafka_pipeline.producer.AIOKafkaProducer", return_value=mock_aiokafka_producer):
-            with patch("kafka_pipeline.producer.create_kafka_oauth_callback"):
+        with patch("kafka_pipeline.common.producer.AIOKafkaProducer", return_value=mock_aiokafka_producer):
+            with patch("kafka_pipeline.common.producer.create_kafka_oauth_callback"):
                 await producer.start()
 
                 # Setup mock metadata
@@ -206,8 +206,8 @@ class TestBaseKafkaProducerSend:
     @pytest.mark.asyncio
     async def test_send_without_headers(self, producer, mock_aiokafka_producer):
         """Send message without headers."""
-        with patch("kafka_pipeline.producer.AIOKafkaProducer", return_value=mock_aiokafka_producer):
-            with patch("kafka_pipeline.producer.create_kafka_oauth_callback"):
+        with patch("kafka_pipeline.common.producer.AIOKafkaProducer", return_value=mock_aiokafka_producer):
+            with patch("kafka_pipeline.common.producer.create_kafka_oauth_callback"):
                 await producer.start()
 
                 metadata = RecordMetadata(
@@ -239,8 +239,8 @@ class TestBaseKafkaProducerSend:
     @pytest.mark.asyncio
     async def test_send_circuit_open(self, producer, mock_aiokafka_producer, mock_circuit_breaker):
         """Send raises CircuitOpenError when circuit is open."""
-        with patch("kafka_pipeline.producer.AIOKafkaProducer", return_value=mock_aiokafka_producer):
-            with patch("kafka_pipeline.producer.create_kafka_oauth_callback"):
+        with patch("kafka_pipeline.common.producer.AIOKafkaProducer", return_value=mock_aiokafka_producer):
+            with patch("kafka_pipeline.common.producer.create_kafka_oauth_callback"):
                 await producer.start()
 
                 # Circuit breaker open
@@ -258,8 +258,8 @@ class TestBaseKafkaProducerSendBatch:
     @pytest.mark.asyncio
     async def test_send_batch_success(self, producer, mock_aiokafka_producer):
         """Send batch of messages successfully."""
-        with patch("kafka_pipeline.producer.AIOKafkaProducer", return_value=mock_aiokafka_producer):
-            with patch("kafka_pipeline.producer.create_kafka_oauth_callback"):
+        with patch("kafka_pipeline.common.producer.AIOKafkaProducer", return_value=mock_aiokafka_producer):
+            with patch("kafka_pipeline.common.producer.create_kafka_oauth_callback"):
                 await producer.start()
 
                 # Setup mock metadata
@@ -308,8 +308,8 @@ class TestBaseKafkaProducerSendBatch:
     @pytest.mark.asyncio
     async def test_send_batch_empty(self, producer, mock_aiokafka_producer):
         """Send empty batch returns empty list."""
-        with patch("kafka_pipeline.producer.AIOKafkaProducer", return_value=mock_aiokafka_producer):
-            with patch("kafka_pipeline.producer.create_kafka_oauth_callback"):
+        with patch("kafka_pipeline.common.producer.AIOKafkaProducer", return_value=mock_aiokafka_producer):
+            with patch("kafka_pipeline.common.producer.create_kafka_oauth_callback"):
                 await producer.start()
 
                 results = await producer.send_batch(topic="test-topic", messages=[])
@@ -332,8 +332,8 @@ class TestBaseKafkaProducerUtilities:
     @pytest.mark.asyncio
     async def test_flush(self, producer, mock_aiokafka_producer):
         """Flush calls underlying producer flush."""
-        with patch("kafka_pipeline.producer.AIOKafkaProducer", return_value=mock_aiokafka_producer):
-            with patch("kafka_pipeline.producer.create_kafka_oauth_callback"):
+        with patch("kafka_pipeline.common.producer.AIOKafkaProducer", return_value=mock_aiokafka_producer):
+            with patch("kafka_pipeline.common.producer.create_kafka_oauth_callback"):
                 await producer.start()
                 await producer.flush()
 
@@ -349,8 +349,8 @@ class TestBaseKafkaProducerUtilities:
         """is_started property reflects producer state."""
         assert not producer.is_started
 
-        with patch("kafka_pipeline.producer.AIOKafkaProducer", return_value=mock_aiokafka_producer):
-            with patch("kafka_pipeline.producer.create_kafka_oauth_callback"):
+        with patch("kafka_pipeline.common.producer.AIOKafkaProducer", return_value=mock_aiokafka_producer):
+            with patch("kafka_pipeline.common.producer.create_kafka_oauth_callback"):
                 import asyncio
 
                 loop = asyncio.new_event_loop()

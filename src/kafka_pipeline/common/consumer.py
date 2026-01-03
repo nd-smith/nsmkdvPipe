@@ -503,4 +503,9 @@ class BaseKafkaConsumer:
 
 __all__ = [
     "BaseKafkaConsumer",
+    "AIOKafkaConsumer",
+    "get_circuit_breaker",
+    "CircuitBreaker",
+    "ConsumerRecord",
+    "create_kafka_oauth_callback",
 ]

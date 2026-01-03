@@ -28,8 +28,8 @@ from aiokafka.structs import ConsumerRecord
 from core.download.models import DownloadOutcome
 from core.types import ErrorCategory
 from kafka_pipeline.config import KafkaConfig
-from kafka_pipeline.consumer import BaseKafkaConsumer
-from kafka_pipeline.producer import BaseKafkaProducer
+from kafka_pipeline.common.consumer import BaseKafkaConsumer
+from kafka_pipeline.common.producer import BaseKafkaProducer
 from kafka_pipeline.schemas.results import DownloadResultMessage, FailedDownloadMessage
 from kafka_pipeline.schemas.tasks import DownloadTaskMessage
 from kafka_pipeline.workers.download_worker import DownloadWorker

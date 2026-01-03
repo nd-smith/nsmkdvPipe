@@ -15,8 +15,8 @@ from datetime import datetime, timezone
 import pytest
 
 from kafka_pipeline.config import KafkaConfig
-from kafka_pipeline.consumer import BaseKafkaConsumer
-from kafka_pipeline.producer import BaseKafkaProducer
+from kafka_pipeline.common.consumer import BaseKafkaConsumer
+from kafka_pipeline.common.producer import BaseKafkaProducer
 from kafka_pipeline.schemas.tasks import DownloadTaskMessage
 
 

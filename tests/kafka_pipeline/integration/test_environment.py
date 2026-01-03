@@ -14,7 +14,7 @@ import asyncio
 import pytest
 
 from kafka_pipeline.config import KafkaConfig
-from kafka_pipeline.producer import BaseKafkaProducer
+from kafka_pipeline.common.producer import BaseKafkaProducer
 
 # Mock classes imported from conftest
 from .conftest import (

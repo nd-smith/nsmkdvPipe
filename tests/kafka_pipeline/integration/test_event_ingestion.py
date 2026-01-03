@@ -21,8 +21,8 @@ import pytest
 from aiokafka.structs import ConsumerRecord
 
 from kafka_pipeline.config import KafkaConfig
-from kafka_pipeline.consumer import BaseKafkaConsumer
-from kafka_pipeline.producer import BaseKafkaProducer
+from kafka_pipeline.common.consumer import BaseKafkaConsumer
+from kafka_pipeline.common.producer import BaseKafkaProducer
 from kafka_pipeline.schemas.events import EventMessage
 from kafka_pipeline.schemas.tasks import DownloadTaskMessage
 from kafka_pipeline.workers.event_ingester import EventIngesterWorker
