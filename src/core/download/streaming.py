@@ -7,6 +7,7 @@ reusable across pipeline components.
 """
 
 import asyncio
+import errno
 from dataclasses import dataclass
 from pathlib import Path
 from typing import AsyncIterator, Optional
@@ -253,11 +254,19 @@ async def download_to_file(
         ), None
 
     except OSError as e:
-        # Disk full, permissions, etc.
+        # ENOENT (file/directory not found) is often transient:
+        # - Race condition with temp directory cleanup
+        # - Windows directory creation timing issues
+        # Other OSErrors (disk full, permissions) are permanent
+        error_category = (
+            ErrorCategory.TRANSIENT
+            if e.errno == errno.ENOENT
+            else ErrorCategory.PERMANENT
+        )
         return None, StreamDownloadError(
             status_code=None,
             error_message=f"File write error: {str(e)}",
-            error_category=ErrorCategory.PERMANENT,
+            error_category=error_category,
         )
 
 
