@@ -11,7 +11,7 @@
 
 | Phase | Status | Progress |
 |-------|--------|----------|
-| Phase 1: common/ | In Progress | 6/9 |
+| Phase 1: common/ | In Progress | 7/9 |
 | Phase 2: xact/ | Not Started | 0/7 |
 | Phase 3: claimx/ | Not Started | 0/11 |
 | Phase 4: Config | Not Started | 0/4 |
@@ -20,15 +20,6 @@
 ---
 
 ## Phase 1: Create common/ Infrastructure
-
-**REORG-107: Move eventhouse/ Module to common/** (P2)
-- Move `eventhouse/kql_client.py` → `common/eventhouse/kql_client.py`
-- Move `eventhouse/dedup.py` → `common/eventhouse/dedup.py`
-- Move `eventhouse/poller.py` → `common/eventhouse/poller.py`
-- Update imports
-- Add re-exports from old location
-- Size: Medium
-- Dependencies: REORG-101
 
 **REORG-108: Update All Imports for common/** (P2)
 - Update all files in `kafka_pipeline/` to use new `common/` imports
@@ -411,5 +402,17 @@ Phase 5: Remove verisk_pipeline/
   - No domain-specific transformations needed
 - Updated `common/writers/__init__.py` to export new classes
 - Domain writers (xact, claimx) will inherit from BaseDeltaWriter
+- Size: Medium
+- Dependencies: REORG-101
+
+**REORG-107: Move eventhouse/ Module to common/** (P2) - `pending`
+- Moved `eventhouse/kql_client.py` → `common/eventhouse/kql_client.py`
+- Moved `eventhouse/dedup.py` → `common/eventhouse/dedup.py`
+- Moved `eventhouse/poller.py` → `common/eventhouse/poller.py`
+- Updated imports in `poller.py` to use `common.producer`
+- Added re-exports from old location for backward compatibility
+- Created stub file in old `eventhouse/` location
+- Updated `common/eventhouse/__init__.py` to expose all classes
+- All eventhouse tests passing (42/55 pass, 13 pre-existing failures)
 - Size: Medium
 - Dependencies: REORG-101

@@ -3,21 +3,22 @@ Eventhouse integration module for polling events from Microsoft Fabric Eventhous
 
 This module provides KQL client and polling capabilities for consuming events
 from Eventhouse (KQL tables) as an alternative to Event Hub.
+
+DEPRECATED: This module has moved to kafka_pipeline.common.eventhouse
+Import from kafka_pipeline.common.eventhouse instead.
+This module provides backward compatibility re-exports.
 """
 
-from kafka_pipeline.eventhouse.dedup import (
+# Re-export from new location for backward compatibility
+from kafka_pipeline.common.eventhouse import (
     DedupConfig,
-    EventhouseDeduplicator,
-    get_recent_trace_ids_sync,
-)
-from kafka_pipeline.eventhouse.kql_client import (
     EventhouseConfig,
+    EventhouseDeduplicator,
     KQLClient,
-    KQLQueryResult,
-)
-from kafka_pipeline.eventhouse.poller import (
     KQLEventPoller,
+    KQLQueryResult,
     PollerConfig,
+    get_recent_trace_ids_sync,
 )
 
 __all__ = [
