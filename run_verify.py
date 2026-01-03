@@ -10,7 +10,12 @@ import os
 import sys
 
 # Add src to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(SCRIPT_DIR, "src"))
+
+# Set token file path for auth
+if not os.getenv("AZURE_TOKEN_FILE"):
+    os.environ["AZURE_TOKEN_FILE"] = os.path.join(SCRIPT_DIR, "src", "tokens.json")
 
 from datetime import datetime, timedelta, timezone
 import polars as pl
