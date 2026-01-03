@@ -73,6 +73,10 @@ class KafkaConfig:
     downloads_results_topic: str = "xact.downloads.results"
     dlq_topic: str = "xact.downloads.dlq"
 
+    # Domain-specific topic prefixes
+    xact_topic_prefix: str = "xact"
+    claimx_topic_prefix: str = "claimx"
+
     # Consumer group prefix
     consumer_group_prefix: str = "xact"
 
@@ -96,6 +100,14 @@ class KafkaConfig:
     # Default is computed at runtime via _get_default_cache_dir() for cross-platform support
     cache_dir: str = field(default_factory=_get_default_cache_dir)
 
+    # ClaimX API settings
+    claimx_api_url: str = ""  # Base URL for ClaimX API
+    claimx_api_username: str = ""  # Basic auth username
+    claimx_api_password: str = ""  # Basic auth password
+    claimx_api_timeout_seconds: int = 30  # Request timeout in seconds
+    claimx_api_max_retries: int = 3  # Max retries for API calls
+    claimx_api_concurrency: int = 10  # Max concurrent API requests
+
     @classmethod
     def from_env(cls) -> "KafkaConfig":
         """Load configuration from environment variables only.
@@ -114,6 +126,8 @@ class KafkaConfig:
             KAFKA_DOWNLOADS_CACHED_TOPIC: xact.downloads.cached (default)
             KAFKA_DOWNLOADS_RESULTS_TOPIC: xact.downloads.results (default)
             KAFKA_DLQ_TOPIC: xact.downloads.dlq (default)
+            KAFKA_XACT_TOPIC_PREFIX: xact (default)
+            KAFKA_CLAIMX_TOPIC_PREFIX: claimx (default)
             KAFKA_CONSUMER_GROUP_PREFIX: xact (default)
             KAFKA_MAX_POLL_RECORDS: 100 (default)
             KAFKA_SESSION_TIMEOUT_MS: 30000 (default)
@@ -127,6 +141,12 @@ class KafkaConfig:
             UPLOAD_CONCURRENCY: 10 (default, max concurrent uploads, range 1-50)
             UPLOAD_BATCH_SIZE: 20 (default, messages to fetch per batch)
             CACHE_DIR: /tmp/kafka_pipeline_cache (default, local cache for downloads)
+            CLAIMX_API_URL: ClaimX API base URL
+            CLAIMX_API_USERNAME: ClaimX API username for Basic auth
+            CLAIMX_API_PASSWORD: ClaimX API password for Basic auth
+            CLAIMX_API_TIMEOUT_SECONDS: 30 (default, API request timeout in seconds)
+            CLAIMX_API_MAX_RETRIES: 3 (default, max retries for API calls)
+            CLAIMX_API_CONCURRENCY: 10 (default, max concurrent API requests)
 
         Raises:
             ValueError: If required environment variables are missing
@@ -168,6 +188,9 @@ class KafkaConfig:
                 "KAFKA_DOWNLOADS_RESULTS_TOPIC", "xact.downloads.results"
             ),
             dlq_topic=os.getenv("KAFKA_DLQ_TOPIC", "xact.downloads.dlq"),
+            # Domain topic prefixes
+            xact_topic_prefix=os.getenv("KAFKA_XACT_TOPIC_PREFIX", "xact"),
+            claimx_topic_prefix=os.getenv("KAFKA_CLAIMX_TOPIC_PREFIX", "claimx"),
             # Consumer group
             consumer_group_prefix=os.getenv("KAFKA_CONSUMER_GROUP_PREFIX", "xact"),
             # Retry configuration
@@ -190,6 +213,13 @@ class KafkaConfig:
                 max(1, int(os.getenv("UPLOAD_CONCURRENCY", "10"))),  # Min 1
             ),
             upload_batch_size=max(1, int(os.getenv("UPLOAD_BATCH_SIZE", "20"))),
+            # ClaimX API settings
+            claimx_api_url=os.getenv("CLAIMX_API_URL", ""),
+            claimx_api_username=os.getenv("CLAIMX_API_USERNAME", ""),
+            claimx_api_password=os.getenv("CLAIMX_API_PASSWORD", ""),
+            claimx_api_timeout_seconds=int(os.getenv("CLAIMX_API_TIMEOUT_SECONDS", "30")),
+            claimx_api_max_retries=int(os.getenv("CLAIMX_API_MAX_RETRIES", "3")),
+            claimx_api_concurrency=int(os.getenv("CLAIMX_API_CONCURRENCY", "10")),
         )
 
     def get_retry_topic(self, attempt: int) -> str:
@@ -221,6 +251,36 @@ class KafkaConfig:
             Full consumer group name (e.g., "xact-download-worker")
         """
         return f"{self.consumer_group_prefix}-{worker_type}-worker"
+
+    def get_topic(self, domain: str, topic_type: str) -> str:
+        """Get topic name for a specific domain and topic type.
+
+        Args:
+            domain: Domain name ("xact" or "claimx")
+            topic_type: Type of topic (e.g., "events.raw", "downloads.pending",
+                       "downloads.cached", "downloads.results", "downloads.dlq",
+                       "enrichment.pending")
+
+        Returns:
+            Full topic name (e.g., "xact.events.raw", "claimx.enrichment.pending")
+
+        Raises:
+            ValueError: If domain is not "xact" or "claimx"
+
+        Examples:
+            >>> config.get_topic("xact", "events.raw")
+            "xact.events.raw"
+            >>> config.get_topic("claimx", "enrichment.pending")
+            "claimx.enrichment.pending"
+        """
+        if domain == "xact":
+            prefix = self.xact_topic_prefix
+        elif domain == "claimx":
+            prefix = self.claimx_topic_prefix
+        else:
+            raise ValueError(f"Unknown domain: {domain}. Must be 'xact' or 'claimx'")
+
+        return f"{prefix}.{topic_type}"
 
 
 def _deep_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]:
@@ -255,6 +315,8 @@ def _apply_env_overrides(data: Dict[str, Any]) -> Dict[str, Any]:
         "KAFKA_DOWNLOADS_CACHED_TOPIC": "downloads_cached_topic",
         "KAFKA_DOWNLOADS_RESULTS_TOPIC": "downloads_results_topic",
         "KAFKA_DLQ_TOPIC": "dlq_topic",
+        "KAFKA_XACT_TOPIC_PREFIX": "xact_topic_prefix",
+        "KAFKA_CLAIMX_TOPIC_PREFIX": "claimx_topic_prefix",
         "KAFKA_CONSUMER_GROUP_PREFIX": "consumer_group_prefix",
         "MAX_RETRIES": ("max_retries", int),
         "ONELAKE_BASE_PATH": "onelake_base_path",
@@ -263,6 +325,12 @@ def _apply_env_overrides(data: Dict[str, Any]) -> Dict[str, Any]:
         "DOWNLOAD_BATCH_SIZE": ("download_batch_size", int),
         "UPLOAD_CONCURRENCY": ("upload_concurrency", int),
         "UPLOAD_BATCH_SIZE": ("upload_batch_size", int),
+        "CLAIMX_API_URL": "claimx_api_url",
+        "CLAIMX_API_USERNAME": "claimx_api_username",
+        "CLAIMX_API_PASSWORD": "claimx_api_password",
+        "CLAIMX_API_TIMEOUT_SECONDS": ("claimx_api_timeout_seconds", int),
+        "CLAIMX_API_MAX_RETRIES": ("claimx_api_max_retries", int),
+        "CLAIMX_API_CONCURRENCY": ("claimx_api_concurrency", int),
     }
 
     for env_var, config_key in env_mapping.items():
@@ -371,11 +439,16 @@ def load_config(
         acks=data.get("acks", "all"),
         retries=data.get("retries", 3),
         retry_backoff_ms=data.get("retry_backoff_ms", 1000),
+        request_timeout_ms=data.get("request_timeout_ms", 120000),
+        metadata_max_age_ms=data.get("metadata_max_age_ms", 300000),
+        connections_max_idle_ms=data.get("connections_max_idle_ms", 540000),
         events_topic=data.get("events_topic", "xact.events.raw"),
         downloads_pending_topic=data.get("downloads_pending_topic", "xact.downloads.pending"),
         downloads_cached_topic=data.get("downloads_cached_topic", "xact.downloads.cached"),
         downloads_results_topic=data.get("downloads_results_topic", "xact.downloads.results"),
         dlq_topic=data.get("dlq_topic", "xact.downloads.dlq"),
+        xact_topic_prefix=data.get("xact_topic_prefix", "xact"),
+        claimx_topic_prefix=data.get("claimx_topic_prefix", "claimx"),
         consumer_group_prefix=data.get("consumer_group_prefix", "xact"),
         retry_delays=data.get("retry_delays", [300, 600, 1200, 2400]),
         max_retries=data.get("max_retries", 4),
@@ -386,6 +459,12 @@ def load_config(
         upload_concurrency=data.get("upload_concurrency", 10),
         upload_batch_size=data.get("upload_batch_size", 20),
         cache_dir=data.get("cache_dir") or _get_default_cache_dir(),
+        claimx_api_url=data.get("claimx_api_url", ""),
+        claimx_api_username=data.get("claimx_api_username", ""),
+        claimx_api_password=data.get("claimx_api_password", ""),
+        claimx_api_timeout_seconds=data.get("claimx_api_timeout_seconds", 30),
+        claimx_api_max_retries=data.get("claimx_api_max_retries", 3),
+        claimx_api_concurrency=data.get("claimx_api_concurrency", 10),
     )
 
 
