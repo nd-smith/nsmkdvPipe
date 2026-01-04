@@ -258,6 +258,14 @@ class EventhouseSourceConfig:
     eventhouse_query_window_hours: int = 1
     overlap_minutes: int = 5
 
+    # Backfill configuration
+    backfill_start_stamp: Optional[str] = None
+    backfill_stop_stamp: Optional[str] = None
+    bulk_backfill: bool = False
+
+    # KQL start stamp for real-time mode
+    kql_start_stamp: Optional[str] = None
+
     @classmethod
     def load_config(cls, config_path: Optional[Path] = None) -> "EventhouseSourceConfig":
         """Load Eventhouse configuration from config.yaml and environment variables.
@@ -309,6 +317,13 @@ class EventhouseSourceConfig:
                 "Set in config.yaml under 'eventhouse:' or via EVENTHOUSE_DATABASE env var."
             )
 
+        # Parse bulk_backfill boolean
+        bulk_backfill_str = os.getenv(
+            "DEDUP_BULK_BACKFILL",
+            str(poller_data.get("bulk_backfill", False))
+        ).lower()
+        bulk_backfill = bulk_backfill_str in ("true", "1", "yes")
+
         return cls(
             cluster_url=cluster_url,
             database=database,
@@ -344,6 +359,21 @@ class EventhouseSourceConfig:
                 "DEDUP_OVERLAP_MINUTES",
                 str(dedup_data.get("overlap_minutes", 5))
             )),
+            # Backfill configuration
+            backfill_start_stamp=os.getenv(
+                "DEDUP_BACKFILL_START_TIMESTAMP",
+                poller_data.get("backfill_start_stamp")
+            ),
+            backfill_stop_stamp=os.getenv(
+                "DEDUP_BACKFILL_STOP_TIMESTAMP",
+                poller_data.get("backfill_stop_stamp")
+            ),
+            bulk_backfill=bulk_backfill,
+            # KQL start stamp for real-time mode
+            kql_start_stamp=os.getenv(
+                "DEDUP_KQL_START_TIMESTAMP",
+                dedup_data.get("kql_start_stamp")
+            ),
         )
 
 

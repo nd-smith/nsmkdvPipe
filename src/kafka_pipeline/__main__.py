@@ -233,6 +233,7 @@ async def run_eventhouse_poller(pipeline_config):
         xact_events_window_hours=eventhouse_source.xact_events_window_hours,
         eventhouse_query_window_hours=eventhouse_source.eventhouse_query_window_hours,
         overlap_minutes=eventhouse_source.overlap_minutes,
+        kql_start_stamp=eventhouse_source.kql_start_stamp,
     )
 
     # Build poller config
@@ -244,6 +245,9 @@ async def run_eventhouse_poller(pipeline_config):
         batch_size=eventhouse_source.batch_size,
         source_table=eventhouse_source.source_table,
         events_table_path=eventhouse_source.xact_events_table_path,
+        backfill_start_stamp=eventhouse_source.backfill_start_stamp,
+        backfill_stop_stamp=eventhouse_source.backfill_stop_stamp,
+        bulk_backfill=eventhouse_source.bulk_backfill,
     )
 
     shutdown_event = get_shutdown_event()
