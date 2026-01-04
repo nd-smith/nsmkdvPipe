@@ -108,6 +108,10 @@ class KafkaConfig:
     claimx_api_max_retries: int = 3  # Max retries for API calls
     claimx_api_concurrency: int = 10  # Max concurrent API requests
 
+    # Delta events writer settings
+    delta_events_batch_size: int = 1000  # Events per batch before writing to Delta
+    delta_events_max_batches: Optional[int] = None  # Optional limit for testing (None = unlimited)
+
     @classmethod
     def from_env(cls) -> "KafkaConfig":
         """Load configuration from environment variables only.
@@ -331,6 +335,7 @@ def _apply_env_overrides(data: Dict[str, Any]) -> Dict[str, Any]:
         "CLAIMX_API_TIMEOUT_SECONDS": ("claimx_api_timeout_seconds", int),
         "CLAIMX_API_MAX_RETRIES": ("claimx_api_max_retries", int),
         "CLAIMX_API_CONCURRENCY": ("claimx_api_concurrency", int),
+        "DELTA_EVENTS_BATCH_SIZE": ("delta_events_batch_size", int),
     }
 
     for env_var, config_key in env_mapping.items():
@@ -355,6 +360,11 @@ def _apply_env_overrides(data: Dict[str, Any]) -> Dict[str, Any]:
         domain_paths["claimx"] = os.getenv("ONELAKE_CLAIMX_PATH", "")
     if domain_paths:
         result["onelake_domain_paths"] = domain_paths
+
+    # Special handling for delta_events_max_batches (optional int)
+    max_batches_str = os.getenv("DELTA_EVENTS_MAX_BATCHES")
+    if max_batches_str is not None and max_batches_str.strip():
+        result["delta_events_max_batches"] = int(max_batches_str)
 
     # Apply concurrency constraints
     if "download_concurrency" in result:
@@ -465,6 +475,8 @@ def load_config(
         claimx_api_timeout_seconds=data.get("claimx_api_timeout_seconds", 30),
         claimx_api_max_retries=data.get("claimx_api_max_retries", 3),
         claimx_api_concurrency=data.get("claimx_api_concurrency", 10),
+        delta_events_batch_size=data.get("delta_events_batch_size", 1000),
+        delta_events_max_batches=data.get("delta_events_max_batches"),
     )
 
 
