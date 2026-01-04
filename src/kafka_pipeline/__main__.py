@@ -16,6 +16,7 @@ Usage:
     python -m kafka_pipeline --worker claimx-enricher
     python -m kafka_pipeline --worker claimx-downloader
     python -m kafka_pipeline --worker claimx-uploader
+    python -m kafka_pipeline --worker claimx-result-processor
 
     # Run with metrics server
     python -m kafka_pipeline --metrics-port 8000
@@ -57,7 +58,7 @@ from core.logging.setup import get_logger, setup_logging, setup_multi_worker_log
 WORKER_STAGES = [
     "eventhouse-poller",
     "xact-event-ingester", "xact-download", "xact-upload", "xact-result-processor",
-    "claimx-ingester", "claimx-enricher", "claimx-downloader", "claimx-uploader"
+    "claimx-ingester", "claimx-enricher", "claimx-downloader", "claimx-uploader", "claimx-result-processor"
 ]
 
 # Placeholder logger until setup_logging() is called in main()
@@ -105,7 +106,7 @@ Examples:
         "--worker",
         choices=[
             "xact-event-ingester", "xact-download", "xact-upload", "xact-result-processor",
-            "claimx-ingester", "claimx-enricher", "claimx-downloader", "claimx-uploader",
+            "claimx-ingester", "claimx-enricher", "claimx-downloader", "claimx-uploader", "claimx-result-processor",
             "all"
         ],
         default="all",
@@ -598,6 +599,43 @@ async def run_claimx_upload_worker(kafka_config):
         await worker.stop()
 
 
+async def run_claimx_result_processor(kafka_config):
+    """Run ClaimX result processor.
+
+    Consumes upload result messages from local Kafka broker,
+    logs outcomes, emits metrics, and tracks success/failure rates.
+
+    The worker handles Kafka consumer lifecycle and graceful shutdown.
+    """
+    from kafka_pipeline.claimx.workers.result_processor import ClaimXResultProcessor
+
+    set_log_context(stage="claimx-result-processor")
+    logger.info("Starting ClaimX Result Processor...")
+
+    processor = ClaimXResultProcessor(config=kafka_config)
+    shutdown_event = get_shutdown_event()
+
+    async def shutdown_watcher():
+        """Wait for shutdown signal and stop processor gracefully."""
+        await shutdown_event.wait()
+        logger.info("Shutdown signal received, stopping claimx result processor...")
+        await processor.stop()
+
+    # Start shutdown watcher alongside processor
+    watcher_task = asyncio.create_task(shutdown_watcher())
+
+    try:
+        await processor.start()
+    finally:
+        watcher_task.cancel()
+        try:
+            await watcher_task
+        except asyncio.CancelledError:
+            pass
+        # Clean up resources after processor exits
+        await processor.stop()
+
+
 async def run_all_workers(
     pipeline_config,
     enable_delta_writes: bool = True,
@@ -863,6 +901,8 @@ def main():
             loop.run_until_complete(run_claimx_download_worker(local_kafka_config))
         elif args.worker == "claimx-uploader":
             loop.run_until_complete(run_claimx_upload_worker(local_kafka_config))
+        elif args.worker == "claimx-result-processor":
+            loop.run_until_complete(run_claimx_result_processor(local_kafka_config))
         else:  # all
             loop.run_until_complete(
                 run_all_workers(pipeline_config, enable_delta_writes)
