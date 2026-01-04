@@ -4,10 +4,11 @@ Xact domain schemas.
 Pydantic models for xact events, tasks, results, and cached data.
 
 Schemas:
-    events.py   - EventMessage (raw xact events from Eventhouse)
-    tasks.py    - DownloadTaskMessage (work items for download workers)
-    cached.py   - CachedDownloadMessage (files cached locally, awaiting upload)
-    results.py  - DownloadResultMessage, FailedDownloadMessage (outcomes and DLQ)
+    events.py      - EventMessage (raw xact events from Eventhouse)
+    tasks.py       - DownloadTaskMessage (work items for download workers)
+    cached.py      - CachedDownloadMessage (files cached locally, awaiting upload)
+    results.py     - DownloadResultMessage, FailedDownloadMessage (outcomes and DLQ)
+    delta_batch.py - FailedDeltaBatch (failed Delta batch writes for retry)
 
 Design Decisions:
     - Pydantic for validation and JSON serialization
@@ -17,6 +18,7 @@ Design Decisions:
 """
 
 from kafka_pipeline.xact.schemas.cached import CachedDownloadMessage
+from kafka_pipeline.xact.schemas.delta_batch import FailedDeltaBatch
 from kafka_pipeline.xact.schemas.events import EventMessage
 from kafka_pipeline.xact.schemas.models import EventRecord, Task, XACT_PRIMARY_KEYS
 from kafka_pipeline.xact.schemas.results import DownloadResultMessage, FailedDownloadMessage
@@ -28,6 +30,7 @@ __all__ = [
     "CachedDownloadMessage",
     "DownloadResultMessage",
     "FailedDownloadMessage",
+    "FailedDeltaBatch",
     "EventRecord",
     "Task",
     "XACT_PRIMARY_KEYS",

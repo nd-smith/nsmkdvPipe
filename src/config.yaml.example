@@ -88,6 +88,14 @@ kafka:
   delta_events_batch_size: 1000             # DELTA_EVENTS_BATCH_SIZE (events per batch)
   delta_events_max_batches:                 # DELTA_EVENTS_MAX_BATCHES (optional, for testing)
 
+  # ---------------------------------------------------------------------------
+  # Delta Events Retry Settings
+  # ---------------------------------------------------------------------------
+  delta_events_retry_delays: [300, 600, 1200, 2400]  # DELTA_EVENTS_RETRY_DELAYS (5m, 10m, 20m, 40m)
+  delta_events_max_retries: 4               # DELTA_EVENTS_MAX_RETRIES
+  delta_events_retry_topic_prefix: "delta-events.retry"  # DELTA_EVENTS_RETRY_TOPIC_PREFIX
+  delta_events_dlq_topic: "delta-events.dlq"            # DELTA_EVENTS_DLQ_TOPIC
+
 
 # =============================================================================
 # EVENTHOUSE INTEGRATION (for Kafka pipeline)

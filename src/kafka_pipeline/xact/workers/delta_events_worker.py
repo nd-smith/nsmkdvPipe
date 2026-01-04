@@ -12,10 +12,14 @@ Features:
 - Batch accumulation for efficient Delta writes
 - Configurable batch size via delta_events_batch_size
 - Optional batch limit for testing via delta_events_max_batches
+- Retry via Kafka topics with exponential backoff (when producer provided)
+- Fallback to in-memory retry (when no producer)
 
 Consumer group: {prefix}-delta-events
 Input topic: events.raw
 Output: Delta table xact_events (no Kafka output)
+Retry topics: delta-events.retry.{delay}m
+DLQ topic: delta-events.dlq
 """
 
 import asyncio
@@ -27,12 +31,14 @@ from aiokafka.structs import ConsumerRecord
 from core.logging.setup import get_logger
 from kafka_pipeline.config import KafkaConfig
 from kafka_pipeline.common.consumer import BaseKafkaConsumer
+from kafka_pipeline.common.producer import BaseKafkaProducer
 from kafka_pipeline.common.metrics import record_delta_write
+from kafka_pipeline.xact.retry.handler import DeltaRetryHandler
 from kafka_pipeline.xact.writers import DeltaEventsWriter
 
 logger = get_logger(__name__)
 
-# Retry configuration for failed batch writes
+# In-memory retry configuration (fallback when no producer)
 BATCH_RETRY_MAX_ATTEMPTS = 5
 BATCH_RETRY_BASE_DELAY = 2.0  # seconds
 BATCH_RETRY_MAX_DELAY = 60.0  # seconds
@@ -72,6 +78,7 @@ class DeltaEventsWorker:
         config: KafkaConfig,
         events_table_path: str,
         dedupe_window_hours: int = 24,
+        producer: Optional[BaseKafkaProducer] = None,
     ):
         """
         Initialize Delta events worker.
@@ -81,10 +88,16 @@ class DeltaEventsWorker:
                     Also provides delta_events_batch_size and delta_events_max_batches.
             events_table_path: Full abfss:// path to xact_events Delta table
             dedupe_window_hours: Hours to check for duplicate trace_ids (default: 24)
+            producer: Optional Kafka producer for retry topic routing.
+                      If provided, failed batches are sent to retry topics.
+                      If not provided, in-memory retry is used.
         """
         self.config = config
+        self.events_table_path = events_table_path
         self.consumer: Optional[BaseKafkaConsumer] = None
         self.delta_writer: Optional[DeltaEventsWriter] = None
+        self.producer = producer
+        self.retry_handler: Optional[DeltaRetryHandler] = None
 
         # Consumer group for delta events writing (separate from event ingester)
         self.consumer_group = f"{config.consumer_group_prefix}-delta-events"
@@ -98,7 +111,7 @@ class DeltaEventsWorker:
         self._batches_written = 0
         self._total_events_written = 0
 
-        # Retry state for failed batches
+        # In-memory retry state (fallback when no producer)
         self._pending_batch: Optional[List[Dict[str, Any]]] = None
         self._retry_attempt = 0
 
@@ -111,6 +124,17 @@ class DeltaEventsWorker:
         else:
             raise ValueError("events_table_path is required for DeltaEventsWorker")
 
+        # Initialize retry handler if producer is provided
+        if producer:
+            self.retry_handler = DeltaRetryHandler(
+                config=config,
+                producer=producer,
+                table_path=events_table_path,
+                retry_delays=config.delta_events_retry_delays,
+                retry_topic_prefix=config.delta_events_retry_topic_prefix,
+                dlq_topic=config.delta_events_dlq_topic,
+            )
+
         logger.info(
             "Initialized DeltaEventsWorker",
             extra={
@@ -120,6 +144,7 @@ class DeltaEventsWorker:
                 "dedupe_window_hours": dedupe_window_hours,
                 "batch_size": self.batch_size,
                 "max_batches": self.max_batches,
+                "retry_mode": "kafka_topics" if self.retry_handler else "in_memory",
             },
         )
 
@@ -186,7 +211,7 @@ class DeltaEventsWorker:
         Process a single event message from Kafka.
 
         Adds the event to the batch and flushes when batch is full.
-        If there's a pending batch from a failed write, retries it first.
+        If there's a pending batch from a failed write (in-memory mode), retries it first.
 
         Args:
             record: ConsumerRecord containing EventMessage JSON
@@ -194,8 +219,9 @@ class DeltaEventsWorker:
         Raises:
             RuntimeError: If pending batch exhausts all retries (stops consumer)
         """
-        # First, retry any pending batch from previous failure
-        if self._pending_batch is not None:
+        # In-memory retry: retry any pending batch from previous failure
+        # (Only applies when retry_handler is not configured)
+        if self._pending_batch is not None and not self.retry_handler:
             await self._retry_pending_batch()
             # If still pending after retries, raise to stop processing
             if self._pending_batch is not None:
@@ -286,19 +312,39 @@ class DeltaEventsWorker:
                 },
             )
         else:
-            # Move to pending batch for retry - don't clear
-            self._pending_batch = batch_to_write
-            self._batch = []
-            self._retry_attempt = 1  # First attempt already happened
+            # Handle failure based on retry mode
+            if self.retry_handler:
+                # Route to Kafka retry topic
+                logger.warning(
+                    f"Batch write failed, routing to retry topic",
+                    extra={
+                        "batch_size": batch_size,
+                        "retry_mode": "kafka_topics",
+                    },
+                )
+                await self.retry_handler.handle_batch_failure(
+                    batch=batch_to_write,
+                    error=Exception("Delta write returned failure status"),
+                    retry_count=0,
+                    error_category="transient",
+                )
+                # Clear batch - it's now in Kafka retry topic
+                self._batch = []
+            else:
+                # Fallback to in-memory retry
+                self._pending_batch = batch_to_write
+                self._batch = []
+                self._retry_attempt = 1  # First attempt already happened
 
-            logger.warning(
-                f"Batch write failed, will retry ({self._retry_attempt}/{BATCH_RETRY_MAX_ATTEMPTS})",
-                extra={
-                    "batch_size": batch_size,
-                    "retry_attempt": self._retry_attempt,
-                    "max_attempts": BATCH_RETRY_MAX_ATTEMPTS,
-                },
-            )
+                logger.warning(
+                    f"Batch write failed, will retry in-memory ({self._retry_attempt}/{BATCH_RETRY_MAX_ATTEMPTS})",
+                    extra={
+                        "batch_size": batch_size,
+                        "retry_attempt": self._retry_attempt,
+                        "max_attempts": BATCH_RETRY_MAX_ATTEMPTS,
+                        "retry_mode": "in_memory",
+                    },
+                )
 
     async def _retry_pending_batch(self) -> None:
         """

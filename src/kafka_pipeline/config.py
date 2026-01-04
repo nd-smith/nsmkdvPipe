@@ -112,6 +112,14 @@ class KafkaConfig:
     delta_events_batch_size: int = 1000  # Events per batch before writing to Delta
     delta_events_max_batches: Optional[int] = None  # Optional limit for testing (None = unlimited)
 
+    # Delta events retry settings
+    delta_events_retry_delays: List[int] = field(
+        default_factory=lambda: [300, 600, 1200, 2400]  # 5m, 10m, 20m, 40m
+    )
+    delta_events_max_retries: int = 4
+    delta_events_retry_topic_prefix: str = "delta-events.retry"
+    delta_events_dlq_topic: str = "delta-events.dlq"
+
     @classmethod
     def from_env(cls) -> "KafkaConfig":
         """Load configuration from environment variables only.
@@ -336,6 +344,9 @@ def _apply_env_overrides(data: Dict[str, Any]) -> Dict[str, Any]:
         "CLAIMX_API_MAX_RETRIES": ("claimx_api_max_retries", int),
         "CLAIMX_API_CONCURRENCY": ("claimx_api_concurrency", int),
         "DELTA_EVENTS_BATCH_SIZE": ("delta_events_batch_size", int),
+        "DELTA_EVENTS_MAX_RETRIES": ("delta_events_max_retries", int),
+        "DELTA_EVENTS_RETRY_TOPIC_PREFIX": "delta_events_retry_topic_prefix",
+        "DELTA_EVENTS_DLQ_TOPIC": "delta_events_dlq_topic",
     }
 
     for env_var, config_key in env_mapping.items():
@@ -351,6 +362,13 @@ def _apply_env_overrides(data: Dict[str, Any]) -> Dict[str, Any]:
     retry_delays_str = os.getenv("RETRY_DELAYS")
     if retry_delays_str is not None:
         result["retry_delays"] = [int(d.strip()) for d in retry_delays_str.split(",")]
+
+    # Special handling for delta_events_retry_delays (comma-separated list)
+    delta_retry_delays_str = os.getenv("DELTA_EVENTS_RETRY_DELAYS")
+    if delta_retry_delays_str is not None:
+        result["delta_events_retry_delays"] = [
+            int(d.strip()) for d in delta_retry_delays_str.split(",")
+        ]
 
     # Special handling for domain-specific OneLake paths
     domain_paths = result.get("onelake_domain_paths", {}).copy()
@@ -477,6 +495,14 @@ def load_config(
         claimx_api_concurrency=data.get("claimx_api_concurrency", 10),
         delta_events_batch_size=data.get("delta_events_batch_size", 1000),
         delta_events_max_batches=data.get("delta_events_max_batches"),
+        delta_events_retry_delays=data.get(
+            "delta_events_retry_delays", [300, 600, 1200, 2400]
+        ),
+        delta_events_max_retries=data.get("delta_events_max_retries", 4),
+        delta_events_retry_topic_prefix=data.get(
+            "delta_events_retry_topic_prefix", "delta-events.retry"
+        ),
+        delta_events_dlq_topic=data.get("delta_events_dlq_topic", "delta-events.dlq"),
     )
 
 
