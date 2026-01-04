@@ -191,10 +191,12 @@ async def run_event_ingester(
     try:
         await worker.start()
     finally:
-        watcher_task.cancel()
+        # Guard against event loop being closed during shutdown
         try:
+            watcher_task.cancel()
             await watcher_task
-        except asyncio.CancelledError:
+        except (asyncio.CancelledError, RuntimeError):
+            # RuntimeError occurs if event loop is closed
             pass
         # Clean up resources after worker exits
         await worker.stop()
@@ -265,10 +267,12 @@ async def run_eventhouse_poller(pipeline_config):
         try:
             await poller.run()
         finally:
-            watcher_task.cancel()
+            # Guard against event loop being closed during shutdown
             try:
+                watcher_task.cancel()
                 await watcher_task
-            except asyncio.CancelledError:
+            except (asyncio.CancelledError, RuntimeError):
+                # RuntimeError occurs if event loop is closed
                 pass
 
 
@@ -305,10 +309,12 @@ async def run_delta_events_worker(kafka_config, events_table_path: str):
     try:
         await worker.start()
     finally:
-        watcher_task.cancel()
+        # Guard against event loop being closed during shutdown
         try:
+            watcher_task.cancel()
             await watcher_task
-        except asyncio.CancelledError:
+        except (asyncio.CancelledError, RuntimeError):
+            # RuntimeError occurs if event loop is closed
             pass
         # Clean up resources after worker exits
         await worker.stop()
@@ -343,10 +349,12 @@ async def run_download_worker(kafka_config):
     try:
         await worker.start()
     finally:
-        watcher_task.cancel()
+        # Guard against event loop being closed during shutdown
         try:
+            watcher_task.cancel()
             await watcher_task
-        except asyncio.CancelledError:
+        except (asyncio.CancelledError, RuntimeError):
+            # RuntimeError occurs if event loop is closed
             pass
         # Clean up resources after worker exits
         await worker.stop()
@@ -381,10 +389,12 @@ async def run_upload_worker(kafka_config):
     try:
         await worker.start()
     finally:
-        watcher_task.cancel()
+        # Guard against event loop being closed during shutdown
         try:
+            watcher_task.cancel()
             await watcher_task
-        except asyncio.CancelledError:
+        except (asyncio.CancelledError, RuntimeError):
+            # RuntimeError occurs if event loop is closed
             pass
         # Clean up resources after worker exits
         await worker.stop()
@@ -430,10 +440,12 @@ async def run_result_processor(kafka_config, enable_delta_writes: bool = True):
     try:
         await worker.start()
     finally:
-        watcher_task.cancel()
+        # Guard against event loop being closed during shutdown
         try:
+            watcher_task.cancel()
             await watcher_task
-        except asyncio.CancelledError:
+        except (asyncio.CancelledError, RuntimeError):
+            # RuntimeError occurs if event loop is closed
             pass
         # Clean up resources after worker exits
         await worker.stop()
@@ -476,10 +488,12 @@ async def run_local_event_ingester(
     try:
         await worker.start()
     finally:
-        watcher_task.cancel()
+        # Guard against event loop being closed during shutdown
         try:
+            watcher_task.cancel()
             await watcher_task
-        except asyncio.CancelledError:
+        except (asyncio.CancelledError, RuntimeError):
+            # RuntimeError occurs if event loop is closed
             pass
         # Clean up resources after worker exits
         await worker.stop()
@@ -521,10 +535,12 @@ async def run_claimx_event_ingester(
     try:
         await worker.start()
     finally:
-        watcher_task.cancel()
+        # Guard against event loop being closed during shutdown
         try:
+            watcher_task.cancel()
             await watcher_task
-        except asyncio.CancelledError:
+        except (asyncio.CancelledError, RuntimeError):
+            # RuntimeError occurs if event loop is closed
             pass
         # Clean up resources after worker exits
         await worker.stop()
@@ -559,10 +575,12 @@ async def run_claimx_enrichment_worker(kafka_config):
     try:
         await worker.start()
     finally:
-        watcher_task.cancel()
+        # Guard against event loop being closed during shutdown
         try:
+            watcher_task.cancel()
             await watcher_task
-        except asyncio.CancelledError:
+        except (asyncio.CancelledError, RuntimeError):
+            # RuntimeError occurs if event loop is closed
             pass
         # Clean up resources after worker exits
         await worker.stop()
@@ -597,10 +615,12 @@ async def run_claimx_download_worker(kafka_config):
     try:
         await worker.start()
     finally:
-        watcher_task.cancel()
+        # Guard against event loop being closed during shutdown
         try:
+            watcher_task.cancel()
             await watcher_task
-        except asyncio.CancelledError:
+        except (asyncio.CancelledError, RuntimeError):
+            # RuntimeError occurs if event loop is closed
             pass
         # Clean up resources after worker exits
         await worker.stop()
@@ -635,10 +655,12 @@ async def run_claimx_upload_worker(kafka_config):
     try:
         await worker.start()
     finally:
-        watcher_task.cancel()
+        # Guard against event loop being closed during shutdown
         try:
+            watcher_task.cancel()
             await watcher_task
-        except asyncio.CancelledError:
+        except (asyncio.CancelledError, RuntimeError):
+            # RuntimeError occurs if event loop is closed
             pass
         # Clean up resources after worker exits
         await worker.stop()
@@ -672,10 +694,12 @@ async def run_claimx_result_processor(kafka_config):
     try:
         await processor.start()
     finally:
-        watcher_task.cancel()
+        # Guard against event loop being closed during shutdown
         try:
+            watcher_task.cancel()
             await watcher_task
-        except asyncio.CancelledError:
+        except (asyncio.CancelledError, RuntimeError):
+            # RuntimeError occurs if event loop is closed
             pass
         # Clean up resources after processor exits
         await processor.stop()

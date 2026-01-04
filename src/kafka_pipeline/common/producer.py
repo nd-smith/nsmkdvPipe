@@ -158,6 +158,8 @@ class BaseKafkaProducer:
         errors (especially during exception handling) should not mask the
         original exception or prevent other cleanup from completing.
         """
+        import asyncio
+
         if not self._started or self._producer is None:
             logger.debug("Producer not started or already stopped")
             return
@@ -165,6 +167,23 @@ class BaseKafkaProducer:
         logger.info("Stopping Kafka producer")
 
         try:
+            # Check if we have a running event loop before attempting async operations.
+            # During shutdown (GeneratorExit, KeyboardInterrupt), the loop may already
+            # be closed, and aiokafka's stop() will fail trying to create tasks.
+            try:
+                loop = asyncio.get_running_loop()
+                if loop.is_closed():
+                    logger.warning(
+                        "Event loop is closed, skipping graceful producer shutdown"
+                    )
+                    return
+            except RuntimeError:
+                # No running event loop - can't perform async cleanup
+                logger.warning(
+                    "No running event loop, skipping graceful producer shutdown"
+                )
+                return
+
             # Flush any pending messages
             await self._producer.flush()
             # Stop the producer
