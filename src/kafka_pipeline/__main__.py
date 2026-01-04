@@ -7,6 +7,7 @@ Usage:
 
     # Run specific xact worker
     python -m kafka_pipeline --worker xact-event-ingester
+    python -m kafka_pipeline --worker xact-local-ingester
     python -m kafka_pipeline --worker xact-delta-writer
     python -m kafka_pipeline --worker xact-download
     python -m kafka_pipeline --worker xact-upload
@@ -60,7 +61,7 @@ from core.logging.setup import get_logger, setup_logging, setup_multi_worker_log
 # Worker stages for multi-worker logging
 WORKER_STAGES = [
     "eventhouse-poller",
-    "xact-event-ingester", "xact-delta-writer", "xact-download", "xact-upload", "xact-result-processor",
+    "xact-event-ingester", "xact-local-ingester", "xact-delta-writer", "xact-download", "xact-upload", "xact-result-processor",
     "claimx-ingester", "claimx-enricher", "claimx-downloader", "claimx-uploader", "claimx-result-processor"
 ]
 
@@ -108,7 +109,7 @@ Examples:
     parser.add_argument(
         "--worker",
         choices=[
-            "xact-event-ingester", "xact-delta-writer", "xact-download", "xact-upload", "xact-result-processor",
+            "xact-event-ingester", "xact-local-ingester", "xact-delta-writer", "xact-download", "xact-upload", "xact-result-processor",
             "claimx-ingester", "claimx-enricher", "claimx-downloader", "claimx-uploader", "claimx-result-processor",
             "all"
         ],
@@ -955,6 +956,15 @@ def main():
                         domain=pipeline_config.domain,
                     )
                 )
+        elif args.worker == "xact-local-ingester":
+            # Local event ingester - consumes events.raw and produces downloads.pending
+            # Used after backfill to process events without running the full pipeline
+            loop.run_until_complete(
+                run_local_event_ingester(
+                    local_kafka_config,
+                    domain=pipeline_config.domain,
+                )
+            )
         elif args.worker == "xact-delta-writer":
             # Delta events writer - writes events to Delta table
             events_table_path = pipeline_config.events_table_path
