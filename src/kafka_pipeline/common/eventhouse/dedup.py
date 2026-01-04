@@ -113,6 +113,10 @@ class EventhouseDeduplicator:
 
         start_time = time.perf_counter()
 
+        logger.info(
+            f"Loading dedup cache from Delta table: {self.config.xact_events_table_path}"
+        )
+
         try:
             # Use Polars lazy scan with partition pruning
             # CRITICAL: Filter on event_date FIRST for partition pruning,
