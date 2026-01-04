@@ -30,8 +30,14 @@ class DedupConfig:
     xact_events_window_hours: int = 24
 
     # Time window for Eventhouse query (hours)
-    # Only query events from this window
+    # Only used if kql_start_stamp is not set
     eventhouse_query_window_hours: int = 1
+
+    # Precise start timestamp for KQL queries (real-time mode)
+    # Format: "YYYY-MM-DD HH:MM:SS.ffffff" (UTC)
+    # If set, this is used instead of eventhouse_query_window_hours
+    # for the first poll in real-time mode
+    kql_start_stamp: Optional[str] = None
 
     # Overlap window for safety (minutes)
     # Re-check events from the last N minutes even if marked as processed
@@ -81,6 +87,57 @@ class EventhouseDeduplicator:
         # Local cache of trace_ids - populated on first query, updated on writes
         self._trace_id_cache: set[str] = set()
         self._cache_initialized: bool = False
+
+        # Parse kql_start_stamp if provided
+        self._kql_start_time: Optional[datetime] = None
+        if config.kql_start_stamp:
+            self._kql_start_time = self._parse_timestamp(config.kql_start_stamp)
+            logger.info(
+                "Using configured KQL start timestamp",
+                extra={"kql_start_time": self._kql_start_time.isoformat()},
+            )
+
+    @staticmethod
+    def _parse_timestamp(timestamp_str: str) -> datetime:
+        """Parse a timestamp string into a datetime object.
+
+        Supports formats:
+        - "YYYY-MM-DD HH:MM:SS.ffffff"
+        - "YYYY-MM-DDTHH:MM:SS.ffffffZ"
+        - ISO format variations
+
+        Args:
+            timestamp_str: Timestamp string to parse
+
+        Returns:
+            datetime object in UTC
+        """
+        formats = [
+            "%Y-%m-%d %H:%M:%S.%f",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%dT%H:%M:%S.%fZ",
+            "%Y-%m-%dT%H:%M:%S.%f",
+            "%Y-%m-%dT%H:%M:%SZ",
+            "%Y-%m-%dT%H:%M:%S",
+        ]
+
+        for fmt in formats:
+            try:
+                dt = datetime.strptime(timestamp_str, fmt)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt
+            except ValueError:
+                continue
+
+        # Try ISO format as fallback
+        try:
+            dt = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        except ValueError:
+            raise ValueError(f"Could not parse timestamp: {timestamp_str}")
 
     def _get_storage_options(self) -> dict:
         """Get Azure storage options for Delta table access.
@@ -415,8 +472,15 @@ class EventhouseDeduplicator:
         poll_to = now
 
         if last_poll_time is None:
-            # First poll - use configured window
-            poll_from = now - timedelta(hours=self.config.eventhouse_query_window_hours)
+            # First poll - use kql_start_stamp if configured, otherwise use window
+            if self._kql_start_time is not None:
+                poll_from = self._kql_start_time
+                logger.info(
+                    "Using configured kql_start_stamp for first poll",
+                    extra={"poll_from": poll_from.isoformat()},
+                )
+            else:
+                poll_from = now - timedelta(hours=self.config.eventhouse_query_window_hours)
         else:
             # Subsequent poll - from last poll time with overlap
             poll_from = last_poll_time - timedelta(minutes=self.config.overlap_minutes)

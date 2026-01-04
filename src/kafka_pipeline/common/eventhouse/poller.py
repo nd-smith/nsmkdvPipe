@@ -159,6 +159,10 @@ class PollerConfig:
                 "true", "1", "yes"
             )
 
+        # Apply environment variable overrides for dedup kql_start_stamp
+        if os.getenv("DEDUP_KQL_START_TIMESTAMP"):
+            dedup_data["kql_start_stamp"] = os.getenv("DEDUP_KQL_START_TIMESTAMP")
+
         xact_events_path = poller_data.get("events_table_path", "")
 
         dedup_config = DedupConfig(
@@ -175,6 +179,7 @@ class PollerConfig:
             max_trace_ids_per_query=int(
                 dedup_data.get("max_trace_ids_per_query", 50_000)
             ),
+            kql_start_stamp=dedup_data.get("kql_start_stamp"),
         )
 
         # Handle column_mapping from YAML
@@ -240,6 +245,7 @@ class PollerConfig:
                 os.getenv("DEDUP_EVENTHOUSE_WINDOW_HOURS", "1")
             ),
             overlap_minutes=int(os.getenv("DEDUP_OVERLAP_MINUTES", "5")),
+            kql_start_stamp=os.getenv("DEDUP_KQL_START_TIMESTAMP"),
         )
 
         # Parse bulk_backfill boolean
