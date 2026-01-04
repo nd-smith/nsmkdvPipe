@@ -18,8 +18,9 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import polars as pl
 from deltalake import DeltaTable, write_deltalake
 
-from kafka_pipeline.common.auth import get_storage_options, clear_token_cache
+from kafka_pipeline.common.auth import get_storage_options
 from kafka_pipeline.common.retry import RetryConfig, with_retry
+from kafka_pipeline.common.storage.onelake import _refresh_all_credentials
 from kafka_pipeline.common.resilience.circuit_breaker import CircuitBreakerConfig
 from kafka_pipeline.common.logging import (
     get_logger,
@@ -55,8 +56,8 @@ class WriteOperation:
 
 
 def _on_auth_error() -> None:
-    """Callback for auth errors - clears token cache."""
-    clear_token_cache()
+    """Callback for auth errors - clears all credential caches."""
+    _refresh_all_credentials()
 
 
 class DeltaTableReader(LoggedClass):

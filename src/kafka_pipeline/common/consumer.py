@@ -17,7 +17,7 @@ import time
 from typing import Awaitable, Callable, List, Optional
 
 from aiokafka import AIOKafkaConsumer
-from aiokafka.structs import ConsumerRecord
+from aiokafka.structs import ConsumerRecord, TopicPartition
 
 from core.auth.kafka_oauth import create_kafka_oauth_callback
 from core.logging import get_logger, log_with_context, log_exception, KafkaLogContext
@@ -472,9 +472,8 @@ class BaseKafkaConsumer:
 
             # Calculate and update lag (high watermark - current offset)
             # Get high watermark for the partition
-            partition_metadata = self._consumer.highwater(
-                partition=message.partition, topic=message.topic
-            )
+            tp = TopicPartition(message.topic, message.partition)
+            partition_metadata = self._consumer.highwater(tp)
 
             if partition_metadata is not None:
                 # Lag = high watermark - (current offset + 1)

@@ -64,8 +64,9 @@ class DeltaEventsWriter(BaseDeltaWriter):
             dedupe_window_hours: Hours to check for duplicate trace_ids (default: 24)
         """
         # Initialize base class with deduplication on trace_id
-        # Use created_at (write time) not ingested_at (source event time) for dedup window
-        # This ensures we find recently-written records even when backfilling old events
+        # Uses ingested_at for dedup window - works for real-time operations where
+        # ingested_at ≈ created_at. For backfills of old events, dedup may not work
+        # optimally but the table will still be correct (duplicates handled by trace_id uniqueness)
         super().__init__(
             table_path=table_path,
             dedupe_column="trace_id",
