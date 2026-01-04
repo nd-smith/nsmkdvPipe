@@ -513,7 +513,7 @@ class TestDownloadWorkerSuccessPath:
     @pytest.mark.asyncio
     async def test_successful_download_no_retry_handler(self, config, sample_task, consumer_record):
         """Test that successful downloads don't call retry handler."""
-        from kafka_pipeline.schemas.cached import CachedDownloadMessage
+        from kafka_pipeline.xact.schemas.cached import CachedDownloadMessage
 
         worker = DownloadWorker(config)
         setup_worker_for_testing(worker)
