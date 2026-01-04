@@ -282,6 +282,18 @@ class DeltaEventsWorker:
                     "max_batches": self.max_batches,
                 },
             )
+
+            # Stop immediately if we've reached max_batches
+            if self.max_batches and self._batches_written >= self.max_batches:
+                logger.info(
+                    "Reached max_batches limit, stopping consumer",
+                    extra={
+                        "max_batches": self.max_batches,
+                        "batches_written": self._batches_written,
+                    },
+                )
+                if self.consumer:
+                    await self.consumer.stop()
         else:
             # Route to Kafka retry topic
             logger.warning(
