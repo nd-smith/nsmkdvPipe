@@ -24,12 +24,15 @@ from aiokafka.structs import ConsumerRecord
 from pydantic import ValidationError
 
 from core.logging.setup import get_logger
+from core.types import ErrorCategory
 from kafka_pipeline.config import KafkaConfig
 from kafka_pipeline.common.consumer import BaseKafkaConsumer
 from kafka_pipeline.common.metrics import record_delta_write
 from kafka_pipeline.common.producer import BaseKafkaProducer
-from kafka_pipeline.claimx.api_client import ClaimXApiClient
+from kafka_pipeline.claimx.api_client import ClaimXApiClient, ClaimXApiError
 from kafka_pipeline.claimx.handlers import get_handler_registry, HandlerRegistry
+from kafka_pipeline.claimx.monitoring import HealthCheckServer
+from kafka_pipeline.claimx.retry import EnrichmentRetryHandler
 from kafka_pipeline.claimx.schemas.entities import EntityRowsMessage
 from kafka_pipeline.claimx.schemas.events import ClaimXEventMessage
 from kafka_pipeline.claimx.schemas.tasks import (
@@ -107,13 +110,27 @@ class ClaimXEnrichmentWorker:
             f"{config.consumer_group_prefix}-claimx-enrichment-worker"
         )
 
+        # Build list of topics to consume from (pending + retry topics)
+        retry_topics = [
+            self._get_retry_topic(i) for i in range(len(config.retry_delays))
+        ]
+        self.topics = [self.enrichment_topic] + retry_topics
+
         # Kafka components (initialized in start())
         self.producer: Optional[BaseKafkaProducer] = None
         self.consumer: Optional[BaseKafkaConsumer] = None
         self.api_client: Optional[ClaimXApiClient] = None
+        self.retry_handler: Optional[EnrichmentRetryHandler] = None
 
         # Handler registry for routing events
         self.handler_registry: HandlerRegistry = get_handler_registry()
+
+        # Health check server
+        health_port = config.claimx_enrichment_health_port if hasattr(config, 'claimx_enrichment_health_port') else 8081
+        self.health_server = HealthCheckServer(
+            port=health_port,
+            worker_name="claimx-enricher",
+        )
 
         # Background task tracking for graceful shutdown
         self._pending_tasks: Set[asyncio.Task] = set()
@@ -128,11 +145,14 @@ class ClaimXEnrichmentWorker:
             "Initialized ClaimXEnrichmentWorker",
             extra={
                 "consumer_group": self.consumer_group,
+                "topics": self.topics,
                 "enrichment_topic": self.enrichment_topic,
                 "download_topic": self.download_topic,
                 "delta_writes_enabled": self.enable_delta_writes,
                 "batch_size": self.batch_size,
                 "batch_timeout_seconds": self.batch_timeout_seconds,
+                "retry_delays": config.retry_delays,
+                "max_retries": config.max_retries,
             },
         )
 
@@ -153,6 +173,9 @@ class ClaimXEnrichmentWorker:
         """
         logger.info("Starting ClaimXEnrichmentWorker")
 
+        # Start health check server first
+        await self.health_server.start()
+
         # Initialize API client
         self.api_client = ClaimXApiClient(
             base_url=self.consumer_config.claimx_api_url,
@@ -163,16 +186,44 @@ class ClaimXEnrichmentWorker:
         )
         await self.api_client._ensure_session()
 
+        # Check API reachability
+        api_reachable = not self.api_client.is_circuit_open()
+        self.health_server.set_ready(
+            kafka_connected=False,  # Not connected yet
+            api_reachable=api_reachable,
+        )
+
         # Start producer first (uses producer_config for local Kafka)
         self.producer = BaseKafkaProducer(self.producer_config)
         await self.producer.start()
 
+        # Initialize retry handler (requires producer to be started)
+        self.retry_handler = EnrichmentRetryHandler(
+            config=self.consumer_config,
+            producer=self.producer,
+        )
+        logger.info(
+            "Retry handler initialized",
+            extra={
+                "retry_topics": [t for t in self.topics if "retry" in t],
+                "dlq_topic": self.retry_handler.dlq_topic,
+            },
+        )
+
         # Create and start consumer with message handler (uses consumer_config)
+        # Consumes from pending topic + all retry topics
         self.consumer = BaseKafkaConsumer(
             config=self.consumer_config,
-            topics=[self.enrichment_topic],
+            topics=self.topics,
             group_id=self.consumer_group,
             message_handler=self._handle_enrichment_task,
+        )
+
+        # Update readiness: Kafka will be connected when consumer starts
+        self.health_server.set_ready(
+            kafka_connected=True,
+            api_reachable=api_reachable,
+            circuit_open=self.api_client.is_circuit_open(),
         )
 
         # Start consumer (this blocks until stopped)
@@ -220,6 +271,9 @@ class ClaimXEnrichmentWorker:
         # Close API client
         if self.api_client:
             await self.api_client.close()
+
+        # Stop health check server
+        await self.health_server.stop()
 
         logger.info("ClaimXEnrichmentWorker stopped successfully")
 
@@ -511,24 +565,66 @@ class ClaimXEnrichmentWorker:
             # Create handler instance
             handler = handler_class(self.api_client)
 
-            # Process events with handler
-            handler_result = await handler.process(handler_events)
+            # Process events with handler - wrap with error handling
+            try:
+                handler_result = await handler.process(handler_events)
 
-            # Collect entity rows
-            all_entity_rows.merge(handler_result.rows)
-            total_api_calls += handler_result.api_calls
+                # Collect entity rows
+                all_entity_rows.merge(handler_result.rows)
+                total_api_calls += handler_result.api_calls
 
-            # Generate download tasks from media rows
-            if handler_result.rows.media:
-                download_tasks = self._create_download_tasks_from_media(
-                    handler_result.rows.media
+                # Generate download tasks from media rows
+                if handler_result.rows.media:
+                    download_tasks = self._create_download_tasks_from_media(
+                        handler_result.rows.media
+                    )
+                    all_download_tasks.extend(download_tasks)
+
+            except ClaimXApiError as e:
+                # API error with category classification
+                logger.error(
+                    "Handler failed with API error",
+                    extra={
+                        "handler": handler_class.__name__,
+                        "event_count": len(handler_events),
+                        "error_category": e.category.value,
+                        "error": str(e)[:200],
+                    },
+                    exc_info=True,
                 )
-                all_download_tasks.extend(download_tasks)
+                # Route each failed event to retry/DLQ
+                for event in handler_events:
+                    # Find original task for this event
+                    task = self._find_task_for_event(event, tasks)
+                    if task:
+                        await self._handle_enrichment_failure(task, e, e.category)
+
+            except Exception as e:
+                # Unknown error - classify and route
+                # Classify as UNKNOWN for conservative retry
+                error_category = ErrorCategory.UNKNOWN
+                logger.error(
+                    "Handler failed with unexpected error",
+                    extra={
+                        "handler": handler_class.__name__,
+                        "event_count": len(handler_events),
+                        "error_type": type(e).__name__,
+                        "error": str(e)[:200],
+                    },
+                    exc_info=True,
+                )
+                # Route each failed event to retry/DLQ
+                for event in handler_events:
+                    # Find original task for this event
+                    task = self._find_task_for_event(event, tasks)
+                    if task:
+                        await self._handle_enrichment_failure(task, e, error_category)
 
         # Write entity rows to Delta tables (non-blocking)
+        # Pass tasks list to enable retry routing on Delta failures
         if self.enable_delta_writes and not all_entity_rows.is_empty():
             self._create_tracked_task(
-                self._write_entities_to_delta(all_entity_rows),
+                self._write_entities_to_delta(all_entity_rows, tasks),
                 task_name="delta_write",
                 context={"row_count": all_entity_rows.row_count()},
             )
@@ -625,12 +721,17 @@ class ClaimXEnrichmentWorker:
     async def _write_entities_to_delta(
         self,
         entity_rows: EntityRowsMessage,
+        tasks: List[ClaimXEnrichmentTask],
     ) -> None:
         """
         Write entity rows to Delta Lake tables (background task).
 
+        On failure, routes all tasks in the batch to retry/DLQ since entity rows
+        are aggregated from multiple tasks.
+
         Args:
             entity_rows: EntityRowsMessage with rows for all tables
+            tasks: Original enrichment tasks that produced these entity rows
         """
         try:
             counts = await self.entity_writer.write_all(entity_rows)
@@ -653,10 +754,11 @@ class ClaimXEnrichmentWorker:
 
         except Exception as e:
             logger.error(
-                "Error writing entities to Delta",
+                "Error writing entities to Delta - routing batch to retry",
                 extra={
                     "row_count": entity_rows.row_count(),
-                    "error": str(e),
+                    "task_count": len(tasks),
+                    "error": str(e)[:200],
                 },
                 exc_info=True,
             )
@@ -667,6 +769,12 @@ class ClaimXEnrichmentWorker:
                 event_count=entity_rows.row_count(),
                 success=False,
             )
+
+            # Delta write failures are typically transient (connection issues)
+            # Route all tasks in batch to retry
+            error_category = ErrorCategory.TRANSIENT
+            for task in tasks:
+                await self._handle_enrichment_failure(task, e, error_category)
 
     async def _produce_download_tasks(
         self,
@@ -713,6 +821,96 @@ class ClaimXEnrichmentWorker:
                     exc_info=True,
                 )
                 # Continue processing other tasks
+
+    def _get_retry_topic(self, retry_level: int) -> str:
+        """
+        Get retry topic name for a specific retry level.
+
+        Args:
+            retry_level: Retry attempt number (0-indexed)
+
+        Returns:
+            Retry topic name (e.g., "claimx.enrichment.pending.retry.5m")
+
+        Raises:
+            ValueError: If retry_level exceeds configured retry delays
+        """
+        if retry_level >= len(self.consumer_config.retry_delays):
+            raise ValueError(
+                f"Retry level {retry_level} exceeds max retries "
+                f"({len(self.consumer_config.retry_delays)})"
+            )
+
+        delay_seconds = self.consumer_config.retry_delays[retry_level]
+        delay_minutes = delay_seconds // 60
+        return f"{self.enrichment_topic}.retry.{delay_minutes}m"
+
+    def _find_task_for_event(
+        self,
+        event: ClaimXEventMessage,
+        tasks: List[ClaimXEnrichmentTask],
+    ) -> Optional[ClaimXEnrichmentTask]:
+        """
+        Find original enrichment task for an event.
+
+        Maps event back to its source task to preserve retry_count and metadata.
+
+        Args:
+            event: Event message processed by handler
+            tasks: Original batch of enrichment tasks
+
+        Returns:
+            Original enrichment task, or None if not found
+        """
+        for task in tasks:
+            if task.event_id == event.event_id:
+                return task
+
+        logger.error(
+            "Could not find task for event",
+            extra={"event_id": event.event_id, "event_type": event.event_type},
+        )
+        return None
+
+    async def _handle_enrichment_failure(
+        self,
+        task: ClaimXEnrichmentTask,
+        error: Exception,
+        error_category: "ErrorCategory",
+    ) -> None:
+        """
+        Handle failed enrichment task: route to retry topic or DLQ.
+
+        Routes failures through retry handler which sends to:
+        - Retry topic with exponential backoff (TRANSIENT, AUTH, CIRCUIT_OPEN, UNKNOWN)
+        - DLQ immediately (PERMANENT errors)
+        - DLQ after exhausting retries (max_retries reached)
+
+        Args:
+            task: Enrichment task that failed
+            error: Exception that caused failure
+            error_category: Classification of the error (TRANSIENT, PERMANENT, etc.)
+        """
+        assert self.retry_handler is not None, "Retry handler not initialized"
+
+        logger.warning(
+            "Enrichment task failed",
+            extra={
+                "event_id": task.event_id,
+                "event_type": task.event_type,
+                "project_id": task.project_id,
+                "error_category": error_category.value,
+                "retry_count": task.retry_count,
+                "error": str(error)[:200],
+            },
+        )
+
+        # Route through retry handler
+        await self.retry_handler.handle_failure(
+            task=task,
+            error=error,
+            error_category=error_category,
+        )
 
 
 __all__ = ["ClaimXEnrichmentWorker"]

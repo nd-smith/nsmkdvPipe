@@ -40,7 +40,9 @@ from core.errors.exceptions import CircuitOpenError
 from core.types import ErrorCategory
 from kafka_pipeline.config import KafkaConfig
 from kafka_pipeline.common.producer import BaseKafkaProducer
-from kafka_pipeline.common.retry.handler import RetryHandler
+from kafka_pipeline.claimx.api_client import ClaimXApiClient
+from kafka_pipeline.claimx.monitoring import HealthCheckServer
+from kafka_pipeline.claimx.retry import DownloadRetryHandler
 from kafka_pipeline.claimx.schemas.cached import ClaimXCachedDownloadMessage
 from kafka_pipeline.claimx.schemas.tasks import ClaimXDownloadTask
 from kafka_pipeline.common.metrics import (
@@ -154,8 +156,18 @@ class ClaimXDownloadWorker:
         # Create downloader instance (reused across tasks)
         self.downloader = AttachmentDownloader()
 
+        # Create API client for URL refresh (lazy initialized in start())
+        self.api_client: Optional[ClaimXApiClient] = None
+
         # Create retry handler for error routing (lazy initialized in start())
-        self.retry_handler: Optional[RetryHandler] = None
+        self.retry_handler: Optional[DownloadRetryHandler] = None
+
+        # Health check server
+        health_port = getattr(config, 'claimx_download_health_port', 8082)
+        self.health_server = HealthCheckServer(
+            port=health_port,
+            worker_name="claimx-downloader",
+        )
 
         logger.info(
             "Initialized ClaimX download worker with concurrent processing",
@@ -205,6 +217,9 @@ class ClaimXDownloadWorker:
             },
         )
 
+        # Start health check server first
+        await self.health_server.start()
+
         # Initialize concurrency control
         self._semaphore = asyncio.Semaphore(self.config.download_concurrency)
         self._shutdown_event = asyncio.Event()
@@ -223,13 +238,28 @@ class ClaimXDownloadWorker:
         # Start producer
         await self.producer.start()
 
-        # Initialize retry handler (requires producer to be started)
-        self.retry_handler = RetryHandler(self.config, self.producer)
+        # Initialize API client for URL refresh
+        self.api_client = ClaimXApiClient(self.config)
+
+        # Initialize retry handler with API client for URL refresh
+        self.retry_handler = DownloadRetryHandler(
+            config=self.config,
+            producer=self.producer,
+            api_client=self.api_client,
+        )
 
         # Create Kafka consumer
         await self._create_consumer()
 
         self._running = True
+
+        # Update health check readiness
+        api_reachable = not self.api_client.is_circuit_open()
+        self.health_server.set_ready(
+            kafka_connected=True,
+            api_reachable=api_reachable,
+            circuit_open=self.api_client.is_circuit_open(),
+        )
 
         # Update connection status
         update_connection_status("consumer", connected=True)
@@ -361,8 +391,16 @@ class ClaimXDownloadWorker:
         # Stop producer
         await self.producer.stop()
 
+        # Close API client
+        if self.api_client:
+            await self.api_client.close()
+            self.api_client = None
+
         # Clear retry handler reference
         self.retry_handler = None
+
+        # Stop health check server
+        await self.health_server.stop()
 
         # Update metrics
         update_connection_status("consumer", connected=False)
