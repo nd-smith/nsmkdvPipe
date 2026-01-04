@@ -7,7 +7,6 @@ and produces events to Kafka for processing by download workers.
 
 import asyncio
 import json
-import logging
 import os
 import time
 from dataclasses import dataclass, field
@@ -17,6 +16,7 @@ from typing import Any, Dict, Optional, Set
 
 import yaml
 
+from core.logging.setup import get_logger
 from kafka_pipeline.config import KafkaConfig, load_config as load_kafka_config
 from kafka_pipeline.common.eventhouse.dedup import DedupConfig, EventhouseDeduplicator
 from kafka_pipeline.common.eventhouse.kql_client import (
@@ -29,7 +29,7 @@ from kafka_pipeline.common.producer import BaseKafkaProducer
 from kafka_pipeline.xact.schemas.events import EventMessage
 from kafka_pipeline.xact.writers.delta_events import DeltaEventsWriter
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 @dataclass
