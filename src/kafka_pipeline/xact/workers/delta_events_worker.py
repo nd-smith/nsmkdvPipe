@@ -255,21 +255,24 @@ class DeltaEventsWorker:
                 success=success,
             )
 
-            logger.info(
-                "Flushed batch to Delta",
-                extra={
-                    "batch_size": batch_size,
-                    "batches_written": self._batches_written,
-                    "total_events_written": self._total_events_written,
-                    "max_batches": self.max_batches,
-                    "success": success,
-                },
-            )
-
-            if not success:
+            if success:
+                logger.info(
+                    "Successfully wrote batch to Delta",
+                    extra={
+                        "batch_size": batch_size,
+                        "batches_written": self._batches_written,
+                        "total_events_written": self._total_events_written,
+                        "max_batches": self.max_batches,
+                    },
+                )
+            else:
                 logger.warning(
                     "Delta batch write failed",
-                    extra={"batch_size": batch_size},
+                    extra={
+                        "batch_size": batch_size,
+                        "batches_written": self._batches_written,
+                        "max_batches": self.max_batches,
+                    },
                 )
 
         except Exception as e:
