@@ -53,6 +53,10 @@ class MockClaimXApiClient:
     async def close(self):
         self.is_closed = True
 
+    def is_circuit_open(self) -> bool:
+        """Check if circuit breaker is open (mock always returns False)."""
+        return False
+
     async def _ensure_session(self):
         """Ensure HTTP session is ready (mock implementation)."""
         pass
