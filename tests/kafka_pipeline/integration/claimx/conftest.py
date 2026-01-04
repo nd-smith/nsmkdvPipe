@@ -412,6 +412,24 @@ async def claimx_upload_worker(
 
 
 @pytest.fixture
+async def claimx_result_processor(
+    test_claimx_config: KafkaConfig,
+) -> AsyncGenerator:
+    """Provide ClaimX result processor worker for testing."""
+    from kafka_pipeline.claimx.workers.result_processor import ClaimXResultProcessor
+
+    processor = ClaimXResultProcessor(
+        config=test_claimx_config,
+        results_topic=test_claimx_config.claimx_downloads_results_topic,
+    )
+
+    yield processor
+
+    # Cleanup is handled by the test itself
+    # (processor.stop() should be called in test)
+
+
+@pytest.fixture
 def mock_storage_claimx(
     mock_onelake_client,
     mock_claimx_events_writer: MockClaimXEventsDeltaWriter,

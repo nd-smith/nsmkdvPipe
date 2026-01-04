@@ -14,6 +14,7 @@ Delta table (optional): claimx_download_results
 
 import asyncio
 import json
+import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Set
 
@@ -243,7 +244,7 @@ class ClaimXResultProcessor:
 
             log_level = "info" if not final else "info"
             logger.log(
-                getattr(logger, log_level.upper(), logger.INFO),
+                getattr(logging, log_level.upper(), logging.INFO),
                 "Result processor statistics" + (" (final)" if final else ""),
                 extra={
                     "total_processed": total,

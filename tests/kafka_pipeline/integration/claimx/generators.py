@@ -179,7 +179,7 @@ def create_upload_result_message(
     Args:
         media_id: Media ID
         project_id: Project ID
-        status: Upload status (success/failed)
+        status: Upload status (completed/failed/failed_permanent)
         **kwargs: Additional fields
 
     Returns:
@@ -189,10 +189,14 @@ def create_upload_result_message(
         "media_id": str(media_id),  # Convert to string
         "project_id": str(project_id),  # Convert to string
         "status": status,
-        "onelake_path": kwargs.get("onelake_path"),
-        "file_size_bytes": kwargs.get("file_size_bytes", 1024),
+        "download_url": kwargs.get("download_url", f"https://s3.amazonaws.com/claimx/media_{media_id}.jpg"),
+        "blob_path": kwargs.get("blob_path", f"claimx/project_{project_id}/media_{media_id}.jpg"),
+        "file_type": kwargs.get("file_type", "jpg"),
+        "file_name": kwargs.get("file_name", f"media_{media_id}.jpg"),
+        "source_event_id": kwargs.get("source_event_id", ""),
+        "bytes_uploaded": kwargs.get("bytes_uploaded", 1024 if status == "completed" else 0),
         "error_message": kwargs.get("error_message"),
-        "uploaded_at": kwargs.get("uploaded_at", datetime.now(timezone.utc)),
+        "created_at": kwargs.get("created_at", datetime.now(timezone.utc)),
     }
 
     return ClaimXUploadResultMessage(**result_data)
