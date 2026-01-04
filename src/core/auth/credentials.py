@@ -356,7 +356,7 @@ class AzureCredentialProvider:
             )
 
         try:
-            content = token_path.read_text(encoding="utf-8").strip()
+            content = token_path.read_text(encoding="utf-8-sig").strip()
             # Update mtime after successful read
             self._token_file_mtime = os.path.getmtime(self.token_file)
         except IOError as e:
