@@ -286,6 +286,7 @@ class DeltaTableWriter(LoggedClass):
         timestamp_column: str = "ingested_at",
         partition_column: str = "event_date",
         z_order_columns: Optional[List[str]] = None,
+        dedupe_cache_refresh_batches: int = 10,
     ):
         self.table_path = table_path
         self.dedupe_column = dedupe_column
@@ -295,7 +296,19 @@ class DeltaTableWriter(LoggedClass):
         self.z_order_columns = z_order_columns or []
         self._reader = DeltaTableReader(table_path)
         self._optimization_scheduler: Optional[Any] = None
+
+        # Dedupe ID cache - avoids querying table on every batch
+        self._dedupe_cache_refresh_batches = dedupe_cache_refresh_batches
+        self._cached_dedupe_ids: Optional[Set[str]] = None
+        self._cache_batch_count: int = 0
+
         super().__init__()
+
+    def invalidate_dedupe_cache(self) -> None:
+        """Invalidate the dedupe ID cache, forcing a refresh on next write."""
+        self._cached_dedupe_ids = None
+        self._cache_batch_count = 0
+        self._log(logging.DEBUG, "Invalidated dedupe ID cache")
 
     def _table_exists(self, opts: Dict[str, str]) -> bool:
         """Check if Delta table exists."""
@@ -345,6 +358,11 @@ class DeltaTableWriter(LoggedClass):
                 self._log(logging.DEBUG, "No new records after deduplication")
                 return 0
 
+        # Capture IDs we're about to write (for cache update)
+        new_ids: Optional[Set[str]] = None
+        if dedupe and self.dedupe_column and self.dedupe_column in df.columns:
+            new_ids = set(df[self.dedupe_column].to_list())
+
         # Write to Delta - convert to Arrow for write_deltalake
         opts = get_storage_options()
         write_deltalake(
@@ -354,6 +372,19 @@ class DeltaTableWriter(LoggedClass):
             schema_mode="merge",
             storage_options=opts,
         )  # type: ignore[call-overload]
+
+        # Update dedupe cache with newly written IDs
+        if new_ids and self._cached_dedupe_ids is not None:
+            self._cached_dedupe_ids.update(new_ids)
+            self._log(
+                logging.DEBUG,
+                "Added new IDs to dedupe cache",
+                new_id_count=len(new_ids),
+                cache_size=len(self._cached_dedupe_ids),
+            )
+
+        # Increment batch counter for cache refresh tracking
+        self._cache_batch_count += 1
 
         return len(df)
 
@@ -549,20 +580,37 @@ class DeltaTableWriter(LoggedClass):
         return rows_written
 
     def _filter_existing(self, df: pl.DataFrame) -> pl.DataFrame:
-        """Filter out records that already exist in table."""
+        """Filter out records that already exist in table using cached IDs."""
         if not self.dedupe_column:
             return df
 
-        try:
-            existing_ids = self._get_recent_ids()
-        except Exception as e:
-            self._log_exception(
-                e,
-                "Could not get recent IDs for deduplication",
-                level=logging.WARNING,
-            )
-            return df
+        # Check if cache needs refresh
+        needs_refresh = (
+            self._cached_dedupe_ids is None
+            or self._cache_batch_count >= self._dedupe_cache_refresh_batches
+        )
 
+        if needs_refresh:
+            try:
+                self._cached_dedupe_ids = self._get_recent_ids()
+                self._cache_batch_count = 0
+                self._log(
+                    logging.DEBUG,
+                    "Refreshed dedupe ID cache",
+                    cache_size=len(self._cached_dedupe_ids),
+                    refresh_interval=self._dedupe_cache_refresh_batches,
+                )
+            except Exception as e:
+                self._log_exception(
+                    e,
+                    "Could not refresh dedupe ID cache",
+                    level=logging.WARNING,
+                )
+                # On error, clear cache to force retry next batch
+                self._cached_dedupe_ids = None
+                return df
+
+        existing_ids = self._cached_dedupe_ids
         if not existing_ids:
             return df
 
