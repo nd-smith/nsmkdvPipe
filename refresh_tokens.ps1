@@ -6,7 +6,9 @@ param(
     [int]$IntervalMinutes = 45
 )
 
-$TokenFile = "src\tokens.json"
+# Get script directory and set token file path relative to it
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$TokenFile = Join-Path $ScriptDir "src\tokens.json"
 $IntervalSeconds = $IntervalMinutes * 60
 
 Write-Host "============================================================"
