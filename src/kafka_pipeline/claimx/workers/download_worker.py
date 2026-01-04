@@ -20,6 +20,7 @@ Concurrent Processing:
 """
 
 import asyncio
+import base64
 import shutil
 import tempfile
 import time
@@ -239,7 +240,19 @@ class ClaimXDownloadWorker:
         await self.producer.start()
 
         # Initialize API client for URL refresh
-        self.api_client = ClaimXApiClient(self.config)
+        # Create Basic auth token from username:password
+        if self.config.claimx_api_username and self.config.claimx_api_password:
+            credentials = f"{self.config.claimx_api_username}:{self.config.claimx_api_password}"
+            auth_token = base64.b64encode(credentials.encode()).decode('ascii')
+        else:
+            auth_token = ""  # Empty token for tests without real API
+
+        self.api_client = ClaimXApiClient(
+            base_url=self.config.claimx_api_url or "https://api.test.claimxperience.com",
+            auth_token=auth_token,
+            timeout_seconds=self.config.claimx_api_timeout_seconds,
+            max_concurrent=self.config.claimx_api_concurrency,
+        )
 
         # Initialize retry handler with API client for URL refresh
         self.retry_handler = DownloadRetryHandler(

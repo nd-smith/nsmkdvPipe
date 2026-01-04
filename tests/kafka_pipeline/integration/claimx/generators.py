@@ -55,6 +55,7 @@ def create_claimx_event(
         "mfn": mfn,
         "event_date": kwargs.get("event_date", datetime.now(timezone.utc)),
         "created_at": kwargs.get("created_at", datetime.now(timezone.utc)),
+        "ingested_at": kwargs.get("ingested_at", datetime.now(timezone.utc)),
     }
 
     # Add any additional fields
@@ -123,12 +124,20 @@ def create_download_task(
     Returns:
         ClaimXDownloadTask: Test download task
     """
+    # Default blob_path if not provided
+    default_blob_path = f"claimx/project_{project_id}/media_{media_id}.jpg"
+
     task_data = {
         "media_id": str(media_id),  # Convert to string
         "project_id": str(project_id),  # Convert to string
         "download_url": download_url,
-        "created_at": kwargs.get("created_at", datetime.now(timezone.utc)),
+        "blob_path": kwargs.get("blob_path", default_blob_path),
+        "file_type": kwargs.get("file_type", "jpg"),
+        "file_name": kwargs.get("file_name", f"media_{media_id}.jpg"),
+        "source_event_id": kwargs.get("source_event_id", f"evt_{media_id}"),
         "retry_count": kwargs.get("retry_count", 0),
+        "expires_at": kwargs.get("expires_at"),
+        "refresh_count": kwargs.get("refresh_count", 0),
     }
 
     return ClaimXDownloadTask(**task_data)

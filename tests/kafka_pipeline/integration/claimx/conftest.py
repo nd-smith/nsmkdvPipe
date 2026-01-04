@@ -53,6 +53,10 @@ class MockClaimXApiClient:
     async def close(self):
         self.is_closed = True
 
+    async def _ensure_session(self):
+        """Ensure HTTP session is ready (mock implementation)."""
+        pass
+
     def set_project(self, project_id: int, data: Dict):
         """Set mock data for a project."""
         self.mock_projects[project_id] = data
@@ -145,10 +149,11 @@ class MockClaimXEventsDeltaWriter:
         self.written_events.append(event_dict)
         self.write_count += 1
 
-    async def write_events(self, events: List) -> None:
+    async def write_events(self, events: List) -> bool:
         """Write multiple events."""
         for event in events:
             await self.write_event(event)
+        return True
 
     def get_events_by_event_id(self, event_id: int) -> List[Dict]:
         """Get events by event_id."""
@@ -401,8 +406,7 @@ async def claimx_upload_worker(
     )
 
     worker = ClaimXUploadWorker(
-        config=test_claimx_config,
-        temp_dir=tmp_path / "claimx_downloads"
+        config=test_claimx_config
     )
 
     yield worker
