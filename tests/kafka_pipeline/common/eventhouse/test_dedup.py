@@ -242,6 +242,46 @@ class TestEventhouseDeduplicator:
             trace_count = query.count("'trace-")
             assert trace_count == config.max_trace_ids_per_query
 
+    def test_build_deduped_query_with_boundary_trace_ids(self, config):
+        """Test building query with boundary_trace_ids for pagination."""
+        dedup = EventhouseDeduplicator(config)
+
+        poll_from = datetime(2024, 1, 15, 10, 0, 0, tzinfo=timezone.utc)
+        poll_to = datetime(2024, 1, 15, 11, 0, 0, tzinfo=timezone.utc)
+
+        # Provide boundary trace_ids directly (pagination mode)
+        boundary_ids = ["boundary-1", "boundary-2"]
+
+        query = dedup.build_deduped_query(
+            base_table="Events",
+            poll_from=poll_from,
+            poll_to=poll_to,
+            boundary_trace_ids=boundary_ids,
+        )
+
+        # Should use boundary_trace_ids for anti-join, not load from Delta
+        assert "traceId !in (dynamic(['boundary-1', 'boundary-2']))" in query
+        # Should include ingestion_time column for pagination
+        assert "extend ingestion_time = ingestion_time()" in query
+
+    def test_build_deduped_query_boundary_empty_list(self, config):
+        """Test building query with empty boundary_trace_ids."""
+        dedup = EventhouseDeduplicator(config)
+
+        poll_from = datetime(2024, 1, 15, 10, 0, 0, tzinfo=timezone.utc)
+
+        # Empty boundary list (first batch of pagination)
+        query = dedup.build_deduped_query(
+            base_table="Events",
+            poll_from=poll_from,
+            boundary_trace_ids=[],
+        )
+
+        # Should not have anti-join filter
+        assert "traceId !in" not in query
+        # Should still include ingestion_time column
+        assert "extend ingestion_time = ingestion_time()" in query
+
     def test_get_recent_trace_ids_with_mock_delta(self, dedup):
         """Test getting trace_ids from mocked Delta table."""
         # Create mock DataFrame
