@@ -71,7 +71,7 @@ class DeltaEventsWriter(BaseDeltaWriter):
             table_path=table_path,
             dedupe_column="trace_id",
             dedupe_window_hours=dedupe_window_hours,
-            timestamp_column="ingested_at",
+            timestamp_column="created_at",
         )
 
         self.dedupe_window_hours = dedupe_window_hours
