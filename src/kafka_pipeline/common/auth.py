@@ -158,7 +158,7 @@ class AzureAuth:
             raise AzureAuthError("AZURE_TOKEN_FILE not set")
 
         try:
-            with open(self.token_file, "r", encoding="utf-8") as f:
+            with open(self.token_file, "r", encoding="utf-8-sig") as f:
                 content = f.read().strip()
 
             if not content:
