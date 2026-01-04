@@ -158,16 +158,30 @@ class EventhouseDeduplicator:
             return set()
 
         except Exception as e:
+            # Handle TableNotFoundError and similar deltalake errors
+            # These occur when the table exists but has no data/log files
+            err_name = type(e).__name__
+            err_msg = str(e)
+            if "TableNotFoundError" in err_name or "No files in log" in err_msg:
+                logger.warning(
+                    "xact_events table empty or not initialized, starting with empty cache",
+                    extra={
+                        "table_path": self.config.xact_events_table_path,
+                        "error": err_msg[:100],
+                    },
+                )
+                return set()
+
+            # Log and re-raise other exceptions
             duration_ms = (time.perf_counter() - start_time) * 1000
             logger.error(
                 "Failed to load trace_id cache from xact_events",
                 extra={
-                    "error": str(e)[:200],
+                    "error": err_msg[:200],
                     "duration_ms": round(duration_ms, 2),
                     "table_path": self.config.xact_events_table_path,
                 },
             )
-            # Re-raise to let caller handle
             raise
 
     def get_recent_trace_ids(
