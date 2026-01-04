@@ -10,7 +10,7 @@ import json
 import os
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
@@ -274,6 +274,10 @@ class KQLEventPoller:
         self._consecutive_empty_polls = 0
         self._total_events_fetched = 0
         self._total_polls = 0
+
+        # Backfill mode - stays true until we get a partial batch
+        self._backfill_mode = True
+        self._backfill_start_time: Optional[datetime] = None
 
         # Background task tracking for graceful shutdown
         self._pending_tasks: Set[asyncio.Task] = set()
@@ -565,7 +569,27 @@ class KQLEventPoller:
         poll_start = time.perf_counter()
 
         # Calculate poll window
-        poll_from, poll_to = self._deduplicator.get_poll_window(self._last_poll_time)
+        now = datetime.now(timezone.utc)
+
+        if self._backfill_mode:
+            # During backfill, always use the original start time
+            if self._backfill_start_time is None:
+                # First poll - calculate and store the backfill start time
+                self._backfill_start_time = now - timedelta(
+                    hours=self.config.dedup.eventhouse_query_window_hours
+                )
+                logger.info(
+                    "Starting backfill mode",
+                    extra={
+                        "backfill_start": self._backfill_start_time.isoformat(),
+                        "window_hours": self.config.dedup.eventhouse_query_window_hours,
+                    },
+                )
+            poll_from = self._backfill_start_time
+            poll_to = now
+        else:
+            # Normal mode - use last poll time with overlap
+            poll_from, poll_to = self._deduplicator.get_poll_window(self._last_poll_time)
 
         # Build query with deduplication
         query = self._deduplicator.build_deduped_query(
@@ -587,6 +611,17 @@ class KQLEventPoller:
         self._last_poll_time = poll_to
         self._total_events_fetched += events_count
 
+        # Check if backfill is complete (got fewer events than batch_size)
+        if self._backfill_mode and events_count < self.config.batch_size:
+            self._backfill_mode = False
+            logger.info(
+                "Backfill complete, switching to real-time mode",
+                extra={
+                    "total_backfilled": self._total_events_fetched,
+                    "final_batch_size": events_count,
+                },
+            )
+
         poll_duration_ms = (time.perf_counter() - poll_start) * 1000
 
         # Track consecutive empty polls
@@ -605,6 +640,7 @@ class KQLEventPoller:
                 "poll_from": poll_from.isoformat(),
                 "poll_to": poll_to.isoformat(),
                 "consecutive_empty_polls": self._consecutive_empty_polls,
+                "backfill_mode": self._backfill_mode,
             },
         )
 
