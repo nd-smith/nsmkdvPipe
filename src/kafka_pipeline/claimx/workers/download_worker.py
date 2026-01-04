@@ -41,6 +41,7 @@ from core.types import ErrorCategory
 from kafka_pipeline.config import KafkaConfig
 from kafka_pipeline.common.producer import BaseKafkaProducer
 from kafka_pipeline.claimx.api_client import ClaimXApiClient
+from kafka_pipeline.claimx.monitoring import HealthCheckServer
 from kafka_pipeline.claimx.retry import DownloadRetryHandler
 from kafka_pipeline.claimx.schemas.cached import ClaimXCachedDownloadMessage
 from kafka_pipeline.claimx.schemas.tasks import ClaimXDownloadTask
@@ -161,6 +162,13 @@ class ClaimXDownloadWorker:
         # Create retry handler for error routing (lazy initialized in start())
         self.retry_handler: Optional[DownloadRetryHandler] = None
 
+        # Health check server
+        health_port = getattr(config, 'claimx_download_health_port', 8082)
+        self.health_server = HealthCheckServer(
+            port=health_port,
+            worker_name="claimx-downloader",
+        )
+
         logger.info(
             "Initialized ClaimX download worker with concurrent processing",
             extra={
@@ -209,6 +217,9 @@ class ClaimXDownloadWorker:
             },
         )
 
+        # Start health check server first
+        await self.health_server.start()
+
         # Initialize concurrency control
         self._semaphore = asyncio.Semaphore(self.config.download_concurrency)
         self._shutdown_event = asyncio.Event()
@@ -241,6 +252,14 @@ class ClaimXDownloadWorker:
         await self._create_consumer()
 
         self._running = True
+
+        # Update health check readiness
+        api_reachable = not self.api_client.is_circuit_open()
+        self.health_server.set_ready(
+            kafka_connected=True,
+            api_reachable=api_reachable,
+            circuit_open=self.api_client.is_circuit_open(),
+        )
 
         # Update connection status
         update_connection_status("consumer", connected=True)
@@ -379,6 +398,9 @@ class ClaimXDownloadWorker:
 
         # Clear retry handler reference
         self.retry_handler = None
+
+        # Stop health check server
+        await self.health_server.stop()
 
         # Update metrics
         update_connection_status("consumer", connected=False)

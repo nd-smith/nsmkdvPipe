@@ -31,6 +31,7 @@ from kafka_pipeline.common.metrics import record_delta_write
 from kafka_pipeline.common.producer import BaseKafkaProducer
 from kafka_pipeline.claimx.api_client import ClaimXApiClient, ClaimXApiError
 from kafka_pipeline.claimx.handlers import get_handler_registry, HandlerRegistry
+from kafka_pipeline.claimx.monitoring import HealthCheckServer
 from kafka_pipeline.claimx.retry import EnrichmentRetryHandler
 from kafka_pipeline.claimx.schemas.entities import EntityRowsMessage
 from kafka_pipeline.claimx.schemas.events import ClaimXEventMessage
@@ -124,6 +125,13 @@ class ClaimXEnrichmentWorker:
         # Handler registry for routing events
         self.handler_registry: HandlerRegistry = get_handler_registry()
 
+        # Health check server
+        health_port = config.claimx_enrichment_health_port if hasattr(config, 'claimx_enrichment_health_port') else 8081
+        self.health_server = HealthCheckServer(
+            port=health_port,
+            worker_name="claimx-enricher",
+        )
+
         # Background task tracking for graceful shutdown
         self._pending_tasks: Set[asyncio.Task] = set()
         self._task_counter = 0
@@ -165,6 +173,9 @@ class ClaimXEnrichmentWorker:
         """
         logger.info("Starting ClaimXEnrichmentWorker")
 
+        # Start health check server first
+        await self.health_server.start()
+
         # Initialize API client
         self.api_client = ClaimXApiClient(
             base_url=self.consumer_config.claimx_api_url,
@@ -174,6 +185,13 @@ class ClaimXEnrichmentWorker:
             max_concurrent=self.consumer_config.claimx_api_concurrency,
         )
         await self.api_client._ensure_session()
+
+        # Check API reachability
+        api_reachable = not self.api_client.is_circuit_open()
+        self.health_server.set_ready(
+            kafka_connected=False,  # Not connected yet
+            api_reachable=api_reachable,
+        )
 
         # Start producer first (uses producer_config for local Kafka)
         self.producer = BaseKafkaProducer(self.producer_config)
@@ -199,6 +217,13 @@ class ClaimXEnrichmentWorker:
             topics=self.topics,
             group_id=self.consumer_group,
             message_handler=self._handle_enrichment_task,
+        )
+
+        # Update readiness: Kafka will be connected when consumer starts
+        self.health_server.set_ready(
+            kafka_connected=True,
+            api_reachable=api_reachable,
+            circuit_open=self.api_client.is_circuit_open(),
         )
 
         # Start consumer (this blocks until stopped)
@@ -246,6 +271,9 @@ class ClaimXEnrichmentWorker:
         # Close API client
         if self.api_client:
             await self.api_client.close()
+
+        # Stop health check server
+        await self.health_server.stop()
 
         logger.info("ClaimXEnrichmentWorker stopped successfully")
 

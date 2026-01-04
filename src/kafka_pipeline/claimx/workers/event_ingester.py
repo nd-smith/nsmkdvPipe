@@ -30,6 +30,7 @@ from kafka_pipeline.config import KafkaConfig
 from kafka_pipeline.common.consumer import BaseKafkaConsumer
 from kafka_pipeline.common.metrics import record_delta_write
 from kafka_pipeline.common.producer import BaseKafkaProducer
+from kafka_pipeline.claimx.monitoring import HealthCheckServer
 from kafka_pipeline.claimx.schemas.events import ClaimXEventMessage
 from kafka_pipeline.claimx.schemas.tasks import ClaimXEnrichmentTask
 from kafka_pipeline.claimx.writers import ClaimXEventsDeltaWriter
@@ -111,6 +112,13 @@ class ClaimXEventIngesterWorker:
         self._pending_tasks: Set[asyncio.Task] = set()
         self._task_counter = 0  # For unique task naming
 
+        # Health check server
+        health_port = getattr(config, 'claimx_event_ingester_health_port', 8084)
+        self.health_server = HealthCheckServer(
+            port=health_port,
+            worker_name="claimx-event-ingester",
+        )
+
         logger.info(
             "Initialized ClaimXEventIngesterWorker",
             extra={
@@ -139,6 +147,9 @@ class ClaimXEventIngesterWorker:
         """
         logger.info("Starting ClaimXEventIngesterWorker")
 
+        # Start health check server first
+        await self.health_server.start()
+
         # Start producer first (uses producer_config for local Kafka)
         self.producer = BaseKafkaProducer(self.producer_config)
         await self.producer.start()
@@ -150,6 +161,9 @@ class ClaimXEventIngesterWorker:
             group_id=self.consumer_group,
             message_handler=self._handle_event_message,
         )
+
+        # Update health check readiness (event ingester doesn't use API)
+        self.health_server.set_ready(kafka_connected=True, api_reachable=True)
 
         # Start consumer (this blocks until stopped)
         await self.consumer.start()
@@ -174,6 +188,9 @@ class ClaimXEventIngesterWorker:
         # Then stop producer (flushes pending messages)
         if self.producer:
             await self.producer.stop()
+
+        # Stop health check server
+        await self.health_server.stop()
 
         logger.info("ClaimXEventIngesterWorker stopped successfully")
 

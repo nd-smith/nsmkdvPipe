@@ -29,6 +29,7 @@ from core.auth.kafka_oauth import create_kafka_oauth_callback
 from core.logging.setup import get_logger
 from kafka_pipeline.config import KafkaConfig
 from kafka_pipeline.common.producer import BaseKafkaProducer
+from kafka_pipeline.claimx.monitoring import HealthCheckServer
 from kafka_pipeline.claimx.schemas.cached import ClaimXCachedDownloadMessage
 from kafka_pipeline.claimx.schemas.results import ClaimXUploadResultMessage
 from kafka_pipeline.common.storage import OneLakeClient
@@ -129,6 +130,13 @@ class ClaimXUploadWorker:
         # OneLake client (lazy initialized in start())
         self.onelake_client: Optional[OneLakeClient] = None
 
+        # Health check server
+        health_port = getattr(config, 'claimx_upload_health_port', 8083)
+        self.health_server = HealthCheckServer(
+            port=health_port,
+            worker_name="claimx-uploader",
+        )
+
         logger.info(
             "Initialized ClaimX upload worker",
             extra={
@@ -163,6 +171,9 @@ class ClaimXUploadWorker:
                 "upload_batch_size": self.config.upload_batch_size,
             },
         )
+
+        # Start health check server first
+        await self.health_server.start()
 
         # Initialize concurrency control
         self._semaphore = asyncio.Semaphore(self.config.upload_concurrency)
@@ -200,6 +211,9 @@ class ClaimXUploadWorker:
         await self._create_consumer()
 
         self._running = True
+
+        # Update health check readiness (upload worker doesn't use API)
+        self.health_server.set_ready(kafka_connected=True, api_reachable=True)
 
         # Update connection status
         update_connection_status("consumer", connected=True)
@@ -277,6 +291,9 @@ class ClaimXUploadWorker:
 
         # Stop producer
         await self.producer.stop()
+
+        # Stop health check server
+        await self.health_server.stop()
 
         # Close OneLake client
         if self.onelake_client is not None:
