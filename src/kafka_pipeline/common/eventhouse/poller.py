@@ -664,6 +664,22 @@ class KQLEventPoller:
 
         # Write events to Delta Lake (batch) - tracked for graceful shutdown
         if events_for_delta and self._delta_writer:
+            # Update dedup cache IMMEDIATELY to prevent re-polling on next cycle.
+            # This fixes a race condition where the async Delta write hasn't completed
+            # before the next poll starts, causing the same events to be fetched again.
+            # Worst case if Delta write fails: event won't be re-polled (in cache) but
+            # won't persist to Delta (lost on restart). This is acceptable vs. duplicates.
+            trace_ids = [event.trace_id for event in events_for_delta]
+            added = self._deduplicator.add_to_cache(trace_ids)
+            logger.debug(
+                "Updated dedup cache before async Delta write",
+                extra={
+                    "trace_ids_added": added,
+                    "cache_size": self._deduplicator.get_cache_size(),
+                    "event_count": len(events_for_delta),
+                },
+            )
+
             self._create_tracked_task(
                 self._write_events_to_delta(events_for_delta),
                 task_name="delta_write",
@@ -772,8 +788,10 @@ class KQLEventPoller:
         Uses flatten_events() from verisk_pipeline to transform events
         into the correct xact_events schema with all 28 columns.
 
-        After successful write, updates the deduplicator cache with
-        the newly written trace_ids.
+        Note: The dedup cache is updated BEFORE this async task starts (in
+        _process_results) to prevent race conditions. The cache update here
+        is kept as a secondary confirmation but will be a no-op since the
+        trace_ids are already in the cache.
 
         Runs as background task, failures don't affect main processing.
 
