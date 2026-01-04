@@ -22,19 +22,31 @@ echo.
 :refresh_loop
 echo [%date% %time%] Refreshing tokens...
 
-REM Get storage token
-for /f "delims=" %%a in ('az account get-access-token --resource https://storage.azure.com/ --query accessToken -o tsv 2^>nul') do set STORAGE_TOKEN=%%a
+REM Test az CLI is available
+where az >nul 2>&1
+if errorlevel 1 (
+    echo ERROR: Azure CLI 'az' not found in PATH
+    echo Please install Azure CLI or add it to your PATH
+    goto :error
+)
+
+REM Get storage token (show errors for debugging)
+echo Getting storage token...
+for /f "delims=" %%a in ('az account get-access-token --resource https://storage.azure.com/ --query accessToken -o tsv') do set STORAGE_TOKEN=%%a
 
 if "%STORAGE_TOKEN%"=="" (
-    echo ERROR: Failed to get storage token. Run 'az login' first.
+    echo ERROR: Failed to get storage token.
+    echo Try running: az account get-access-token --resource https://storage.azure.com/
     goto :error
 )
 
 REM Get Kusto token
-for /f "delims=" %%a in ('az account get-access-token --resource https://kusto.kusto.windows.net --query accessToken -o tsv 2^>nul') do set KUSTO_TOKEN=%%a
+echo Getting Kusto token...
+for /f "delims=" %%a in ('az account get-access-token --resource https://kusto.kusto.windows.net --query accessToken -o tsv') do set KUSTO_TOKEN=%%a
 
 if "%KUSTO_TOKEN%"=="" (
-    echo ERROR: Failed to get Kusto token. Run 'az login' first.
+    echo ERROR: Failed to get Kusto token.
+    echo Try running: az account get-access-token --resource https://kusto.kusto.windows.net
     goto :error
 )
 
