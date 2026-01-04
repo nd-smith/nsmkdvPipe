@@ -279,6 +279,10 @@ class KQLEventPoller:
         self._backfill_mode = True
         self._backfill_start_time: Optional[datetime] = None
 
+        # Pagination state - track last batch for efficient queries
+        self._last_ingestion_time: Optional[datetime] = None
+        self._last_batch_trace_ids: list[str] = []
+
         # Background task tracking for graceful shutdown
         self._pending_tasks: Set[asyncio.Task] = set()
         self._task_counter = 0  # For unique task naming
@@ -572,7 +576,7 @@ class KQLEventPoller:
         now = datetime.now(timezone.utc)
 
         if self._backfill_mode:
-            # During backfill, always use the original start time
+            # During backfill, paginate by ingestion_time for efficiency
             if self._backfill_start_time is None:
                 # First poll - calculate and store the backfill start time
                 self._backfill_start_time = now - timedelta(
@@ -585,24 +589,58 @@ class KQLEventPoller:
                         "window_hours": self.config.dedup.eventhouse_query_window_hours,
                     },
                 )
-            poll_from = self._backfill_start_time
+
+            # Use last_ingestion_time for pagination if available
+            if self._last_ingestion_time is not None:
+                poll_from = self._last_ingestion_time
+            else:
+                poll_from = self._backfill_start_time
             poll_to = now
         else:
             # Normal mode - use last poll time with overlap
             poll_from, poll_to = self._deduplicator.get_poll_window(self._last_poll_time)
 
         # Build query with deduplication
+        # During backfill with pagination, use last batch's trace_ids for anti-join
+        # (only needed to handle events with same ingestion_time as last batch)
         query = self._deduplicator.build_deduped_query(
             base_table=self.config.source_table,
             poll_from=poll_from,
             poll_to=poll_to,
             limit=self.config.batch_size,
+            boundary_trace_ids=self._last_batch_trace_ids if self._backfill_mode else None,
         )
 
         # Execute query
         query_start = time.perf_counter()
         result = await self._kql_client.execute_query(query)
         query_duration_ms = (time.perf_counter() - query_start) * 1000
+
+        # Extract pagination info from result before processing
+        if self._backfill_mode and result.rows:
+            # Get trace_ids from this batch for next query's anti-join
+            self._last_batch_trace_ids = [
+                row.get("traceId", row.get("trace_id", ""))
+                for row in result.rows
+            ]
+
+            # Get max ingestion_time for pagination (last row since ordered asc)
+            last_row = result.rows[-1]
+            ingestion_time_str = last_row.get("ingestion_time", last_row.get("$IngestionTime"))
+            if ingestion_time_str:
+                if isinstance(ingestion_time_str, datetime):
+                    self._last_ingestion_time = ingestion_time_str
+                else:
+                    # Parse string timestamp
+                    try:
+                        self._last_ingestion_time = datetime.fromisoformat(
+                            ingestion_time_str.replace("Z", "+00:00")
+                        )
+                    except (ValueError, AttributeError):
+                        logger.warning(
+                            "Could not parse ingestion_time for pagination",
+                            extra={"ingestion_time": str(ingestion_time_str)[:50]},
+                        )
 
         # Process results
         events_count = await self._process_results(result)
