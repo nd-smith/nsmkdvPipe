@@ -286,13 +286,19 @@ async def run_delta_events_worker(kafka_config, events_table_path: str):
     Supports graceful shutdown: when shutdown event is set, the worker
     waits for pending Delta writes before exiting.
     """
+    from kafka_pipeline.common.producer import BaseKafkaProducer
     from kafka_pipeline.xact.workers.delta_events_worker import DeltaEventsWorker
 
     set_log_context(stage="xact-delta-writer")
     logger.info("Starting xact Delta Events worker...")
 
+    # Create producer for retry topic routing
+    producer = BaseKafkaProducer(config=kafka_config)
+    await producer.start()
+
     worker = DeltaEventsWorker(
         config=kafka_config,
+        producer=producer,
         events_table_path=events_table_path,
     )
     shutdown_event = get_shutdown_event()
@@ -318,6 +324,7 @@ async def run_delta_events_worker(kafka_config, events_table_path: str):
             pass
         # Clean up resources after worker exits
         await worker.stop()
+        await producer.stop()
 
 
 async def run_download_worker(kafka_config):
