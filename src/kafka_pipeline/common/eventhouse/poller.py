@@ -27,7 +27,6 @@ from kafka_pipeline.common.eventhouse.kql_client import (
 )
 from kafka_pipeline.common.producer import BaseKafkaProducer
 from kafka_pipeline.xact.schemas.events import EventMessage
-from kafka_pipeline.xact.writers.delta_events import DeltaEventsWriter
 
 logger = get_logger(__name__)
 
@@ -306,13 +305,16 @@ class KQLEventPoller:
         self._kql_client: Optional[KQLClient] = None
         self._deduplicator: Optional[EventhouseDeduplicator] = None
         self._producer: Optional[BaseKafkaProducer] = None
-        self._delta_writer: Optional[DeltaEventsWriter] = None
 
         # State
         self._last_poll_time: Optional[datetime] = None
         self._consecutive_empty_polls = 0
         self._total_events_fetched = 0
         self._total_polls = 0
+
+        # Stats tracking for backfill
+        self._seen_trace_ids: set[str] = set()
+        self._duplicate_count = 0
 
         # Backfill mode - stays true until we get a partial batch
         self._backfill_mode = True
@@ -419,13 +421,6 @@ class KQLEventPoller:
         # Initialize Kafka producer
         self._producer = BaseKafkaProducer(self.config.kafka)
         await self._producer.start()
-
-        # Initialize Delta writer if path configured
-        if self.config.events_table_path:
-            self._delta_writer = DeltaEventsWriter(
-                table_path=self.config.events_table_path,
-                dedupe_window_hours=24,
-            )
 
         self._running = True
         logger.info("KQLEventPoller components started")
@@ -620,11 +615,26 @@ class KQLEventPoller:
                 exc_info=True,
             )
 
+    def _print_backfill_stats(self) -> None:
+        """Print backfill statistics to terminal."""
+        stats = self.stats
+        print("\n" + "=" * 60)
+        print("BACKFILL COMPLETE")
+        print("=" * 60)
+        print(f"  Total messages sent to Kafka:  {stats['total_events_fetched']:,}")
+        print(f"  Unique trace IDs:              {stats['unique_trace_ids']:,}")
+        print(f"  Duplicate events detected:     {stats['duplicate_count']:,}")
+        if stats['unique_trace_ids'] > 0:
+            dupe_rate = (stats['duplicate_count'] / stats['total_events_fetched']) * 100
+            print(f"  Duplicate rate:                {dupe_rate:.2f}%")
+        print("=" * 60 + "\n")
+
     async def run(self) -> None:
         """
         Main polling loop.
 
         Runs until stop() is called or shutdown event is set.
+        In bulk_backfill mode, exits after backfill with stats display.
         """
         logger.info("Starting polling loop")
 
@@ -639,8 +649,13 @@ class KQLEventPoller:
             )
             try:
                 await self._bulk_backfill()
+                # Print stats and exit - don't continue to real-time mode
+                self._print_backfill_stats()
+                logger.info("Bulk backfill complete, exiting")
+                return
             except asyncio.CancelledError:
                 logger.info("Bulk backfill cancelled")
+                self._print_backfill_stats()
                 return
             except Exception as e:
                 logger.error(
@@ -648,9 +663,10 @@ class KQLEventPoller:
                     extra={"error": str(e)[:200]},
                     exc_info=True,
                 )
+                self._print_backfill_stats()
                 return
 
-        # Continue with normal polling loop (real-time mode after backfill)
+        # Continue with normal polling loop (real-time mode)
         while self._running and not self._shutdown_event.is_set():
             try:
                 await self._poll_cycle()
@@ -979,29 +995,13 @@ class KQLEventPoller:
                     exc_info=True,
                 )
 
-        # Write events to Delta Lake (batch) - tracked for graceful shutdown
-        if events_for_delta and self._delta_writer:
-            # Update dedup cache IMMEDIATELY to prevent re-polling on next cycle.
-            # This fixes a race condition where the async Delta write hasn't completed
-            # before the next poll starts, causing the same events to be fetched again.
-            # Worst case if Delta write fails: event won't be re-polled (in cache) but
-            # won't persist to Delta (lost on restart). This is acceptable vs. duplicates.
-            trace_ids = [event.trace_id for event in events_for_delta]
-            added = self._deduplicator.add_to_cache(trace_ids)
-            logger.debug(
-                "Updated dedup cache before async Delta write",
-                extra={
-                    "trace_ids_added": added,
-                    "cache_size": self._deduplicator.get_cache_size(),
-                    "event_count": len(events_for_delta),
-                },
-            )
-
-            self._create_tracked_task(
-                self._write_events_to_delta(events_for_delta),
-                task_name="delta_write",
-                context={"event_count": len(events_for_delta)},
-            )
+        # Track stats for backfill reporting
+        if events_for_delta:
+            for event in events_for_delta:
+                if event.trace_id in self._seen_trace_ids:
+                    self._duplicate_count += 1
+                else:
+                    self._seen_trace_ids.add(event.trace_id)
 
         return events_processed
 
@@ -1098,59 +1098,6 @@ class KQLEventPoller:
             "data": data,
         })
 
-    async def _write_events_to_delta(self, events: list[EventMessage]) -> None:
-        """
-        Write events to Delta Lake for deduplication tracking.
-
-        Uses flatten_events() from verisk_pipeline to transform events
-        into the correct xact_events schema with all 28 columns.
-
-        Note: The dedup cache is updated BEFORE this async task starts (in
-        _process_results) to prevent race conditions. The cache update here
-        is kept as a secondary confirmation but will be a no-op since the
-        trace_ids are already in the cache.
-
-        Runs as background task, failures don't affect main processing.
-
-        Args:
-            events: Events to write (matching verisk_pipeline EventRecord schema)
-        """
-        if not self._delta_writer:
-            return
-
-        try:
-            # Convert EventMessage objects to Eventhouse row format
-            raw_events = [event.to_eventhouse_row() for event in events]
-
-            # Write using flatten_events() transformation
-            success = await self._delta_writer.write_raw_events(raw_events)
-
-            if success:
-                # Update deduplicator cache with newly written trace_ids
-                trace_ids = [event.trace_id for event in events]
-                added = self._deduplicator.add_to_cache(trace_ids)
-                logger.debug(
-                    "Updated dedup cache after Delta write",
-                    extra={
-                        "events_written": len(events),
-                        "trace_ids_added": added,
-                        "cache_size": self._deduplicator.get_cache_size(),
-                    },
-                )
-            else:
-                logger.warning(
-                    "Delta write failed for events batch",
-                    extra={"event_count": len(events)},
-                )
-        except Exception as e:
-            logger.error(
-                "Error writing events to Delta",
-                extra={
-                    "event_count": len(events),
-                    "error": str(e)[:200],
-                },
-            )
-
     @property
     def is_running(self) -> bool:
         """Check if poller is running."""
@@ -1163,6 +1110,8 @@ class KQLEventPoller:
             "running": self._running,
             "total_polls": self._total_polls,
             "total_events_fetched": self._total_events_fetched,
+            "unique_trace_ids": len(self._seen_trace_ids),
+            "duplicate_count": self._duplicate_count,
             "consecutive_empty_polls": self._consecutive_empty_polls,
             "last_poll_time": (
                 self._last_poll_time.isoformat() if self._last_poll_time else None
