@@ -32,6 +32,11 @@ from kafka_pipeline.xact.writers import DeltaEventsWriter
 
 logger = get_logger(__name__)
 
+# Retry configuration for failed batch writes
+BATCH_RETRY_MAX_ATTEMPTS = 5
+BATCH_RETRY_BASE_DELAY = 2.0  # seconds
+BATCH_RETRY_MAX_DELAY = 60.0  # seconds
+
 
 class DeltaEventsWorker:
     """
@@ -92,6 +97,10 @@ class DeltaEventsWorker:
         self._batch: List[Dict[str, Any]] = []
         self._batches_written = 0
         self._total_events_written = 0
+
+        # Retry state for failed batches
+        self._pending_batch: Optional[List[Dict[str, Any]]] = None
+        self._retry_attempt = 0
 
         # Initialize Delta writer
         if events_table_path:
@@ -177,10 +186,23 @@ class DeltaEventsWorker:
         Process a single event message from Kafka.
 
         Adds the event to the batch and flushes when batch is full.
+        If there's a pending batch from a failed write, retries it first.
 
         Args:
             record: ConsumerRecord containing EventMessage JSON
+
+        Raises:
+            RuntimeError: If pending batch exhausts all retries (stops consumer)
         """
+        # First, retry any pending batch from previous failure
+        if self._pending_batch is not None:
+            await self._retry_pending_batch()
+            # If still pending after retries, raise to stop processing
+            if self._pending_batch is not None:
+                raise RuntimeError(
+                    f"Failed to write batch after {BATCH_RETRY_MAX_ATTEMPTS} attempts"
+                )
+
         # Check if we've reached max batches limit
         if self.max_batches is not None and self._batches_written >= self.max_batches:
             logger.info(
@@ -231,39 +253,100 @@ class DeltaEventsWorker:
         """
         Write the accumulated batch to Delta Lake.
 
-        Clears the batch after writing and updates counters.
+        On success: clears batch and updates counters.
+        On failure: moves batch to pending for retry.
         """
         if not self._batch:
             return
 
         batch_size = len(self._batch)
         batch_to_write = self._batch
-        self._batch = []  # Clear batch immediately to accept new events
 
-        try:
-            # Write batch using flatten_events() transformation
-            # Data is already in dict format, no JSON parsing needed
-            success = await self.delta_writer.write_raw_events(batch_to_write)
+        success = await self._write_batch(batch_to_write)
 
+        if success:
+            # Clear batch and update counters
+            self._batch = []
             self._batches_written += 1
-            if success:
-                self._total_events_written += batch_size
+            self._total_events_written += batch_size
 
-            record_delta_write(
-                table="xact_events",
-                event_count=batch_size,
-                success=success,
+            # Build progress message
+            if self.max_batches:
+                progress = f"Batch {self._batches_written}/{self.max_batches}"
+            else:
+                progress = f"Batch {self._batches_written}"
+
+            logger.info(
+                f"{progress}: Successfully wrote {batch_size} events to Delta",
+                extra={
+                    "batch_size": batch_size,
+                    "batches_written": self._batches_written,
+                    "total_events_written": self._total_events_written,
+                    "max_batches": self.max_batches,
+                },
+            )
+        else:
+            # Move to pending batch for retry - don't clear
+            self._pending_batch = batch_to_write
+            self._batch = []
+            self._retry_attempt = 1  # First attempt already happened
+
+            logger.warning(
+                f"Batch write failed, will retry ({self._retry_attempt}/{BATCH_RETRY_MAX_ATTEMPTS})",
+                extra={
+                    "batch_size": batch_size,
+                    "retry_attempt": self._retry_attempt,
+                    "max_attempts": BATCH_RETRY_MAX_ATTEMPTS,
+                },
             )
 
+    async def _retry_pending_batch(self) -> None:
+        """
+        Retry writing a pending batch with exponential backoff.
+
+        Clears pending batch on success or after exhausting retries.
+        """
+        if self._pending_batch is None:
+            return
+
+        batch_size = len(self._pending_batch)
+
+        while self._retry_attempt < BATCH_RETRY_MAX_ATTEMPTS:
+            # Calculate delay with exponential backoff
+            delay = min(
+                BATCH_RETRY_BASE_DELAY * (2 ** (self._retry_attempt - 1)),
+                BATCH_RETRY_MAX_DELAY,
+            )
+
+            logger.info(
+                f"Retrying batch write in {delay:.1f}s",
+                extra={
+                    "batch_size": batch_size,
+                    "retry_attempt": self._retry_attempt + 1,
+                    "max_attempts": BATCH_RETRY_MAX_ATTEMPTS,
+                    "delay_seconds": delay,
+                },
+            )
+
+            await asyncio.sleep(delay)
+            self._retry_attempt += 1
+
+            success = await self._write_batch(self._pending_batch)
+
             if success:
-                # Build progress message
+                # Success - clear pending batch and update counters
+                self._batches_written += 1
+                self._total_events_written += batch_size
+                self._pending_batch = None
+                self._retry_attempt = 0
+
                 if self.max_batches:
                     progress = f"Batch {self._batches_written}/{self.max_batches}"
                 else:
                     progress = f"Batch {self._batches_written}"
 
                 logger.info(
-                    f"{progress}: Successfully wrote {batch_size} events to Delta",
+                    f"{progress}: Successfully wrote {batch_size} events to Delta (after retry)",
                     extra={
                         "batch_size": batch_size,
                         "batches_written": self._batches_written,
@@ -271,21 +354,49 @@ class DeltaEventsWorker:
                         "max_batches": self.max_batches,
                     },
                 )
-            else:
-                # Build progress message for failure
-                if self.max_batches:
-                    progress = f"Batch {self._batches_written}/{self.max_batches}"
-                else:
-                    progress = f"Batch {self._batches_written}"
+                return
 
-                logger.warning(
-                    f"{progress}: Failed to write {batch_size} events to Delta",
-                    extra={
-                        "batch_size": batch_size,
-                        "batches_written": self._batches_written,
-                        "max_batches": self.max_batches,
-                    },
-                )
+            logger.warning(
+                f"Batch retry {self._retry_attempt}/{BATCH_RETRY_MAX_ATTEMPTS} failed",
+                extra={
+                    "batch_size": batch_size,
+                    "retry_attempt": self._retry_attempt,
+                    "max_attempts": BATCH_RETRY_MAX_ATTEMPTS,
+                },
+            )
+
+        # All retries exhausted
+        logger.error(
+            f"Batch write failed after {BATCH_RETRY_MAX_ATTEMPTS} attempts",
+            extra={
+                "batch_size": batch_size,
+                "events_lost": batch_size,
+            },
+        )
+        # Keep pending batch set - caller will raise RuntimeError
+
+    async def _write_batch(self, batch: List[Dict[str, Any]]) -> bool:
+        """
+        Attempt to write a batch to Delta Lake.
+
+        Args:
+            batch: List of event dictionaries to write
+
+        Returns:
+            True if write succeeded, False otherwise
+        """
+        batch_size = len(batch)
+
+        try:
+            success = await self.delta_writer.write_raw_events(batch)
+
+            record_delta_write(
+                table="xact_events",
+                event_count=batch_size,
+                success=success,
+            )
+
+            return success
 
         except Exception as e:
             logger.error(
@@ -301,6 +412,7 @@ class DeltaEventsWorker:
                 event_count=batch_size,
                 success=False,
             )
+            return False
 
 
 __all__ = ["DeltaEventsWorker"]
