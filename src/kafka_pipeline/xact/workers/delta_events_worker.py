@@ -256,8 +256,14 @@ class DeltaEventsWorker:
             )
 
             if success:
+                # Build progress message
+                if self.max_batches:
+                    progress = f"Batch {self._batches_written}/{self.max_batches}"
+                else:
+                    progress = f"Batch {self._batches_written}"
+
                 logger.info(
-                    "Successfully wrote batch to Delta",
+                    f"{progress}: Successfully wrote {batch_size} events to Delta",
                     extra={
                         "batch_size": batch_size,
                         "batches_written": self._batches_written,
@@ -266,8 +272,14 @@ class DeltaEventsWorker:
                     },
                 )
             else:
+                # Build progress message for failure
+                if self.max_batches:
+                    progress = f"Batch {self._batches_written}/{self.max_batches}"
+                else:
+                    progress = f"Batch {self._batches_written}"
+
                 logger.warning(
-                    "Delta batch write failed",
+                    f"{progress}: Failed to write {batch_size} events to Delta",
                     extra={
                         "batch_size": batch_size,
                         "batches_written": self._batches_written,
