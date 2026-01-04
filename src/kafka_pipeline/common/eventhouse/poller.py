@@ -74,6 +74,15 @@ class PollerConfig:
     max_kafka_lag: int = 10_000  # Pause polling if lag exceeds this
     lag_check_interval_seconds: int = 60  # How often to check lag
 
+    # Backfill settings
+    # If backfill_start_stamp is set, starts backfill from that exact timestamp
+    # Format: "YYYY-MM-DD HH:MM:SS.ffffff" (UTC)
+    backfill_start_stamp: Optional[str] = None
+    # If backfill_stop_stamp is set, stops backfill at that timestamp (otherwise uses current time)
+    backfill_stop_stamp: Optional[str] = None
+    # If True, fetches all backfill data in one query instead of paginating
+    bulk_backfill: bool = False
+
     @classmethod
     def load_config(
         cls,
@@ -136,6 +145,20 @@ class PollerConfig:
         if os.getenv("DEDUP_OVERLAP_MINUTES"):
             dedup_data["overlap_minutes"] = os.getenv("DEDUP_OVERLAP_MINUTES")
 
+        # Apply environment variable overrides for backfill
+        if os.getenv("DEDUP_BACKFILL_START_TIMESTAMP"):
+            poller_data["backfill_start_stamp"] = os.getenv(
+                "DEDUP_BACKFILL_START_TIMESTAMP"
+            )
+        if os.getenv("DEDUP_BACKFILL_STOP_TIMESTAMP"):
+            poller_data["backfill_stop_stamp"] = os.getenv(
+                "DEDUP_BACKFILL_STOP_TIMESTAMP"
+            )
+        if os.getenv("DEDUP_BULK_BACKFILL"):
+            poller_data["bulk_backfill"] = os.getenv("DEDUP_BULK_BACKFILL").lower() in (
+                "true", "1", "yes"
+            )
+
         xact_events_path = poller_data.get("events_table_path", "")
 
         dedup_config = DedupConfig(
@@ -179,6 +202,9 @@ class PollerConfig:
             lag_check_interval_seconds=int(
                 poller_data.get("lag_check_interval_seconds", 60)
             ),
+            backfill_start_stamp=poller_data.get("backfill_start_stamp"),
+            backfill_stop_stamp=poller_data.get("backfill_stop_stamp"),
+            bulk_backfill=bool(poller_data.get("bulk_backfill", False)),
         )
 
     @classmethod
@@ -216,6 +242,10 @@ class PollerConfig:
             overlap_minutes=int(os.getenv("DEDUP_OVERLAP_MINUTES", "5")),
         )
 
+        # Parse bulk_backfill boolean
+        bulk_backfill_env = os.getenv("DEDUP_BULK_BACKFILL", "").lower()
+        bulk_backfill = bulk_backfill_env in ("true", "1", "yes")
+
         return cls(
             eventhouse=eventhouse_config,
             kafka=kafka_config,
@@ -226,6 +256,9 @@ class PollerConfig:
             source_table=os.getenv("EVENTHOUSE_SOURCE_TABLE", "Events"),
             events_table_path=xact_events_path,
             max_kafka_lag=int(os.getenv("MAX_KAFKA_LAG", "10000")),
+            backfill_start_stamp=os.getenv("DEDUP_BACKFILL_START_TIMESTAMP"),
+            backfill_stop_stamp=os.getenv("DEDUP_BACKFILL_STOP_TIMESTAMP"),
+            bulk_backfill=bulk_backfill,
         )
 
 
@@ -278,6 +311,22 @@ class KQLEventPoller:
         # Backfill mode - stays true until we get a partial batch
         self._backfill_mode = True
         self._backfill_start_time: Optional[datetime] = None
+        self._backfill_stop_time: Optional[datetime] = None
+        self._bulk_backfill_complete = False
+
+        # Parse backfill timestamps from config
+        if config.backfill_start_stamp:
+            self._backfill_start_time = self._parse_timestamp(config.backfill_start_stamp)
+            logger.info(
+                "Using configured backfill start timestamp",
+                extra={"backfill_start": self._backfill_start_time.isoformat()},
+            )
+        if config.backfill_stop_stamp:
+            self._backfill_stop_time = self._parse_timestamp(config.backfill_stop_stamp)
+            logger.info(
+                "Using configured backfill stop timestamp",
+                extra={"backfill_stop": self._backfill_stop_time.isoformat()},
+            )
 
         # Pagination state - track last batch for efficient queries
         self._last_ingestion_time: Optional[datetime] = None
@@ -305,6 +354,50 @@ class KQLEventPoller:
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         """Async context manager exit."""
         await self.stop()
+
+    @staticmethod
+    def _parse_timestamp(timestamp_str: str) -> datetime:
+        """Parse a timestamp string into a datetime object.
+
+        Supports formats:
+        - "YYYY-MM-DD HH:MM:SS.ffffff"
+        - "YYYY-MM-DDTHH:MM:SS.ffffffZ"
+        - ISO format variations
+
+        Args:
+            timestamp_str: Timestamp string to parse
+
+        Returns:
+            datetime object in UTC
+        """
+        # Try common formats
+        formats = [
+            "%Y-%m-%d %H:%M:%S.%f",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%dT%H:%M:%S.%fZ",
+            "%Y-%m-%dT%H:%M:%S.%f",
+            "%Y-%m-%dT%H:%M:%SZ",
+            "%Y-%m-%dT%H:%M:%S",
+        ]
+
+        for fmt in formats:
+            try:
+                dt = datetime.strptime(timestamp_str, fmt)
+                # Ensure UTC timezone
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt
+            except ValueError:
+                continue
+
+        # Try ISO format as fallback
+        try:
+            dt = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        except ValueError:
+            raise ValueError(f"Could not parse timestamp: {timestamp_str}")
 
     async def start(self) -> None:
         """Initialize all components."""
@@ -529,6 +622,29 @@ class KQLEventPoller:
         """
         logger.info("Starting polling loop")
 
+        # Check if bulk backfill is configured
+        if self.config.bulk_backfill and self._backfill_mode:
+            logger.info(
+                "Bulk backfill mode enabled",
+                extra={
+                    "start_stamp": self.config.backfill_start_stamp,
+                    "stop_stamp": self.config.backfill_stop_stamp,
+                },
+            )
+            try:
+                await self._bulk_backfill()
+            except asyncio.CancelledError:
+                logger.info("Bulk backfill cancelled")
+                return
+            except Exception as e:
+                logger.error(
+                    "Error in bulk backfill",
+                    extra={"error": str(e)[:200]},
+                    exc_info=True,
+                )
+                return
+
+        # Continue with normal polling loop (real-time mode after backfill)
         while self._running and not self._shutdown_event.is_set():
             try:
                 await self._poll_cycle()
@@ -562,6 +678,125 @@ class KQLEventPoller:
             },
         )
 
+    async def _bulk_backfill(self) -> int:
+        """
+        Execute bulk backfill - fetch all data in one query and stream to Kafka.
+
+        This is more efficient than paginated backfill for large historical data loads
+        as it executes a single KQL query instead of many small ones.
+
+        Returns:
+            Total number of events processed
+        """
+        now = datetime.now(timezone.utc)
+
+        # Use configured start time or fall back to window-based calculation
+        if self._backfill_start_time is None:
+            self._backfill_start_time = now - timedelta(
+                hours=self.config.dedup.eventhouse_query_window_hours
+            )
+
+        # Use configured stop time or current time
+        poll_to = self._backfill_stop_time or now
+
+        logger.info(
+            "Starting bulk backfill",
+            extra={
+                "backfill_start": self._backfill_start_time.isoformat(),
+                "backfill_stop": poll_to.isoformat(),
+            },
+        )
+
+        # Build query WITHOUT limit - fetch all data
+        # Format timestamps for KQL
+        start_str = self._backfill_start_time.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        stop_str = poll_to.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+        query = f"""
+{self.config.source_table}
+| where ingestion_time() >= datetime({start_str})
+| where ingestion_time() < datetime({stop_str})
+| extend ingestion_time = ingestion_time()
+| order by ingestion_time asc
+"""
+
+        logger.info(
+            "Executing bulk backfill query",
+            extra={"query_preview": query[:200]},
+        )
+
+        # Execute query - this may return a large result set
+        query_start = time.perf_counter()
+        result = await self._kql_client.execute_query(query)
+        query_duration_ms = (time.perf_counter() - query_start) * 1000
+
+        total_rows = len(result.rows) if result.rows else 0
+        logger.info(
+            "Bulk backfill query complete",
+            extra={
+                "total_rows": total_rows,
+                "query_duration_ms": round(query_duration_ms, 2),
+            },
+        )
+
+        if not result.rows:
+            logger.info("No rows returned from bulk backfill query")
+            self._backfill_mode = False
+            self._bulk_backfill_complete = True
+            return 0
+
+        # Process in batches to avoid overwhelming Kafka
+        total_processed = 0
+        batch_size = self.config.batch_size
+
+        for i in range(0, total_rows, batch_size):
+            batch_rows = result.rows[i : i + batch_size]
+            batch_num = (i // batch_size) + 1
+            total_batches = (total_rows + batch_size - 1) // batch_size
+
+            # Create a mock result object for batch processing
+            class BatchResult:
+                def __init__(self, rows):
+                    self.rows = rows
+
+            batch_result = BatchResult(batch_rows)
+
+            # Process this batch
+            events_count = await self._process_results(batch_result)
+            total_processed += events_count
+
+            logger.info(
+                "Bulk backfill batch processed",
+                extra={
+                    "batch": f"{batch_num}/{total_batches}",
+                    "batch_events": events_count,
+                    "total_processed": total_processed,
+                },
+            )
+
+            # Check for shutdown between batches
+            if self._shutdown_event.is_set():
+                logger.info(
+                    "Bulk backfill interrupted by shutdown",
+                    extra={"processed_before_shutdown": total_processed},
+                )
+                break
+
+        # Mark backfill as complete
+        self._backfill_mode = False
+        self._bulk_backfill_complete = True
+        self._total_events_fetched += total_processed
+
+        logger.info(
+            "Bulk backfill complete",
+            extra={
+                "total_events": total_processed,
+                "query_duration_ms": round(query_duration_ms, 2),
+            },
+        )
+
+        return total_processed
+
     async def _poll_cycle(self) -> int:
         """
         Execute a single poll cycle.
@@ -578,12 +813,12 @@ class KQLEventPoller:
         if self._backfill_mode:
             # During backfill, paginate by ingestion_time for efficiency
             if self._backfill_start_time is None:
-                # First poll - calculate and store the backfill start time
+                # First poll - calculate backfill start time from window config
                 self._backfill_start_time = now - timedelta(
                     hours=self.config.dedup.eventhouse_query_window_hours
                 )
                 logger.info(
-                    "Starting backfill mode",
+                    "Starting backfill mode (calculated from window)",
                     extra={
                         "backfill_start": self._backfill_start_time.isoformat(),
                         "window_hours": self.config.dedup.eventhouse_query_window_hours,
@@ -595,7 +830,9 @@ class KQLEventPoller:
                 poll_from = self._last_ingestion_time
             else:
                 poll_from = self._backfill_start_time
-            poll_to = now
+
+            # Use configured stop time or current time
+            poll_to = self._backfill_stop_time or now
         else:
             # Normal mode - use last poll time with overlap
             poll_from, poll_to = self._deduplicator.get_poll_window(self._last_poll_time)
