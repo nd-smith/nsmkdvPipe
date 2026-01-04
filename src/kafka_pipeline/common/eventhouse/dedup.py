@@ -304,6 +304,7 @@ class EventhouseDeduplicator:
         additional_filters: Optional[str] = None,
         limit: int = 1000,
         order_by: str = "ingestion_time() asc",
+        boundary_trace_ids: Optional[list[str]] = None,
     ) -> str:
         """
         Build complete KQL query with time filter and anti-join.
@@ -317,6 +318,9 @@ class EventhouseDeduplicator:
             additional_filters: Optional additional KQL filter clauses
             limit: Max rows to return (default: 1000)
             order_by: Order clause (default: ingestion_time() asc)
+            boundary_trace_ids: If provided, use these for anti-join instead of
+                loading from Delta. Used for efficient pagination during backfill
+                where only the last batch's trace_ids need to be excluded.
 
         Returns:
             Complete KQL query string
@@ -324,20 +328,28 @@ class EventhouseDeduplicator:
         Raises:
             ValueError: If trace_ids exceed max batch size
         """
-        # Get recent trace_ids from cache (loads from Delta on first call)
-        trace_ids = self.get_recent_trace_ids()
-
-        # Check batch size
-        if len(trace_ids) > self.config.max_trace_ids_per_query:
-            logger.warning(
-                "trace_ids exceed max batch size, query may need chunking",
-                extra={
-                    "trace_id_count": len(trace_ids),
-                    "max_per_query": self.config.max_trace_ids_per_query,
-                },
+        # Use boundary_trace_ids if provided (pagination mode), otherwise load from Delta
+        if boundary_trace_ids is not None:
+            trace_ids = boundary_trace_ids
+            logger.debug(
+                "Using boundary trace_ids for pagination",
+                extra={"trace_id_count": len(trace_ids)},
             )
-            # For now, truncate with warning; WP-503 will handle proper chunking
-            trace_ids = trace_ids[: self.config.max_trace_ids_per_query]
+        else:
+            # Get recent trace_ids from cache (loads from Delta on first call)
+            trace_ids = self.get_recent_trace_ids()
+
+            # Check batch size
+            if len(trace_ids) > self.config.max_trace_ids_per_query:
+                logger.warning(
+                    "trace_ids exceed max batch size, query may need chunking",
+                    extra={
+                        "trace_id_count": len(trace_ids),
+                        "max_per_query": self.config.max_trace_ids_per_query,
+                    },
+                )
+                # For now, truncate with warning; WP-503 will handle proper chunking
+                trace_ids = trace_ids[: self.config.max_trace_ids_per_query]
 
         # Build query parts
         query_parts = [base_table]
@@ -360,6 +372,10 @@ class EventhouseDeduplicator:
         # Additional filters
         if additional_filters:
             query_parts.append(f"| where {additional_filters}")
+
+        # Add ingestion_time as a column for pagination
+        # This allows the caller to extract max ingestion_time for next query
+        query_parts.append("| extend ingestion_time = ingestion_time()")
 
         # Order and limit
         query_parts.append(f"| order by {order_by}")
