@@ -702,10 +702,11 @@ class KQLEventPoller:
 
     async def _bulk_backfill(self) -> int:
         """
-        Execute bulk backfill - fetch all data in one query and stream to Kafka.
+        Execute bulk backfill using paginated KQL queries to stream data to Kafka.
 
-        This is more efficient than paginated backfill for large historical data loads
-        as it executes a single KQL query instead of many small ones.
+        Uses ingestion_time-based pagination to avoid KQL result size limits (64 MB).
+        Each page fetches batch_size rows, then uses the last row's ingestion_time
+        to fetch the next page.
 
         Returns:
             Total number of events processed
@@ -729,70 +730,110 @@ class KQLEventPoller:
             },
         )
 
-        # Build query WITHOUT limit - fetch all data
-        # Format timestamps for KQL
-        start_str = self._backfill_start_time.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-        stop_str = poll_to.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        # Paginate using ingestion_time to avoid KQL 64 MB result limit
+        total_processed = 0
+        batch_num = 0
+        batch_size = self.config.batch_size
+        current_start = self._backfill_start_time
+        last_batch_trace_ids: list[str] = []
+        backfill_start_time = time.perf_counter()
 
-        query = f"""
-{self.config.source_table}
+        while True:
+            batch_num += 1
+
+            # Format timestamps for KQL
+            start_str = current_start.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+            stop_str = poll_to.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+            # Build paginated query with limit
+            # Use anti-join on last batch's trace_ids to handle events with same ingestion_time
+            trace_id_column = self.config.dedup.eventhouse_trace_id_column
+            if last_batch_trace_ids:
+                escaped_ids = [tid.replace("'", "\\'") for tid in last_batch_trace_ids]
+                id_list = ", ".join(f"'{tid}'" for tid in escaped_ids)
+                anti_join_clause = f"\n| where {trace_id_column} !in (dynamic([{id_list}]))"
+            else:
+                anti_join_clause = ""
+
+            query = f"""{self.config.source_table}
 | where ingestion_time() >= datetime({start_str})
-| where ingestion_time() < datetime({stop_str})
+| where ingestion_time() < datetime({stop_str}){anti_join_clause}
 | extend ingestion_time = ingestion_time()
 | order by ingestion_time asc
-"""
+| take {batch_size}"""
 
-        logger.info(
-            "Executing bulk backfill query",
-            extra={"query_preview": query[:200]},
-        )
+            logger.debug(
+                "Executing bulk backfill page",
+                extra={
+                    "batch_num": batch_num,
+                    "start": start_str,
+                    "stop": stop_str,
+                    "limit": batch_size,
+                    "anti_join_count": len(last_batch_trace_ids),
+                },
+            )
 
-        # Execute query - this may return a large result set
-        query_start = time.perf_counter()
-        result = await self._kql_client.execute_query(query)
-        query_duration_ms = (time.perf_counter() - query_start) * 1000
+            # Execute paginated query
+            query_start = time.perf_counter()
+            result = await self._kql_client.execute_query(query)
+            query_duration_ms = (time.perf_counter() - query_start) * 1000
 
-        total_rows = len(result.rows) if result.rows else 0
-        logger.info(
-            "Bulk backfill query complete",
-            extra={
-                "total_rows": total_rows,
-                "query_duration_ms": round(query_duration_ms, 2),
-            },
-        )
+            rows_fetched = len(result.rows) if result.rows else 0
 
-        if not result.rows:
-            logger.info("No rows returned from bulk backfill query")
-            self._backfill_mode = False
-            self._bulk_backfill_complete = True
-            return 0
+            if not result.rows:
+                logger.info(
+                    "Bulk backfill pagination complete - no more rows",
+                    extra={
+                        "total_batches": batch_num - 1,
+                        "total_processed": total_processed,
+                    },
+                )
+                break
 
-        # Process in batches to avoid overwhelming Kafka
-        total_processed = 0
-        batch_size = self.config.batch_size
+            # Extract pagination info for next query
+            last_row = result.rows[-1]
+            ingestion_time_val = last_row.get("ingestion_time", last_row.get("$IngestionTime"))
 
-        for i in range(0, total_rows, batch_size):
-            batch_rows = result.rows[i : i + batch_size]
-            batch_num = (i // batch_size) + 1
-            total_batches = (total_rows + batch_size - 1) // batch_size
+            if ingestion_time_val:
+                if isinstance(ingestion_time_val, datetime):
+                    next_start = ingestion_time_val
+                else:
+                    try:
+                        next_start = datetime.fromisoformat(
+                            str(ingestion_time_val).replace("Z", "+00:00")
+                        )
+                    except (ValueError, AttributeError):
+                        logger.warning(
+                            "Could not parse ingestion_time for pagination",
+                            extra={"raw_value": str(ingestion_time_val)[:100]},
+                        )
+                        next_start = current_start
+            else:
+                logger.warning("No ingestion_time in last row, cannot paginate further")
+                next_start = current_start
 
-            # Create a mock result object for batch processing
-            class BatchResult:
-                def __init__(self, rows):
-                    self.rows = rows
-
-            batch_result = BatchResult(batch_rows)
+            # Collect trace_ids from rows at the boundary (same ingestion_time as last row)
+            # These are used for anti-join in next query to prevent duplicates
+            last_batch_trace_ids = [
+                row.get("traceId", row.get("trace_id", ""))
+                for row in result.rows
+                if row.get("ingestion_time", row.get("$IngestionTime")) == ingestion_time_val
+            ]
 
             # Process this batch
-            events_count = await self._process_results(batch_result)
+            events_count = await self._process_results(result)
             total_processed += events_count
 
             logger.info(
                 "Bulk backfill batch processed",
                 extra={
-                    "batch": f"{batch_num}/{total_batches}",
+                    "batch_num": batch_num,
+                    "batch_rows": rows_fetched,
                     "batch_events": events_count,
                     "total_processed": total_processed,
+                    "query_duration_ms": round(query_duration_ms, 2),
+                    "next_start": next_start.isoformat() if next_start else None,
+                    "boundary_trace_ids": len(last_batch_trace_ids),
                 },
             )
 
@@ -804,16 +845,33 @@ class KQLEventPoller:
                 )
                 break
 
+            # If we got fewer rows than requested, we're done
+            if rows_fetched < batch_size:
+                logger.info(
+                    "Bulk backfill complete - last page was partial",
+                    extra={
+                        "total_batches": batch_num,
+                        "total_processed": total_processed,
+                        "last_batch_size": rows_fetched,
+                    },
+                )
+                break
+
+            # Move pagination cursor forward
+            current_start = next_start
+
         # Mark backfill as complete
         self._backfill_mode = False
         self._bulk_backfill_complete = True
         self._total_events_fetched += total_processed
+        total_duration_ms = (time.perf_counter() - backfill_start_time) * 1000
 
         logger.info(
             "Bulk backfill complete",
             extra={
                 "total_events": total_processed,
-                "query_duration_ms": round(query_duration_ms, 2),
+                "total_batches": batch_num,
+                "total_duration_ms": round(total_duration_ms, 2),
             },
         )
 

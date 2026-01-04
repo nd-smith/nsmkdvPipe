@@ -413,3 +413,163 @@ class TestKQLEventPoller:
 
                 await poller._poll_cycle()
                 assert poller._consecutive_empty_polls == 3
+
+    @pytest.mark.asyncio
+    async def test_bulk_backfill_pagination(self, config):
+        """Test bulk backfill uses pagination to avoid 64 MB result limit."""
+        import json
+        with (
+            patch(
+                "kafka_pipeline.common.eventhouse.poller.KQLClient"
+            ) as mock_kql_class,
+            patch(
+                "kafka_pipeline.common.eventhouse.poller.BaseKafkaProducer"
+            ) as mock_producer_class,
+            patch(
+                "kafka_pipeline.common.eventhouse.poller.EventhouseDeduplicator"
+            ) as mock_dedup_class,
+        ):
+            # Setup mock KQL client that returns paginated results
+            mock_kql = AsyncMock()
+
+            # Page 1: full batch (100 rows)
+            page1_rows = [
+                {
+                    "type": "verisk.claims.property.xn.documentsReceived",
+                    "version": 1,
+                    "utcDateTime": "2024-01-15T10:30:00Z",
+                    "traceId": f"trace-{i}",
+                    "data": json.dumps({"assignmentId": f"A-{i}"}),
+                    "ingestion_time": datetime(2024, 1, 15, 10, 30, i, tzinfo=timezone.utc),
+                }
+                for i in range(100)
+            ]
+            # Page 2: partial batch (50 rows) - signals end of data
+            page2_rows = [
+                {
+                    "type": "verisk.claims.property.xn.documentsReceived",
+                    "version": 1,
+                    "utcDateTime": "2024-01-15T11:00:00Z",
+                    "traceId": f"trace-{100 + i}",
+                    "data": json.dumps({"assignmentId": f"A-{100 + i}"}),
+                    "ingestion_time": datetime(2024, 1, 15, 11, 0, i, tzinfo=timezone.utc),
+                }
+                for i in range(50)
+            ]
+
+            mock_kql.execute_query = AsyncMock(
+                side_effect=[
+                    KQLQueryResult(rows=page1_rows, row_count=100),
+                    KQLQueryResult(rows=page2_rows, row_count=50),
+                ]
+            )
+            mock_kql_class.return_value = mock_kql
+
+            # Setup mock producer
+            mock_producer = AsyncMock()
+            mock_producer.send = AsyncMock(
+                return_value=MagicMock(partition=0, offset=1)
+            )
+            mock_producer_class.return_value = mock_producer
+
+            # Setup mock deduplicator
+            mock_dedup = MagicMock()
+            mock_dedup_class.return_value = mock_dedup
+
+            async with KQLEventPoller(config) as poller:
+                # Set backfill mode with explicit timestamps
+                poller._backfill_mode = True
+                poller._bulk_backfill_mode = True
+                poller._backfill_start_time = datetime(2024, 1, 15, 10, 0, 0, tzinfo=timezone.utc)
+                poller._backfill_stop_time = datetime(2024, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+
+                total_processed = await poller._bulk_backfill()
+
+            # Should have processed 150 events total (100 + 50)
+            assert total_processed == 150
+            # Should have made exactly 2 KQL queries (paginated)
+            assert mock_kql.execute_query.call_count == 2
+            # Backfill should be marked complete
+            assert poller._bulk_backfill_complete is True
+            assert poller._backfill_mode is False
+
+    @pytest.mark.asyncio
+    async def test_bulk_backfill_empty_result(self, config):
+        """Test bulk backfill with no results."""
+        with (
+            patch(
+                "kafka_pipeline.common.eventhouse.poller.KQLClient"
+            ) as mock_kql_class,
+            patch(
+                "kafka_pipeline.common.eventhouse.poller.BaseKafkaProducer"
+            ) as mock_producer_class,
+            patch(
+                "kafka_pipeline.common.eventhouse.poller.EventhouseDeduplicator"
+            ) as mock_dedup_class,
+        ):
+            # Setup mock KQL client that returns empty results
+            mock_kql = AsyncMock()
+            mock_kql.execute_query = AsyncMock(
+                return_value=KQLQueryResult(rows=[], row_count=0)
+            )
+            mock_kql_class.return_value = mock_kql
+
+            # Setup mock producer
+            mock_producer = AsyncMock()
+            mock_producer_class.return_value = mock_producer
+
+            # Setup mock deduplicator
+            mock_dedup = MagicMock()
+            mock_dedup_class.return_value = mock_dedup
+
+            async with KQLEventPoller(config) as poller:
+                poller._backfill_mode = True
+                poller._bulk_backfill_mode = True
+                poller._backfill_start_time = datetime(2024, 1, 15, 10, 0, 0, tzinfo=timezone.utc)
+                poller._backfill_stop_time = datetime(2024, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+
+                total_processed = await poller._bulk_backfill()
+
+            assert total_processed == 0
+            assert mock_kql.execute_query.call_count == 1
+            assert poller._bulk_backfill_complete is True
+
+    @pytest.mark.asyncio
+    async def test_bulk_backfill_query_includes_take_limit(self, config):
+        """Test that bulk backfill query includes | take limit to avoid 64 MB error."""
+        with (
+            patch(
+                "kafka_pipeline.common.eventhouse.poller.KQLClient"
+            ) as mock_kql_class,
+            patch(
+                "kafka_pipeline.common.eventhouse.poller.BaseKafkaProducer"
+            ) as mock_producer_class,
+            patch(
+                "kafka_pipeline.common.eventhouse.poller.EventhouseDeduplicator"
+            ) as mock_dedup_class,
+        ):
+            mock_kql = AsyncMock()
+            mock_kql.execute_query = AsyncMock(
+                return_value=KQLQueryResult(rows=[], row_count=0)
+            )
+            mock_kql_class.return_value = mock_kql
+
+            mock_producer = AsyncMock()
+            mock_producer_class.return_value = mock_producer
+
+            mock_dedup = MagicMock()
+            mock_dedup_class.return_value = mock_dedup
+
+            async with KQLEventPoller(config) as poller:
+                poller._backfill_mode = True
+                poller._bulk_backfill_mode = True
+                poller._backfill_start_time = datetime(2024, 1, 15, 10, 0, 0, tzinfo=timezone.utc)
+                poller._backfill_stop_time = datetime(2024, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+
+                await poller._bulk_backfill()
+
+            # Verify the query includes "| take" to limit results
+            call_args = mock_kql.execute_query.call_args
+            query = call_args[0][0]
+            assert "| take" in query, f"Query should include '| take' for pagination: {query}"
+            assert f"| take {config.batch_size}" in query
