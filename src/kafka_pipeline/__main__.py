@@ -55,6 +55,7 @@ from core.logging.setup import get_logger, setup_logging, setup_multi_worker_log
 
 # Worker stages for multi-worker logging
 WORKER_STAGES = [
+    "eventhouse-poller",
     "xact-event-ingester", "xact-download", "xact-upload", "xact-result-processor",
     "claimx-ingester", "claimx-enricher", "claimx-downloader", "claimx-uploader"
 ]
