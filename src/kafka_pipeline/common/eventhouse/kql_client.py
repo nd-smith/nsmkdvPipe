@@ -78,7 +78,7 @@ class FileBackedKustoCredential:
         if not self._token_file.exists():
             raise RuntimeError(f"Token file not found: {self._token_file}")
 
-        content = self._token_file.read_text(encoding="utf-8").strip()
+        content = self._token_file.read_text(encoding="utf-8-sig").strip()
         if not content:
             raise RuntimeError(f"Token file is empty: {self._token_file}")
 

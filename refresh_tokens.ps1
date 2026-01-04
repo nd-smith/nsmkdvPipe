@@ -37,12 +37,13 @@ while ($true) {
             throw "Failed to get Kusto token"
         }
 
-        # Write tokens.json
+        # Write tokens.json (UTF-8 without BOM)
         $tokens = @{
             "https://storage.azure.com/" = $storageToken
             "https://kusto.kusto.windows.net" = $kustoToken
         }
-        $tokens | ConvertTo-Json | Set-Content -Path $TokenFile -Encoding UTF8
+        $json = $tokens | ConvertTo-Json
+        [System.IO.File]::WriteAllText($TokenFile, $json, [System.Text.UTF8Encoding]::new($false))
 
         $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
         Write-Host "[$timestamp] Tokens refreshed successfully"
