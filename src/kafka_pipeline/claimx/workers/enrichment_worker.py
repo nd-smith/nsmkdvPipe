@@ -503,6 +503,155 @@ class ClaimXEnrichmentWorker:
             logger.debug("Batch timeout cancelled")
             raise
 
+    async def _ensure_projects_exist(
+        self,
+        project_ids: List[str],
+    ) -> None:
+        """
+        Pre-flight check: Ensure all projects exist in Delta table.
+
+        For projects not in the Delta table, fetches them from the API
+        and writes them to claimx_projects before processing the batch.
+
+        This prevents referential integrity issues when writing child entities
+        (contacts, media, tasks) that reference project_id.
+
+        Args:
+            project_ids: List of project IDs that need to exist
+
+        Note:
+            Failures are non-fatal - missing projects will be handled during
+            event processing via ProjectHandler.
+        """
+        if not project_ids or not self.enable_delta_writes:
+            return
+
+        unique_project_ids = list(set(project_ids))
+
+        logger.debug(
+            "Pre-flight: Checking project existence",
+            extra={
+                "project_count": len(unique_project_ids),
+                "project_ids": unique_project_ids[:10],  # Sample
+            },
+        )
+
+        try:
+            # Import here to avoid circular dependencies and ensure optional dependency
+            import polars as pl
+            from deltalake import DeltaTable
+
+            # Query existing projects from Delta table
+            projects_writer = self.entity_writer._writers.get("projects")
+            if not projects_writer:
+                logger.warning("No projects writer available, skipping pre-flight check")
+                return
+
+            table_path = projects_writer.table_path
+
+            # Check if table exists
+            try:
+                dt = DeltaTable(table_path)
+                df = dt.to_pyarrow_dataset().to_table().to_pandas()
+                existing_project_ids = set(df["project_id"].astype(str).unique())
+            except Exception as e:
+                # Table might not exist yet - that's OK
+                logger.debug(
+                    "Projects table not yet initialized",
+                    extra={"table_path": table_path, "error": str(e)[:100]},
+                )
+                existing_project_ids = set()
+
+            # Find missing projects
+            missing_project_ids = [
+                pid for pid in unique_project_ids if pid not in existing_project_ids
+            ]
+
+            if not missing_project_ids:
+                logger.debug("Pre-flight: All projects exist in Delta table")
+                return
+
+            logger.info(
+                "Pre-flight: Fetching missing projects from API",
+                extra={
+                    "missing_count": len(missing_project_ids),
+                    "missing_ids": missing_project_ids[:10],  # Sample
+                },
+            )
+
+            # Fetch missing projects from API
+            from kafka_pipeline.claimx.handlers.transformers import ProjectTransformer
+
+            project_rows = []
+            api_errors = 0
+
+            for project_id in missing_project_ids:
+                try:
+                    response = await self.api_client.get_project(int(project_id))
+
+                    # Transform to project row
+                    project_row = ProjectTransformer.to_project_row(
+                        response,
+                        source_event_id="pre-flight-check",
+                    )
+
+                    if project_row.get("project_id") is not None:
+                        project_rows.append(project_row)
+
+                except ClaimXApiError as e:
+                    api_errors += 1
+                    logger.warning(
+                        "Pre-flight: Failed to fetch project",
+                        extra={
+                            "project_id": project_id,
+                            "error": str(e)[:100],
+                            "status_code": e.status_code,
+                        },
+                    )
+                    # Continue with other projects
+                except Exception as e:
+                    api_errors += 1
+                    logger.warning(
+                        "Pre-flight: Unexpected error fetching project",
+                        extra={
+                            "project_id": project_id,
+                            "error": str(e)[:100],
+                        },
+                    )
+                    # Continue with other projects
+
+            # Write fetched projects to Delta
+            if project_rows:
+                from kafka_pipeline.claimx.schemas.entities import EntityRowsMessage
+
+                entity_rows = EntityRowsMessage(projects=project_rows)
+                counts = await self.entity_writer.write_all(entity_rows)
+
+                logger.info(
+                    "Pre-flight: Wrote missing projects to Delta",
+                    extra={
+                        "projects_written": counts.get("projects", 0),
+                        "api_errors": api_errors,
+                    },
+                )
+
+            elif api_errors > 0:
+                logger.warning(
+                    "Pre-flight: Could not fetch any missing projects",
+                    extra={"api_errors": api_errors},
+                )
+
+        except Exception as e:
+            # Pre-flight errors are non-fatal
+            logger.error(
+                "Pre-flight check failed",
+                extra={
+                    "error": str(e)[:200],
+                    "project_count": len(project_ids),
+                },
+                exc_info=True,
+            )
+
     async def _process_batch(self, tasks: List[ClaimXEnrichmentTask]) -> None:
         """
         Process a batch of enrichment tasks.
@@ -522,6 +671,13 @@ class ClaimXEnrichmentWorker:
         )
 
         start_time = datetime.now(timezone.utc)
+
+        # Pre-flight check: Ensure all referenced projects exist in Delta table
+        # This minimizes API calls (batch check vs per-event) and prevents
+        # referential integrity issues when writing child entities
+        project_ids = [task.project_id for task in tasks if task.project_id]
+        if project_ids:
+            await self._ensure_projects_exist(project_ids)
 
         # Convert tasks to events for handler processing
         events = [
