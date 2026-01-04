@@ -7,6 +7,7 @@ Usage:
 
     # Run specific xact worker
     python -m kafka_pipeline --worker xact-event-ingester
+    python -m kafka_pipeline --worker xact-delta-writer
     python -m kafka_pipeline --worker xact-download
     python -m kafka_pipeline --worker xact-upload
     python -m kafka_pipeline --worker xact-result-processor
@@ -31,8 +32,10 @@ Event Source Configuration:
 
 Architecture:
     xact Domain:
-        Event Source → xact events → downloads.pending → download worker →
-        downloads.cached → upload worker → downloads.results → result processor
+        Event Source → events.raw topic
+            → xact-event-ingester → downloads.pending → download worker →
+              downloads.cached → upload worker → downloads.results → result processor
+            → xact-delta-writer → xact_events Delta table (parallel)
 
     claimx Domain:
         Event Source → claimx events → enrichment.pending → enrichment worker →
@@ -57,7 +60,7 @@ from core.logging.setup import get_logger, setup_logging, setup_multi_worker_log
 # Worker stages for multi-worker logging
 WORKER_STAGES = [
     "eventhouse-poller",
-    "xact-event-ingester", "xact-download", "xact-upload", "xact-result-processor",
+    "xact-event-ingester", "xact-delta-writer", "xact-download", "xact-upload", "xact-result-processor",
     "claimx-ingester", "claimx-enricher", "claimx-downloader", "claimx-uploader", "claimx-result-processor"
 ]
 
@@ -105,7 +108,7 @@ Examples:
     parser.add_argument(
         "--worker",
         choices=[
-            "xact-event-ingester", "xact-download", "xact-upload", "xact-result-processor",
+            "xact-event-ingester", "xact-delta-writer", "xact-download", "xact-upload", "xact-result-processor",
             "claimx-ingester", "claimx-enricher", "claimx-downloader", "claimx-uploader", "claimx-result-processor",
             "all"
         ],
@@ -152,14 +155,14 @@ Examples:
 async def run_event_ingester(
     eventhub_config,
     local_kafka_config,
-    enable_delta_writes: bool = True,
-    events_table_path: str = "",
     domain: str = "xact",
 ):
     """Run the Event Ingester worker.
 
     Reads events from Event Hub and produces download tasks to local Kafka.
     Uses separate configs: eventhub_config for consumer, local_kafka_config for producer.
+
+    Note: Delta Lake writes are handled by a separate DeltaEventsWorker.
 
     Supports graceful shutdown: when shutdown event is set, the worker
     finishes its current batch before exiting.
@@ -171,8 +174,6 @@ async def run_event_ingester(
 
     worker = EventIngesterWorker(
         config=eventhub_config,
-        enable_delta_writes=enable_delta_writes,
-        events_table_path=events_table_path,
         domain=domain,
         producer_config=local_kafka_config,
     )
@@ -265,6 +266,48 @@ async def run_eventhouse_poller(pipeline_config):
                 await watcher_task
             except asyncio.CancelledError:
                 pass
+
+
+async def run_delta_events_worker(kafka_config, events_table_path: str):
+    """Run the Delta Events Worker.
+
+    Consumes events from the events.raw topic and writes them to the
+    xact_events Delta table. Runs independently of EventIngesterWorker
+    with its own consumer group.
+
+    Supports graceful shutdown: when shutdown event is set, the worker
+    waits for pending Delta writes before exiting.
+    """
+    from kafka_pipeline.xact.workers.delta_events_worker import DeltaEventsWorker
+
+    set_log_context(stage="xact-delta-writer")
+    logger.info("Starting xact Delta Events worker...")
+
+    worker = DeltaEventsWorker(
+        config=kafka_config,
+        events_table_path=events_table_path,
+    )
+    shutdown_event = get_shutdown_event()
+
+    async def shutdown_watcher():
+        """Wait for shutdown signal and stop worker gracefully."""
+        await shutdown_event.wait()
+        logger.info("Shutdown signal received, stopping delta events worker...")
+        await worker.stop()
+
+    # Start shutdown watcher alongside worker
+    watcher_task = asyncio.create_task(shutdown_watcher())
+
+    try:
+        await worker.start()
+    finally:
+        watcher_task.cancel()
+        try:
+            await watcher_task
+        except asyncio.CancelledError:
+            pass
+        # Clean up resources after worker exits
+        await worker.stop()
 
 
 async def run_download_worker(kafka_config):
@@ -394,14 +437,14 @@ async def run_result_processor(kafka_config, enable_delta_writes: bool = True):
 
 async def run_local_event_ingester(
     local_kafka_config,
-    enable_delta_writes: bool = True,
-    events_table_path: str = "",
     domain: str = "xact",
 ):
     """Run EventIngester consuming from local Kafka events.raw topic.
 
     Used in Eventhouse mode where the poller publishes to events.raw
     and the ingester processes events to downloads.pending.
+
+    Note: Delta Lake writes are handled by a separate DeltaEventsWorker.
 
     Supports graceful shutdown: when shutdown event is set, the worker
     finishes its current batch before exiting.
@@ -413,8 +456,6 @@ async def run_local_event_ingester(
 
     worker = EventIngesterWorker(
         config=local_kafka_config,
-        enable_delta_writes=enable_delta_writes,
-        events_table_path=events_table_path,
         domain=domain,
     )
     shutdown_event = get_shutdown_event()
@@ -645,6 +686,7 @@ async def run_all_workers(
     Uses the configured event source (Event Hub or Eventhouse) for ingestion.
     Both modes use the same flow:
         events.raw → EventIngester → downloads.pending → DownloadWorker → ...
+        events.raw → DeltaEventsWorker → Delta table (parallel)
     """
     from kafka_pipeline.pipeline_config import EventSourceType
 
@@ -655,14 +697,18 @@ async def run_all_workers(
     # Create tasks list
     tasks = []
 
-    # Create event source task based on configuration
+    # Get events table path for delta writer
     if pipeline_config.event_source == EventSourceType.EVENTHOUSE:
-        # Eventhouse mode: Poller → events.raw → EventIngester → downloads.pending
-        # Use Eventhouse-specific path, fall back to generic path for consistency
-        eventhouse_events_path = (
+        events_table_path = (
             pipeline_config.eventhouse.xact_events_table_path
             or pipeline_config.events_table_path
         )
+    else:
+        events_table_path = pipeline_config.events_table_path
+
+    # Create event source task based on configuration
+    if pipeline_config.event_source == EventSourceType.EVENTHOUSE:
+        # Eventhouse mode: Poller → events.raw → EventIngester → downloads.pending
         tasks.append(
             asyncio.create_task(
                 run_eventhouse_poller(pipeline_config),
@@ -673,14 +719,12 @@ async def run_all_workers(
             asyncio.create_task(
                 run_local_event_ingester(
                     local_kafka_config,
-                    enable_delta_writes=False,  # Poller already writes to Delta
-                    events_table_path=eventhouse_events_path,
                     domain=pipeline_config.domain,
                 ),
                 name="xact-event-ingester",
             )
         )
-        logger.info("Using Eventhouse as event source (Delta writes handled by poller)")
+        logger.info("Using Eventhouse as event source")
     else:
         # EventHub mode: EventHub → events.raw → EventIngester → downloads.pending
         eventhub_config = pipeline_config.eventhub.to_kafka_config()
@@ -689,14 +733,22 @@ async def run_all_workers(
                 run_event_ingester(
                     eventhub_config,
                     local_kafka_config,
-                    enable_delta_writes,
-                    events_table_path=pipeline_config.events_table_path,
                     domain=pipeline_config.domain,
                 ),
                 name="xact-event-ingester",
             )
         )
         logger.info("Using Event Hub as event source")
+
+    # Add Delta events writer if enabled and path is configured
+    if enable_delta_writes and events_table_path:
+        tasks.append(
+            asyncio.create_task(
+                run_delta_events_worker(local_kafka_config, events_table_path),
+                name="xact-delta-writer",
+            )
+        )
+        logger.info("Delta events writer enabled")
 
     # Add common workers
     tasks.extend([
@@ -872,11 +924,23 @@ def main():
                     run_event_ingester(
                         eventhub_config,
                         local_kafka_config,
-                        enable_delta_writes,
-                        events_table_path=pipeline_config.events_table_path,
                         domain=pipeline_config.domain,
                     )
                 )
+        elif args.worker == "xact-delta-writer":
+            # Delta events writer - writes events to Delta table
+            events_table_path = pipeline_config.events_table_path
+            if pipeline_config.event_source == EventSourceType.EVENTHOUSE:
+                events_table_path = (
+                    pipeline_config.eventhouse.xact_events_table_path
+                    or events_table_path
+                )
+            if not events_table_path:
+                logger.error("DELTA_EVENTS_TABLE_PATH is required for xact-delta-writer")
+                sys.exit(1)
+            loop.run_until_complete(
+                run_delta_events_worker(local_kafka_config, events_table_path)
+            )
         elif args.worker == "xact-download":
             loop.run_until_complete(run_download_worker(local_kafka_config))
         elif args.worker == "xact-upload":
