@@ -82,6 +82,12 @@ kafka:
   upload_concurrency: 10                    # UPLOAD_CONCURRENCY (1-50)
   upload_batch_size: 20                     # UPLOAD_BATCH_SIZE
 
+  # ---------------------------------------------------------------------------
+  # Delta Events Writer Settings
+  # ---------------------------------------------------------------------------
+  delta_events_batch_size: 1000             # DELTA_EVENTS_BATCH_SIZE (events per batch)
+  delta_events_max_batches:                 # DELTA_EVENTS_MAX_BATCHES (optional, for testing)
+
 
 # =============================================================================
 # EVENTHOUSE INTEGRATION (for Kafka pipeline)

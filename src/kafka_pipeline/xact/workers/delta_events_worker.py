@@ -8,6 +8,11 @@ Separated from EventIngesterWorker to follow single-responsibility principle:
 - EventIngesterWorker: Parse events → produce download tasks
 - DeltaEventsWorker: Parse events → write to Delta Lake
 
+Features:
+- Batch accumulation for efficient Delta writes
+- Configurable batch size via delta_events_batch_size
+- Optional batch limit for testing via delta_events_max_batches
+
 Consumer group: {prefix}-delta-events
 Input topic: events.raw
 Output: Delta table xact_events (no Kafka output)
@@ -15,16 +20,14 @@ Output: Delta table xact_events (no Kafka output)
 
 import asyncio
 import json
-from typing import Optional, Set
+from typing import Any, Dict, List, Optional
 
 from aiokafka.structs import ConsumerRecord
-from pydantic import ValidationError
 
 from core.logging.setup import get_logger
 from kafka_pipeline.config import KafkaConfig
 from kafka_pipeline.common.consumer import BaseKafkaConsumer
 from kafka_pipeline.common.metrics import record_delta_write
-from kafka_pipeline.xact.schemas.events import EventMessage
 from kafka_pipeline.xact.writers import DeltaEventsWriter
 
 logger = get_logger(__name__)
@@ -32,7 +35,7 @@ logger = get_logger(__name__)
 
 class DeltaEventsWorker:
     """
-    Worker to consume events and write them to Delta Lake.
+    Worker to consume events and write them to Delta Lake in batches.
 
     Processes EventMessage records from the events.raw topic and writes
     them to the xact_events Delta table using the flatten_events() transform.
@@ -44,16 +47,18 @@ class DeltaEventsWorker:
     - Batching optimization for Delta writes
 
     Features:
-    - Non-blocking Delta writes using asyncio background tasks
+    - Batch accumulation for efficient Delta writes
+    - Configurable batch size via config.delta_events_batch_size
+    - Optional batch limit for testing via config.delta_events_max_batches
     - Deduplication by trace_id within configurable time window
-    - Graceful shutdown with pending task completion
-    - Schema compatibility with xact_events table (28 columns)
+    - Graceful shutdown with pending batch flush
+    - Schema compatibility with xact_events table (29 columns)
 
     Usage:
         >>> config = KafkaConfig.from_env()
         >>> worker = DeltaEventsWorker(config, events_table_path="abfss://...")
         >>> await worker.start()
-        >>> # Worker runs until stopped
+        >>> # Worker runs until stopped or max_batches reached
         >>> await worker.stop()
     """
 
@@ -67,7 +72,8 @@ class DeltaEventsWorker:
         Initialize Delta events worker.
 
         Args:
-            config: Kafka configuration for consumer (topic names, connection settings)
+            config: Kafka configuration for consumer (topic names, connection settings).
+                    Also provides delta_events_batch_size and delta_events_max_batches.
             events_table_path: Full abfss:// path to xact_events Delta table
             dedupe_window_hours: Hours to check for duplicate trace_ids (default: 24)
         """
@@ -78,6 +84,15 @@ class DeltaEventsWorker:
         # Consumer group for delta events writing (separate from event ingester)
         self.consumer_group = f"{config.consumer_group_prefix}-delta-events"
 
+        # Batch configuration
+        self.batch_size = config.delta_events_batch_size
+        self.max_batches = config.delta_events_max_batches  # None = unlimited
+
+        # Batch state
+        self._batch: List[Dict[str, Any]] = []
+        self._batches_written = 0
+        self._total_events_written = 0
+
         # Initialize Delta writer
         if events_table_path:
             self.delta_writer = DeltaEventsWriter(
@@ -87,10 +102,6 @@ class DeltaEventsWorker:
         else:
             raise ValueError("events_table_path is required for DeltaEventsWorker")
 
-        # Background task tracking for graceful shutdown
-        self._pending_tasks: Set[asyncio.Task] = set()
-        self._task_counter = 0
-
         logger.info(
             "Initialized DeltaEventsWorker",
             extra={
@@ -98,6 +109,8 @@ class DeltaEventsWorker:
                 "events_topic": config.events_topic,
                 "events_table_path": events_table_path,
                 "dedupe_window_hours": dedupe_window_hours,
+                "batch_size": self.batch_size,
+                "max_batches": self.max_batches,
             },
         )
 
@@ -106,12 +119,18 @@ class DeltaEventsWorker:
         Start the delta events worker.
 
         Initializes consumer and begins consuming events from the events.raw topic.
-        This method runs until stop() is called.
+        Runs until stop() is called or max_batches is reached (if configured).
 
         Raises:
             Exception: If consumer fails to start
         """
-        logger.info("Starting DeltaEventsWorker")
+        logger.info(
+            "Starting DeltaEventsWorker",
+            extra={
+                "batch_size": self.batch_size,
+                "max_batches": self.max_batches,
+            },
+        )
 
         # Create and start consumer with message handler
         self.consumer = BaseKafkaConsumer(
@@ -128,165 +147,60 @@ class DeltaEventsWorker:
         """
         Stop the delta events worker.
 
-        Waits for pending background tasks (with timeout), then gracefully
-        shuts down consumer, committing any pending offsets.
+        Flushes any pending batch, then gracefully shuts down consumer,
+        committing any pending offsets.
         """
         logger.info("Stopping DeltaEventsWorker")
 
-        # Wait for pending background tasks with timeout
-        await self._wait_for_pending_tasks(timeout_seconds=30)
+        # Flush any remaining events in the batch
+        if self._batch:
+            logger.info(
+                "Flushing remaining batch on shutdown",
+                extra={"batch_size": len(self._batch)},
+            )
+            await self._flush_batch()
 
         # Stop consumer
         if self.consumer:
             await self.consumer.stop()
 
-        logger.info("DeltaEventsWorker stopped successfully")
-
-    def _create_tracked_task(
-        self,
-        coro,
-        task_name: str,
-        context: Optional[dict] = None,
-    ) -> asyncio.Task:
-        """
-        Create a background task with tracking and lifecycle logging.
-
-        The task is added to _pending_tasks and automatically removed on completion.
-
-        Args:
-            coro: Coroutine to run as a task
-            task_name: Descriptive name for the task
-            context: Optional dict of context info for logging
-
-        Returns:
-            The created asyncio.Task
-        """
-        self._task_counter += 1
-        full_name = f"{task_name}-{self._task_counter}"
-        context = context or {}
-
-        task = asyncio.create_task(coro, name=full_name)
-        self._pending_tasks.add(task)
-
-        logger.debug(
-            "Background task created",
-            extra={
-                "task_name": full_name,
-                "pending_tasks": len(self._pending_tasks),
-                **context,
-            },
-        )
-
-        def _on_task_done(t: asyncio.Task) -> None:
-            """Callback when task completes."""
-            self._pending_tasks.discard(t)
-
-            if t.cancelled():
-                logger.debug(
-                    "Background task cancelled",
-                    extra={"task_name": t.get_name()},
-                )
-            elif t.exception() is not None:
-                exc = t.exception()
-                logger.error(
-                    "Background task failed",
-                    extra={
-                        "task_name": t.get_name(),
-                        "error": str(exc)[:200],
-                        **context,
-                    },
-                )
-            else:
-                logger.debug(
-                    "Background task completed",
-                    extra={"task_name": t.get_name()},
-                )
-
-        task.add_done_callback(_on_task_done)
-        return task
-
-    async def _wait_for_pending_tasks(self, timeout_seconds: float = 30) -> None:
-        """
-        Wait for pending background tasks to complete with timeout.
-
-        Args:
-            timeout_seconds: Maximum time to wait for tasks (default: 30s)
-        """
-        if not self._pending_tasks:
-            logger.debug("No pending background tasks to wait for")
-            return
-
-        pending_count = len(self._pending_tasks)
-        task_names = [t.get_name() for t in self._pending_tasks]
-
         logger.info(
-            "Waiting for pending background tasks to complete",
+            "DeltaEventsWorker stopped successfully",
             extra={
-                "pending_count": pending_count,
-                "task_names": task_names,
-                "timeout_seconds": timeout_seconds,
+                "batches_written": self._batches_written,
+                "total_events_written": self._total_events_written,
             },
         )
-
-        tasks_to_wait = list(self._pending_tasks)
-
-        try:
-            done, pending = await asyncio.wait(
-                tasks_to_wait,
-                timeout=timeout_seconds,
-                return_when=asyncio.ALL_COMPLETED,
-            )
-
-            if pending:
-                pending_names = [t.get_name() for t in pending]
-                logger.warning(
-                    "Cancelling background tasks that did not complete in time",
-                    extra={
-                        "pending_count": len(pending),
-                        "pending_task_names": pending_names,
-                    },
-                )
-
-                for task in pending:
-                    task.cancel()
-
-                await asyncio.gather(*pending, return_exceptions=True)
-
-            completed_count = len(done)
-            failed_count = sum(1 for t in done if t.exception() is not None)
-
-            logger.info(
-                "Background task cleanup complete",
-                extra={
-                    "completed": completed_count,
-                    "failed": failed_count,
-                    "cancelled": len(pending),
-                },
-            )
-
-        except Exception as e:
-            logger.error(
-                "Error waiting for pending tasks",
-                extra={"error": str(e)[:200]},
-                exc_info=True,
-            )
 
     async def _handle_event_message(self, record: ConsumerRecord) -> None:
         """
         Process a single event message from Kafka.
 
-        Parses the EventMessage and writes it to Delta Lake.
+        Adds the event to the batch and flushes when batch is full.
 
         Args:
             record: ConsumerRecord containing EventMessage JSON
         """
-        # Decode and parse EventMessage
+        # Check if we've reached max batches limit
+        if self.max_batches is not None and self._batches_written >= self.max_batches:
+            logger.info(
+                "Reached max_batches limit, stopping consumer",
+                extra={
+                    "max_batches": self.max_batches,
+                    "batches_written": self._batches_written,
+                },
+            )
+            # Request consumer to stop
+            if self.consumer:
+                await self.consumer.stop()
+            return
+
+        # Decode message - keep as raw dict, don't convert to EventMessage
         try:
             message_data = json.loads(record.value.decode("utf-8"))
-            event = EventMessage.from_eventhouse_row(message_data)
-        except (json.JSONDecodeError, ValidationError) as e:
+        except json.JSONDecodeError as e:
             logger.error(
-                "Failed to parse EventMessage",
+                "Failed to parse message JSON",
                 extra={
                     "topic": record.topic,
                     "partition": record.partition,
@@ -297,61 +211,79 @@ class DeltaEventsWorker:
             )
             raise
 
+        # Add to batch (raw dict with data already as dict)
+        self._batch.append(message_data)
+
         logger.debug(
-            "Processing event for Delta write",
+            "Added event to batch",
             extra={
-                "trace_id": event.trace_id,
-                "type": event.type,
+                "trace_id": message_data.get("traceId"),
+                "batch_size": len(self._batch),
+                "batch_threshold": self.batch_size,
             },
         )
 
-        # Write event to Delta Lake (non-blocking background task)
-        self._create_tracked_task(
-            self._write_event_to_delta(event),
-            task_name="delta_write",
-            context={"trace_id": event.trace_id},
-        )
+        # Flush batch if full
+        if len(self._batch) >= self.batch_size:
+            await self._flush_batch()
 
-    async def _write_event_to_delta(self, event: EventMessage) -> None:
+    async def _flush_batch(self) -> None:
         """
-        Write event to Delta Lake table (background task).
+        Write the accumulated batch to Delta Lake.
 
-        Uses flatten_events() to transform the event into the correct
-        xact_events schema with all 28 columns.
-
-        Args:
-            event: EventMessage to write to Delta
+        Clears the batch after writing and updates counters.
         """
+        if not self._batch:
+            return
+
+        batch_size = len(self._batch)
+        batch_to_write = self._batch
+        self._batch = []  # Clear batch immediately to accept new events
+
         try:
-            # Convert to Eventhouse row format for flatten_events()
-            raw_event = event.to_eventhouse_row()
+            # Write batch using flatten_events() transformation
+            # Data is already in dict format, no JSON parsing needed
+            success = await self.delta_writer.write_raw_events(batch_to_write)
 
-            # Write using flatten_events() transformation
-            success = await self.delta_writer.write_raw_events([raw_event])
+            self._batches_written += 1
+            if success:
+                self._total_events_written += batch_size
+
             record_delta_write(
                 table="xact_events",
-                event_count=1,
+                event_count=batch_size,
                 success=success,
+            )
+
+            logger.info(
+                "Flushed batch to Delta",
+                extra={
+                    "batch_size": batch_size,
+                    "batches_written": self._batches_written,
+                    "total_events_written": self._total_events_written,
+                    "max_batches": self.max_batches,
+                    "success": success,
+                },
             )
 
             if not success:
                 logger.warning(
-                    "Delta write failed for event",
-                    extra={"trace_id": event.trace_id},
+                    "Delta batch write failed",
+                    extra={"batch_size": batch_size},
                 )
 
         except Exception as e:
             logger.error(
-                "Unexpected error writing event to Delta",
+                "Unexpected error writing batch to Delta",
                 extra={
-                    "trace_id": event.trace_id,
+                    "batch_size": batch_size,
                     "error": str(e),
                 },
                 exc_info=True,
             )
             record_delta_write(
                 table="xact_events",
-                event_count=1,
+                event_count=batch_size,
                 success=False,
             )
 

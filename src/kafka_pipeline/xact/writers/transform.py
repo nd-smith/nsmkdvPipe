@@ -7,7 +7,7 @@ Migrated from verisk_pipeline.xact.stages.transform.
 
 import json
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import polars as pl
 
@@ -38,12 +38,16 @@ def _safe_get(d: Optional[Dict], *keys: str, default: Any = None) -> Any:
     return current
 
 
-def _parse_data_column(data_json: Optional[str]) -> Optional[Dict]:
-    """Parse JSON string to dict, handling None and errors."""
-    if data_json is None:
+def _parse_data_column(data: Optional[Any]) -> Optional[Dict]:
+    """Parse data to dict, handling dict, JSON string, None, and errors."""
+    if data is None:
         return None
+    # If already a dict, return as-is
+    if isinstance(data, dict):
+        return data
+    # Otherwise try to parse as JSON string
     try:
-        return json.loads(data_json)
+        return json.loads(data)
     except (json.JSONDecodeError, TypeError):
         return None
 
