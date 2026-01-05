@@ -19,6 +19,10 @@ Usage:
     python -m kafka_pipeline --worker claimx-uploader
     python -m kafka_pipeline --worker claimx-result-processor
 
+    # Run multiple worker instances (for horizontal scaling)
+    python -m kafka_pipeline --worker xact-download --count 4
+    python -m kafka_pipeline --worker xact-upload -c 3
+
     # Run with metrics server
     python -m kafka_pipeline --metrics-port 8000
 
@@ -50,7 +54,7 @@ import os
 import signal
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Any, Callable, Coroutine, Optional
 
 from prometheus_client import start_http_server
 
@@ -79,6 +83,45 @@ def get_shutdown_event() -> asyncio.Event:
     if _shutdown_event is None:
         _shutdown_event = asyncio.Event()
     return _shutdown_event
+
+
+async def run_worker_pool(
+    worker_fn: Callable[..., Coroutine[Any, Any, None]],
+    count: int,
+    worker_name: str,
+    *args: Any,
+    **kwargs: Any,
+) -> None:
+    """Run multiple instances of a worker concurrently.
+
+    Creates N asyncio tasks for the same worker function. Each instance
+    joins the same Kafka consumer group, so partitions are automatically
+    distributed across instances.
+
+    Args:
+        worker_fn: Async worker function to run (e.g., run_download_worker)
+        count: Number of worker instances to launch
+        worker_name: Base name for the worker (used in task naming)
+        *args: Positional arguments to pass to worker_fn
+        **kwargs: Keyword arguments to pass to worker_fn
+    """
+    logger.info(f"Starting {count} instances of {worker_name}...")
+
+    tasks = []
+    for i in range(count):
+        task = asyncio.create_task(
+            worker_fn(*args, **kwargs),
+            name=f"{worker_name}-{i}",
+        )
+        tasks.append(task)
+
+    try:
+        await asyncio.gather(*tasks)
+    except asyncio.CancelledError:
+        logger.info(f"Worker pool {worker_name} cancelled, shutting down...")
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 def parse_args() -> argparse.Namespace:
@@ -147,6 +190,14 @@ Examples:
         type=str,
         default=None,
         help="Log directory path (default: from LOG_DIR env var or ./logs)",
+    )
+
+    parser.add_argument(
+        "--count", "-c",
+        type=int,
+        default=1,
+        help="Number of worker instances to run concurrently (default: 1). "
+             "Multiple instances share the same consumer group for automatic partition distribution.",
     )
 
     return parser.parse_args()
@@ -973,35 +1024,108 @@ def main():
             if not events_table_path:
                 logger.error("DELTA_EVENTS_TABLE_PATH is required for xact-delta-writer")
                 sys.exit(1)
-            loop.run_until_complete(
-                run_delta_events_worker(local_kafka_config, events_table_path)
-            )
+            if args.count > 1:
+                loop.run_until_complete(
+                    run_worker_pool(
+                        run_delta_events_worker, args.count, "xact-delta-writer",
+                        local_kafka_config, events_table_path,
+                    )
+                )
+            else:
+                loop.run_until_complete(
+                    run_delta_events_worker(local_kafka_config, events_table_path)
+                )
         elif args.worker == "xact-download":
-            loop.run_until_complete(run_download_worker(local_kafka_config))
+            if args.count > 1:
+                loop.run_until_complete(
+                    run_worker_pool(
+                        run_download_worker, args.count, "xact-download",
+                        local_kafka_config,
+                    )
+                )
+            else:
+                loop.run_until_complete(run_download_worker(local_kafka_config))
         elif args.worker == "xact-upload":
-            loop.run_until_complete(run_upload_worker(local_kafka_config))
+            if args.count > 1:
+                loop.run_until_complete(
+                    run_worker_pool(
+                        run_upload_worker, args.count, "xact-upload",
+                        local_kafka_config,
+                    )
+                )
+            else:
+                loop.run_until_complete(run_upload_worker(local_kafka_config))
         elif args.worker == "xact-result-processor":
-            loop.run_until_complete(
-                run_result_processor(local_kafka_config, enable_delta_writes)
-            )
+            if args.count > 1:
+                loop.run_until_complete(
+                    run_worker_pool(
+                        run_result_processor, args.count, "xact-result-processor",
+                        local_kafka_config, enable_delta_writes,
+                    )
+                )
+            else:
+                loop.run_until_complete(
+                    run_result_processor(local_kafka_config, enable_delta_writes)
+                )
         elif args.worker == "claimx-ingester":
             # ClaimX event ingester
             claimx_events_table_path = os.getenv("CLAIMX_EVENTS_TABLE_PATH", "")
-            loop.run_until_complete(
-                run_claimx_event_ingester(
-                    local_kafka_config,
-                    enable_delta_writes,
-                    events_table_path=claimx_events_table_path,
+            if args.count > 1:
+                loop.run_until_complete(
+                    run_worker_pool(
+                        run_claimx_event_ingester, args.count, "claimx-ingester",
+                        local_kafka_config, enable_delta_writes,
+                        events_table_path=claimx_events_table_path,
+                    )
                 )
-            )
+            else:
+                loop.run_until_complete(
+                    run_claimx_event_ingester(
+                        local_kafka_config,
+                        enable_delta_writes,
+                        events_table_path=claimx_events_table_path,
+                    )
+                )
         elif args.worker == "claimx-enricher":
-            loop.run_until_complete(run_claimx_enrichment_worker(local_kafka_config))
+            if args.count > 1:
+                loop.run_until_complete(
+                    run_worker_pool(
+                        run_claimx_enrichment_worker, args.count, "claimx-enricher",
+                        local_kafka_config,
+                    )
+                )
+            else:
+                loop.run_until_complete(run_claimx_enrichment_worker(local_kafka_config))
         elif args.worker == "claimx-downloader":
-            loop.run_until_complete(run_claimx_download_worker(local_kafka_config))
+            if args.count > 1:
+                loop.run_until_complete(
+                    run_worker_pool(
+                        run_claimx_download_worker, args.count, "claimx-downloader",
+                        local_kafka_config,
+                    )
+                )
+            else:
+                loop.run_until_complete(run_claimx_download_worker(local_kafka_config))
         elif args.worker == "claimx-uploader":
-            loop.run_until_complete(run_claimx_upload_worker(local_kafka_config))
+            if args.count > 1:
+                loop.run_until_complete(
+                    run_worker_pool(
+                        run_claimx_upload_worker, args.count, "claimx-uploader",
+                        local_kafka_config,
+                    )
+                )
+            else:
+                loop.run_until_complete(run_claimx_upload_worker(local_kafka_config))
         elif args.worker == "claimx-result-processor":
-            loop.run_until_complete(run_claimx_result_processor(local_kafka_config))
+            if args.count > 1:
+                loop.run_until_complete(
+                    run_worker_pool(
+                        run_claimx_result_processor, args.count, "claimx-result-processor",
+                        local_kafka_config,
+                    )
+                )
+            else:
+                loop.run_until_complete(run_claimx_result_processor(local_kafka_config))
         else:  # all
             loop.run_until_complete(
                 run_all_workers(pipeline_config, enable_delta_writes)
