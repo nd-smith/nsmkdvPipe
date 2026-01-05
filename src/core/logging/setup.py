@@ -2,6 +2,7 @@
 
 import io
 import logging
+import os
 import secrets
 import sys
 from datetime import datetime
@@ -34,16 +35,23 @@ def get_log_file_path(
     log_dir: Path,
     domain: Optional[str] = None,
     stage: Optional[str] = None,
+    instance_id: Optional[str] = None,
 ) -> Path:
     """
     Build log file path with domain/date subfolder structure.
 
-    Structure: {log_dir}/{domain}/{YYYY-MM-DD}/{domain}_{stage}_{YYYYMMDD}.log
+    Structure: {log_dir}/{domain}/{YYYY-MM-DD}/{domain}_{stage}_{YYYYMMDD}[_instance].log
+
+    When instance_id is provided, it's appended to the filename to prevent
+    file locking conflicts when multiple workers of the same type run
+    concurrently.
 
     Args:
         log_dir: Base log directory
         domain: Pipeline domain (xact, claimx, kafka)
         stage: Stage name (ingest, download, etc.)
+        instance_id: Unique instance identifier (e.g., process ID) for
+            multi-worker scenarios
 
     Returns:
         Full path to log file
@@ -51,15 +59,21 @@ def get_log_file_path(
     date_folder = datetime.now().strftime("%Y-%m-%d")
     date_str = datetime.now().strftime("%Y%m%d")
 
-    # Build filename
+    # Build base filename
     if domain and stage:
-        filename = f"{domain}_{stage}_{date_str}.log"
+        base_name = f"{domain}_{stage}_{date_str}"
     elif domain:
-        filename = f"{domain}_{date_str}.log"
+        base_name = f"{domain}_{date_str}"
     elif stage:
-        filename = f"{stage}_{date_str}.log"
+        base_name = f"{stage}_{date_str}"
     else:
-        filename = f"pipeline_{date_str}.log"
+        base_name = f"pipeline_{date_str}"
+
+    # Append instance ID if provided (for multi-worker isolation)
+    if instance_id:
+        filename = f"{base_name}_{instance_id}.log"
+    else:
+        filename = f"{base_name}.log"
 
     # Build path with subfolders
     if domain:
@@ -82,6 +96,7 @@ def setup_logging(
     backup_count: int = DEFAULT_BACKUP_COUNT,
     suppress_noisy: bool = True,
     worker_id: Optional[str] = None,
+    use_instance_id: bool = True,
 ) -> logging.Logger:
     """
     Configure logging with console and rotating file handlers.
@@ -89,6 +104,11 @@ def setup_logging(
     Log files are organized by domain and date:
         logs/xact/2025-01-15/xact_download_20250115.log
         logs/kafka/2025-01-15/kafka_consumer_20250115.log
+
+    When use_instance_id is True (default), the process ID is appended to
+    the log filename to prevent file locking conflicts when multiple
+    workers of the same type run concurrently:
+        logs/kafka/2025-01-15/kafka_consumer_20250115_p12345.log
 
     Args:
         name: Logger name and log file prefix
@@ -102,6 +122,9 @@ def setup_logging(
         backup_count: Number of backup files to keep
         suppress_noisy: Quiet down Azure SDK and HTTP client loggers
         worker_id: Worker identifier for context
+        use_instance_id: Append process ID to log filename for multi-worker
+            isolation (default: True). Set to False for single-worker
+            deployments or when log aggregation is preferred.
 
     Returns:
         Configured logger instance
@@ -116,8 +139,13 @@ def setup_logging(
     if domain:
         set_log_context(domain=domain)
 
+    # Generate instance ID from process ID for multi-worker isolation
+    instance_id = f"p{os.getpid()}" if use_instance_id else None
+
     # Build log file path with subfolders
-    log_file = get_log_file_path(log_dir, domain=domain, stage=stage)
+    log_file = get_log_file_path(
+        log_dir, domain=domain, stage=stage, instance_id=instance_id
+    )
 
     # Ensure directory exists
     log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -185,6 +213,7 @@ def setup_multi_worker_logging(
     max_bytes: int = DEFAULT_MAX_BYTES,
     backup_count: int = DEFAULT_BACKUP_COUNT,
     suppress_noisy: bool = True,
+    use_instance_id: bool = True,
 ) -> logging.Logger:
     """
     Configure logging with per-worker file handlers.
@@ -198,6 +227,10 @@ def setup_multi_worker_logging(
         logs/kafka/2025-01-15/kafka_upload_20250115.log
         logs/kafka/2025-01-15/kafka_pipeline_20250115.log  (combined)
 
+    When use_instance_id is True (default), the process ID is appended to
+    log filenames to prevent file locking conflicts when multiple instances
+    of the same worker configuration run concurrently.
+
     Args:
         workers: List of worker stage names (e.g., ["download", "upload"])
         domain: Pipeline domain (default: "kafka")
@@ -208,11 +241,16 @@ def setup_multi_worker_logging(
         max_bytes: Max size per log file before rotation
         backup_count: Number of backup files to keep
         suppress_noisy: Quiet down Azure SDK and HTTP client loggers
+        use_instance_id: Append process ID to log filenames for multi-instance
+            isolation (default: True)
 
     Returns:
         Configured logger instance
     """
     log_dir = log_dir or DEFAULT_LOG_DIR
+
+    # Generate instance ID from process ID for multi-instance isolation
+    instance_id = f"p{os.getpid()}" if use_instance_id else None
 
     # Create formatters
     if json_format:
@@ -242,7 +280,9 @@ def setup_multi_worker_logging(
 
     # Add per-worker file handlers
     for worker in workers:
-        log_file = get_log_file_path(log_dir, domain=domain, stage=worker)
+        log_file = get_log_file_path(
+            log_dir, domain=domain, stage=worker, instance_id=instance_id
+        )
         log_file.parent.mkdir(parents=True, exist_ok=True)
 
         handler = RotatingFileHandler(
@@ -257,7 +297,9 @@ def setup_multi_worker_logging(
         root_logger.addHandler(handler)
 
     # Add combined file handler (no filter - receives all logs)
-    combined_file = get_log_file_path(log_dir, domain=domain, stage="pipeline")
+    combined_file = get_log_file_path(
+        log_dir, domain=domain, stage="pipeline", instance_id=instance_id
+    )
     combined_file.parent.mkdir(parents=True, exist_ok=True)
     combined_handler = RotatingFileHandler(
         combined_file,
