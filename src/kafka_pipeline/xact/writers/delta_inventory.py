@@ -2,11 +2,11 @@
 Delta Lake writer for attachment inventory table.
 
 Writes download results to the xact_attachments Delta table with:
-- Idempotency via merge on (trace_id, attachment_url)
+- Append-only writes for completed downloads
 - Async/non-blocking writes
-- Schema compatibility with legacy xact_attachments table
+- Partitioned by created_date for efficient querying
 
-Schema aligned with legacy Task.to_tracking_row() format for compatibility.
+This is an inventory table - it tracks where files are stored in OneLake.
 """
 
 import time
@@ -16,47 +16,42 @@ from typing import List
 import polars as pl
 
 from kafka_pipeline.common.writers.base import BaseDeltaWriter
-from kafka_pipeline.xact.schemas.models import XACT_PRIMARY_KEYS
 from kafka_pipeline.xact.schemas.results import DownloadResultMessage
 
 
-# Schema for xact_attachments table (matches legacy format)
+# Schema for xact_attachments inventory table
 INVENTORY_SCHEMA = {
     "trace_id": pl.Utf8,
     "attachment_url": pl.Utf8,
     "blob_path": pl.Utf8,
-    "status_subtype": pl.Utf8,
     "file_type": pl.Utf8,
+    "status_subtype": pl.Utf8,
     "assignment_id": pl.Utf8,
-    "status": pl.Utf8,
-    "http_status": pl.Int64,
     "bytes_downloaded": pl.Int64,
-    "retry_count": pl.Int64,
-    "error_message": pl.Utf8,
-    "created_at": pl.Utf8,
-    "expires_at": pl.Datetime(time_zone="UTC"),
-    "expired_at_ingest": pl.Boolean,
+    "downloaded_at": pl.Datetime(time_zone="UTC"),
+    "created_at": pl.Datetime(time_zone="UTC"),
+    "created_date": pl.Date,
 }
 
 
 class DeltaInventoryWriter(BaseDeltaWriter):
     """
-    Writer for xact_attachments Delta table with idempotency and async support.
+    Writer for xact_attachments Delta table (append-only inventory).
 
-    Schema matches verisk_pipeline Task.to_tracking_row() output:
-    - trace_id, attachment_url: Primary keys for merge
+    This is an inventory table tracking where files are stored in OneLake.
+    Only completed downloads are written here.
+
+    Schema:
+    - trace_id: Unique event identifier
+    - attachment_url: Source URL of the file
     - blob_path: Destination path in OneLake
-    - status_subtype: Event type suffix (e.g., "documentsReceived")
     - file_type: File extension (e.g., "pdf", "esx")
+    - status_subtype: Event type suffix (e.g., "documentsReceived")
     - assignment_id: Assignment ID from event
-    - status: completed/failed/failed_permanent
-    - http_status: HTTP response code
     - bytes_downloaded: Size of downloaded file
-    - retry_count: Number of retry attempts
-    - error_message: Error description (if failed)
-    - created_at: Timestamp of result creation
-    - expires_at: URL expiration time (optional)
-    - expired_at_ingest: Whether URL was expired at ingest
+    - downloaded_at: When the file was downloaded
+    - created_at: When the record was created
+    - created_date: Date partition column
 
     Usage:
         >>> writer = DeltaInventoryWriter(table_path="abfss://.../xact_attachments")
@@ -70,10 +65,9 @@ class DeltaInventoryWriter(BaseDeltaWriter):
         Args:
             table_path: Full abfss:// path to xact_attachments Delta table
         """
-        # Initialize base class with z_order columns
         super().__init__(
             table_path=table_path,
-            z_order_columns=["trace_id", "created_at"],
+            partition_column="created_date",
         )
 
     async def write_result(self, result: DownloadResultMessage) -> bool:
@@ -90,15 +84,10 @@ class DeltaInventoryWriter(BaseDeltaWriter):
 
     async def write_results(self, results: List[DownloadResultMessage]) -> bool:
         """
-        Write multiple download results to Delta table (non-blocking).
+        Write multiple download results to Delta table (non-blocking, append-only).
 
-        Converts DownloadResultMessage objects to DataFrame and merges into Delta.
+        Converts DownloadResultMessage objects to DataFrame and appends to Delta.
         Uses asyncio.to_thread to avoid blocking the event loop.
-
-        Merge strategy:
-        - Match on (trace_id, attachment_url) for idempotency
-        - UPDATE existing rows with new data
-        - INSERT new rows that don't match
 
         Args:
             results: List of DownloadResultMessage objects to write
@@ -116,13 +105,8 @@ class DeltaInventoryWriter(BaseDeltaWriter):
             # Convert results to DataFrame
             df = self._results_to_dataframe(results)
 
-            # Use base class async merge method
-            # Merge on (trace_id, attachment_url) for idempotency
-            success = await self._async_merge(
-                df,
-                merge_keys=["trace_id", "attachment_url"],
-                preserve_columns=["created_at"],
-            )
+            # Use base class async append method
+            success = await self._async_append(df)
 
             # Calculate latency metric
             latency_ms = (time.monotonic() - start_time) * 1000
@@ -158,21 +142,17 @@ class DeltaInventoryWriter(BaseDeltaWriter):
         """
         Convert DownloadResultMessage objects to Polars DataFrame.
 
-        Schema matches verisk_pipeline xact_attachments table:
-        - trace_id: str (primary key)
-        - attachment_url: str (primary key)
+        Schema for xact_attachments inventory table:
+        - trace_id: str
+        - attachment_url: str
         - blob_path: str
-        - status_subtype: str
         - file_type: str
+        - status_subtype: str
         - assignment_id: str
-        - status: str (completed/failed/failed_permanent)
-        - http_status: int
         - bytes_downloaded: int
-        - retry_count: int
-        - error_message: str
-        - created_at: str (ISO format)
-        - expires_at: datetime (optional)
-        - expired_at_ingest: bool (optional)
+        - downloaded_at: datetime
+        - created_at: datetime
+        - created_date: date (partition column)
 
         Args:
             results: List of DownloadResultMessage objects
@@ -180,8 +160,23 @@ class DeltaInventoryWriter(BaseDeltaWriter):
         Returns:
             Polars DataFrame with xact_attachments schema
         """
-        # Convert to list of dicts using to_tracking_row() for consistency
-        rows = [result.to_tracking_row() for result in results]
+        now = datetime.now(timezone.utc)
+        today = now.date()
+
+        rows = []
+        for result in results:
+            rows.append({
+                "trace_id": result.trace_id,
+                "attachment_url": result.attachment_url,
+                "blob_path": result.blob_path,
+                "file_type": result.file_type,
+                "status_subtype": result.status_subtype,
+                "assignment_id": result.assignment_id,
+                "bytes_downloaded": result.bytes_downloaded,
+                "downloaded_at": result.created_at,
+                "created_at": now,
+                "created_date": today,
+            })
 
         # Create DataFrame with explicit schema
         df = pl.DataFrame(rows, schema=INVENTORY_SCHEMA)
