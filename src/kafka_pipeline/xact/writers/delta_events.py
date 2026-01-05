@@ -72,6 +72,7 @@ class DeltaEventsWriter(BaseDeltaWriter):
             dedupe_column="trace_id",
             dedupe_window_hours=dedupe_window_hours,
             timestamp_column="created_at",
+            partition_column="event_date",
         )
 
         self.dedupe_window_hours = dedupe_window_hours
