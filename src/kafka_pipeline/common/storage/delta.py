@@ -374,6 +374,7 @@ class DeltaTableWriter(LoggedClass):
             mode="append",
             schema_mode="merge",
             storage_options=opts,
+            partition_by=[self.partition_column] if self.partition_column else None,
         )  # type: ignore[call-overload]
 
         # Update dedupe cache with newly written IDs
@@ -468,6 +469,7 @@ class DeltaTableWriter(LoggedClass):
                 mode="overwrite",
                 schema_mode="overwrite",
                 storage_options=opts,
+                partition_by=[self.partition_column] if self.partition_column else None,
             )
             del arrow_table
             self._log(
@@ -756,6 +758,7 @@ class DeltaTableWriter(LoggedClass):
                     mode="overwrite",
                     schema_mode="overwrite",
                     storage_options=opts,
+                    partition_by=[self.partition_column] if self.partition_column else None,
                 )
                 self._log(
                     logging.INFO,
