@@ -18,9 +18,10 @@ logger = logging.getLogger(__name__)
 # Default retry delays (seconds): 5m, 10m, 20m, 40m
 DEFAULT_DELTA_RETRY_DELAYS = [300, 600, 1200, 2400]
 
-# Max events per retry message to stay under Kafka's 1MB default limit
-# Average event ~2.8KB, so 300 events ~= 840KB (safe margin under 1MB)
-MAX_EVENTS_PER_RETRY_MESSAGE = 300
+# Max events per retry message - safety net for very large batches
+# With 10MB max_request_size and ~2.8KB/event, 3000 events = ~8.4MB
+# Normal 1000-event batches (~2.8MB) won't be chunked
+MAX_EVENTS_PER_RETRY_MESSAGE = 3000
 
 
 class DeltaRetryHandler:
