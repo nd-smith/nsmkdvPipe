@@ -274,3 +274,9 @@ class TestLocalKafkaConfig:
         assert kafka_config.bootstrap_servers == "localhost:9092"
         assert kafka_config.security_protocol == "PLAINTEXT"
         assert kafka_config.downloads_pending_topic == "xact.downloads.pending"
+        assert kafka_config.delta_events_batch_size == 1000
+
+        # Test custom batch size
+        config_custom = LocalKafkaConfig(delta_events_batch_size=5000)
+        kafka_config_custom = config_custom.to_kafka_config()
+        assert kafka_config_custom.delta_events_batch_size == 5000

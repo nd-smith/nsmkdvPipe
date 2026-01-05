@@ -128,6 +128,9 @@ class LocalKafkaConfig:
     # Cache directory
     cache_dir: str = "/tmp/kafka_pipeline_cache"
 
+    # Delta events writer settings
+    delta_events_batch_size: int = 1000
+
     @classmethod
     def load_config(cls, config_path: Optional[Path] = None) -> "LocalKafkaConfig":
         """Load local Kafka configuration from config.yaml and environment variables.
@@ -146,6 +149,7 @@ class LocalKafkaConfig:
             ONELAKE_BASE_PATH: OneLake path for uploads (fallback)
             ONELAKE_XACT_PATH: OneLake path for xact domain
             ONELAKE_CLAIMX_PATH: OneLake path for claimx domain
+            DELTA_EVENTS_BATCH_SIZE: Events per batch for Delta writes (default: 1000)
         """
         config_path = config_path or DEFAULT_CONFIG_PATH
 
@@ -213,6 +217,10 @@ class LocalKafkaConfig:
                 "CACHE_DIR",
                 kafka_data.get("cache_dir", "/tmp/kafka_pipeline_cache")
             ),
+            delta_events_batch_size=int(os.getenv(
+                "DELTA_EVENTS_BATCH_SIZE",
+                str(kafka_data.get("delta_events_batch_size", 1000))
+            )),
         )
 
     def to_kafka_config(self) -> KafkaConfig:
@@ -231,6 +239,7 @@ class LocalKafkaConfig:
             onelake_base_path=self.onelake_base_path,
             onelake_domain_paths=self.onelake_domain_paths,
             cache_dir=self.cache_dir,
+            delta_events_batch_size=self.delta_events_batch_size,
         )
 
 
