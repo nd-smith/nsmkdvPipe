@@ -53,17 +53,19 @@ class BaseKafkaConsumer:
     - Multiple topic subscription
     - Graceful shutdown handling
     - Custom message handler pattern
+    - Worker-specific configuration from hierarchical config
 
     Usage:
-        >>> config = KafkaConfig.from_env()
+        >>> config = load_config()
         >>> async def handle_message(record: ConsumerRecord):
         ...     # Process message
         ...     print(f"Received: {record.value}")
         >>>
         >>> consumer = BaseKafkaConsumer(
         ...     config=config,
-        ...     topics=["my-topic"],
-        ...     group_id="my-consumer-group",
+        ...     domain="xact",
+        ...     worker_name="download_worker",
+        ...     topics=["xact.downloads.pending"],
         ...     message_handler=handle_message
         ... )
         >>> await consumer.start()
@@ -74,43 +76,57 @@ class BaseKafkaConsumer:
     def __init__(
         self,
         config: KafkaConfig,
+        domain: str,
+        worker_name: str,
         topics: List[str],
-        group_id: str,
         message_handler: Callable[[ConsumerRecord], Awaitable[None]],
         circuit_breaker: Optional[CircuitBreaker] = None,
-        max_batches: Optional[int] = None,
         enable_message_commit: bool = True,
     ):
         """
-        Initialize Kafka consumer.
+        Initialize Kafka consumer with worker-specific configuration.
 
         Args:
-            config: Kafka configuration
+            config: Kafka configuration (loads from config.yaml)
+            domain: Domain name ("xact" or "claimx")
+            worker_name: Worker name (e.g., "download_worker", "event_ingester")
             topics: List of topics to subscribe to
-            group_id: Consumer group ID for offset management
             message_handler: Async callback function to process messages
             circuit_breaker: Optional custom circuit breaker (uses default if None)
-            max_batches: Optional limit on number of batches to process (None = unlimited).
-                        Useful for testing. A batch is one getmany() poll result.
             enable_message_commit: If True (default), commit offset after each message.
                         Set to False for batch processing where handler manages commits.
+
+        Note:
+            Consumer settings (max_poll_records, session_timeout_ms, etc.) are loaded
+            from config using config.get_worker_config(domain, worker_name, "consumer").
+            This merges worker-specific settings with defaults.
         """
         if not topics:
             raise ValueError("At least one topic must be specified")
 
         self.config = config
+        self.domain = domain
+        self.worker_name = worker_name
         self.topics = topics
-        self.group_id = group_id
         self.message_handler = message_handler
         self._consumer: Optional[AIOKafkaConsumer] = None
         self._running = False
-        self._circuit_breaker = circuit_breaker or get_circuit_breaker(
-            f"kafka_consumer_{group_id}", KAFKA_CIRCUIT_CONFIG
-        )
 
-        # Batch limiting for testing
-        self.max_batches = max_batches
+        # Get worker-specific consumer config (merged with defaults)
+        self.consumer_config = config.get_worker_config(domain, worker_name, "consumer")
+
+        # Get consumer group name (from worker config or generated)
+        self.group_id = config.get_consumer_group(domain, worker_name)
+
+        # Get max_batches from processing config if available
+        processing_config = config.get_worker_config(domain, worker_name, "processing")
+        self.max_batches = processing_config.get("max_batches")
         self._batch_count = 0
+
+        # Circuit breaker
+        self._circuit_breaker = circuit_breaker or get_circuit_breaker(
+            f"kafka_consumer_{self.group_id}", KAFKA_CIRCUIT_CONFIG
+        )
 
         # Commit control - disable for batch processing
         self._enable_message_commit = enable_message_commit
@@ -119,11 +135,14 @@ class BaseKafkaConsumer:
             logger,
             logging.INFO,
             "Initialized Kafka consumer",
+            domain=domain,
+            worker_name=worker_name,
             topics=topics,
-            group_id=group_id,
+            group_id=self.group_id,
             bootstrap_servers=config.bootstrap_servers,
-            max_batches=max_batches,
+            max_batches=self.max_batches,
             enable_message_commit=enable_message_commit,
+            consumer_config=self.consumer_config,
         )
 
     async def start(self) -> None:
@@ -155,37 +174,52 @@ class BaseKafkaConsumer:
             group_id=self.group_id,
         )
 
-        # Create aiokafka consumer configuration
-        consumer_config = {
+        # Build aiokafka consumer configuration from merged settings
+        kafka_consumer_config = {
             "bootstrap_servers": self.config.bootstrap_servers,
             "group_id": self.group_id,
-            "enable_auto_commit": self.config.enable_auto_commit,
-            "auto_offset_reset": self.config.auto_offset_reset,
-            "max_poll_records": self.config.max_poll_records,
-            "max_poll_interval_ms": self.config.max_poll_interval_ms,
-            "session_timeout_ms": self.config.session_timeout_ms,
-            # Connection timeout settings
+            # Connection timeout settings (from shared connection config)
             "request_timeout_ms": self.config.request_timeout_ms,
             "metadata_max_age_ms": self.config.metadata_max_age_ms,
             "connections_max_idle_ms": self.config.connections_max_idle_ms,
         }
 
+        # Apply worker-specific consumer settings (merged defaults + overrides)
+        # These come from config.get_worker_config(domain, worker_name, "consumer")
+        kafka_consumer_config.update({
+            "enable_auto_commit": self.consumer_config.get("enable_auto_commit", False),
+            "auto_offset_reset": self.consumer_config.get("auto_offset_reset", "earliest"),
+            "max_poll_records": self.consumer_config.get("max_poll_records", 100),
+            "max_poll_interval_ms": self.consumer_config.get("max_poll_interval_ms", 300000),
+            "session_timeout_ms": self.consumer_config.get("session_timeout_ms", 30000),
+        })
+
+        # Optional consumer settings (only add if present)
+        if "heartbeat_interval_ms" in self.consumer_config:
+            kafka_consumer_config["heartbeat_interval_ms"] = self.consumer_config["heartbeat_interval_ms"]
+        if "fetch_min_bytes" in self.consumer_config:
+            kafka_consumer_config["fetch_min_bytes"] = self.consumer_config["fetch_min_bytes"]
+        if "fetch_max_wait_ms" in self.consumer_config:
+            kafka_consumer_config["fetch_max_wait_ms"] = self.consumer_config["fetch_max_wait_ms"]
+        if "partition_assignment_strategy" in self.consumer_config:
+            kafka_consumer_config["partition_assignment_strategy"] = self.consumer_config["partition_assignment_strategy"]
+
         # Configure security based on protocol
         if self.config.security_protocol != "PLAINTEXT":
-            consumer_config["security_protocol"] = self.config.security_protocol
-            consumer_config["sasl_mechanism"] = self.config.sasl_mechanism
+            kafka_consumer_config["security_protocol"] = self.config.security_protocol
+            kafka_consumer_config["sasl_mechanism"] = self.config.sasl_mechanism
 
             # Add authentication based on mechanism
             if self.config.sasl_mechanism == "OAUTHBEARER":
                 oauth_callback = create_kafka_oauth_callback()
-                consumer_config["sasl_oauth_token_provider"] = oauth_callback
+                kafka_consumer_config["sasl_oauth_token_provider"] = oauth_callback
             elif self.config.sasl_mechanism == "PLAIN":
                 # SASL_PLAIN for Event Hubs or basic auth
-                consumer_config["sasl_plain_username"] = self.config.sasl_plain_username
-                consumer_config["sasl_plain_password"] = self.config.sasl_plain_password
+                kafka_consumer_config["sasl_plain_username"] = self.config.sasl_plain_username
+                kafka_consumer_config["sasl_plain_password"] = self.config.sasl_plain_password
 
         # Create aiokafka consumer
-        self._consumer = AIOKafkaConsumer(*self.topics, **consumer_config)
+        self._consumer = AIOKafkaConsumer(*self.topics, **kafka_consumer_config)
 
         await self._consumer.start()
         self._running = True
