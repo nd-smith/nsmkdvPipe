@@ -43,14 +43,19 @@ class BaseKafkaProducer:
     - Azure AD authentication via OAUTHBEARER
     - Batching support for efficient throughput
     - Message headers for routing metadata
+    - Worker-specific configuration from hierarchical config
 
     Usage:
-        >>> config = KafkaConfig.from_env()
-        >>> producer = BaseKafkaProducer(config)
+        >>> config = load_config()
+        >>> producer = BaseKafkaProducer(
+        ...     config=config,
+        ...     domain="xact",
+        ...     worker_name="download_worker"
+        ... )
         >>> await producer.start()
         >>> try:
         ...     metadata = await producer.send(
-        ...         topic="my-topic",
+        ...         topic="xact.downloads.cached",
         ...         key="key-123",
         ...         value=my_pydantic_model,
         ...         headers={"trace_id": "evt-456"}
@@ -62,29 +67,46 @@ class BaseKafkaProducer:
     def __init__(
         self,
         config: KafkaConfig,
+        domain: str,
+        worker_name: str,
         circuit_breaker: Optional[CircuitBreaker] = None,
     ):
         """
-        Initialize Kafka producer.
+        Initialize Kafka producer with worker-specific configuration.
 
         Args:
-            config: Kafka configuration
+            config: Kafka configuration (loads from config.yaml)
+            domain: Domain name ("xact" or "claimx")
+            worker_name: Worker name (e.g., "download_worker", "event_ingester")
             circuit_breaker: Optional custom circuit breaker (uses default if None)
+
+        Note:
+            Producer settings (acks, retries, compression, etc.) are loaded
+            from config using config.get_worker_config(domain, worker_name, "producer").
+            This merges worker-specific settings with defaults.
         """
         self.config = config
+        self.domain = domain
+        self.worker_name = worker_name
         self._producer: Optional[AIOKafkaProducer] = None
         self._circuit_breaker = circuit_breaker or get_circuit_breaker(
-            "kafka_producer", KAFKA_CIRCUIT_CONFIG
+            f"kafka_producer_{domain}_{worker_name}", KAFKA_CIRCUIT_CONFIG
         )
         self._started = False
+
+        # Get worker-specific producer config (merged with defaults)
+        self.producer_config = config.get_worker_config(domain, worker_name, "producer")
 
         log_with_context(
             logger,
             logging.INFO,
             "Initialized Kafka producer",
+            domain=domain,
+            worker_name=worker_name,
             bootstrap_servers=config.bootstrap_servers,
             security_protocol=config.security_protocol,
             sasl_mechanism=config.sasl_mechanism,
+            producer_config=self.producer_config,
         )
 
     async def start(self) -> None:
@@ -103,35 +125,53 @@ class BaseKafkaProducer:
 
         logger.info("Starting Kafka producer")
 
-        # Create aiokafka producer configuration
-        producer_config = {
+        # Build aiokafka producer configuration from merged settings
+        kafka_producer_config = {
             "bootstrap_servers": self.config.bootstrap_servers,
-            "acks": self.config.acks,
             "value_serializer": lambda v: v,  # We'll handle serialization in send()
-            # Connection timeout settings
+            # Connection timeout settings (from shared connection config)
             "request_timeout_ms": self.config.request_timeout_ms,
             "metadata_max_age_ms": self.config.metadata_max_age_ms,
             "connections_max_idle_ms": self.config.connections_max_idle_ms,
         }
 
-        # Note: aiokafka handles retries internally - we don't pass explicit retry config
+        # Apply worker-specific producer settings (merged defaults + overrides)
+        # These come from config.get_worker_config(domain, worker_name, "producer")
+        kafka_producer_config.update({
+            "acks": self.producer_config.get("acks", "all"),
+            "retries": self.producer_config.get("retries", 3),
+            "retry_backoff_ms": self.producer_config.get("retry_backoff_ms", 1000),
+        })
+
+        # Optional producer settings (only add if present)
+        if "batch_size" in self.producer_config:
+            kafka_producer_config["batch_size"] = self.producer_config["batch_size"]
+        if "linger_ms" in self.producer_config:
+            kafka_producer_config["linger_ms"] = self.producer_config["linger_ms"]
+        if "compression_type" in self.producer_config:
+            kafka_producer_config["compression_type"] = self.producer_config["compression_type"]
+        if "max_in_flight_requests_per_connection" in self.producer_config:
+            kafka_producer_config["max_in_flight_requests_per_connection"] = \
+                self.producer_config["max_in_flight_requests_per_connection"]
+        if "buffer_memory" in self.producer_config:
+            kafka_producer_config["buffer_memory"] = self.producer_config["buffer_memory"]
 
         # Configure security based on protocol
         if self.config.security_protocol != "PLAINTEXT":
-            producer_config["security_protocol"] = self.config.security_protocol
-            producer_config["sasl_mechanism"] = self.config.sasl_mechanism
+            kafka_producer_config["security_protocol"] = self.config.security_protocol
+            kafka_producer_config["sasl_mechanism"] = self.config.sasl_mechanism
 
             # Add authentication based on mechanism
             if self.config.sasl_mechanism == "OAUTHBEARER":
                 oauth_callback = create_kafka_oauth_callback()
-                producer_config["sasl_oauth_token_provider"] = oauth_callback
+                kafka_producer_config["sasl_oauth_token_provider"] = oauth_callback
             elif self.config.sasl_mechanism == "PLAIN":
                 # SASL_PLAIN for Event Hubs or basic auth
-                producer_config["sasl_plain_username"] = self.config.sasl_plain_username
-                producer_config["sasl_plain_password"] = self.config.sasl_plain_password
+                kafka_producer_config["sasl_plain_username"] = self.config.sasl_plain_username
+                kafka_producer_config["sasl_plain_password"] = self.config.sasl_plain_password
 
         # Create aiokafka producer
-        self._producer = AIOKafkaProducer(**producer_config)
+        self._producer = AIOKafkaProducer(**kafka_producer_config)
 
         await self._producer.start()
         self._started = True
@@ -144,7 +184,8 @@ class BaseKafkaProducer:
             logging.INFO,
             "Kafka producer started successfully",
             bootstrap_servers=self.config.bootstrap_servers,
-            acks=self.config.acks,
+            acks=self.producer_config.get("acks", "all"),
+            compression_type=self.producer_config.get("compression_type", "none"),
         )
 
     async def stop(self) -> None:
