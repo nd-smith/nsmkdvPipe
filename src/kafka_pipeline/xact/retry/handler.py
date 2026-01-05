@@ -18,6 +18,11 @@ logger = logging.getLogger(__name__)
 # Default retry delays (seconds): 5m, 10m, 20m, 40m
 DEFAULT_DELTA_RETRY_DELAYS = [300, 600, 1200, 2400]
 
+# Max events per retry message - safety net for very large batches
+# With 10MB max_request_size and ~2.8KB/event, 3000 events = ~8.4MB
+# Normal 1000-event batches (~2.8MB) won't be chunked
+MAX_EVENTS_PER_RETRY_MESSAGE = 3000
+
 
 class DeltaRetryHandler:
     """
@@ -77,6 +82,9 @@ class DeltaRetryHandler:
         self.retry_topic_prefix = retry_topic_prefix
         self.dlq_topic = dlq_topic
 
+        # Max events per retry message (to avoid MessageSizeTooLargeError)
+        self.max_events_per_message = MAX_EVENTS_PER_RETRY_MESSAGE
+
         logger.info(
             "Initialized DeltaRetryHandler",
             extra={
@@ -84,8 +92,30 @@ class DeltaRetryHandler:
                 "max_retries": self.max_retries,
                 "dlq_topic": self.dlq_topic,
                 "table_path": self.table_path,
+                "max_events_per_message": self.max_events_per_message,
             },
         )
+
+    @staticmethod
+    def _extract_trace_ids(
+        batch: List[Dict[str, Any]], max_ids: int = 10
+    ) -> List[str]:
+        """
+        Extract trace_ids from batch for logging.
+
+        Args:
+            batch: List of event dictionaries
+            max_ids: Maximum number of trace_ids to return
+
+        Returns:
+            List of trace_ids (up to max_ids)
+        """
+        trace_ids = []
+        for event in batch[:max_ids]:
+            trace_id = event.get("traceId") or event.get("trace_id")
+            if trace_id:
+                trace_ids.append(trace_id)
+        return trace_ids
 
     def get_retry_topic(self, retry_count: int) -> str:
         """
@@ -146,6 +176,7 @@ class DeltaRetryHandler:
         """
         batch_size = len(batch)
         error_message = str(error)[:500]
+        trace_ids = self._extract_trace_ids(batch)
 
         logger.info(
             "Handling Delta batch failure",
@@ -154,6 +185,7 @@ class DeltaRetryHandler:
                 "retry_count": retry_count,
                 "error_category": error_category,
                 "error_type": type(error).__name__,
+                "trace_ids": trace_ids,
             },
         )
 
@@ -200,7 +232,8 @@ class DeltaRetryHandler:
         Send batch to appropriate retry topic.
 
         Creates FailedDeltaBatch with scheduled retry_at timestamp
-        based on configured delay.
+        based on configured delay. Chunks large batches to avoid
+        MessageSizeTooLargeError.
 
         Args:
             batch: Events to retry
@@ -214,51 +247,73 @@ class DeltaRetryHandler:
         delay_seconds = self.retry_delays[retry_count]
         retry_at = datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)
 
-        # Create failed batch message
-        failed_batch = FailedDeltaBatch(
-            events=batch,
-            retry_count=retry_count + 1,  # Increment for next attempt
-            first_failure_at=first_failure_at,
-            last_error=error_message,
-            error_category=error_category,
-            retry_at=retry_at,
-            table_path=self.table_path,
-        )
+        # Chunk batch if too large to avoid MessageSizeTooLargeError
+        if len(batch) > self.max_events_per_message:
+            chunks = [
+                batch[i : i + self.max_events_per_message]
+                for i in range(0, len(batch), self.max_events_per_message)
+            ]
+            logger.info(
+                "Chunking large batch for retry topic",
+                extra={
+                    "original_size": len(batch),
+                    "chunk_count": len(chunks),
+                    "max_events_per_message": self.max_events_per_message,
+                },
+            )
+        else:
+            chunks = [batch]
 
-        # Use provided batch_id if available
-        if batch_id:
-            failed_batch.batch_id = batch_id
+        for chunk_idx, chunk in enumerate(chunks):
+            # Create failed batch message for this chunk
+            failed_batch = FailedDeltaBatch(
+                events=chunk,
+                retry_count=retry_count + 1,  # Increment for next attempt
+                first_failure_at=first_failure_at,
+                last_error=error_message,
+                error_category=error_category,
+                retry_at=retry_at,
+                table_path=self.table_path,
+            )
 
-        logger.info(
-            "Sending batch to retry topic",
-            extra={
-                "batch_id": failed_batch.batch_id,
-                "batch_size": failed_batch.event_count,
-                "retry_topic": retry_topic,
-                "retry_count": failed_batch.retry_count,
-                "delay_seconds": delay_seconds,
-                "retry_at": retry_at.isoformat(),
-            },
-        )
+            # Use provided batch_id with chunk suffix if chunking
+            if batch_id:
+                if len(chunks) > 1:
+                    failed_batch.batch_id = f"{batch_id}-chunk{chunk_idx}"
+                else:
+                    failed_batch.batch_id = batch_id
 
-        await self.producer.send(
-            topic=retry_topic,
-            key=failed_batch.batch_id,
-            value=failed_batch,
-            headers={
-                "retry_count": str(failed_batch.retry_count),
-                "error_category": error_category,
-                "event_count": str(failed_batch.event_count),
-            },
-        )
+            logger.info(
+                "Sending batch to retry topic",
+                extra={
+                    "batch_id": failed_batch.batch_id,
+                    "batch_size": failed_batch.event_count,
+                    "retry_topic": retry_topic,
+                    "retry_count": failed_batch.retry_count,
+                    "delay_seconds": delay_seconds,
+                    "retry_at": retry_at.isoformat(),
+                    "chunk": f"{chunk_idx + 1}/{len(chunks)}" if len(chunks) > 1 else None,
+                },
+            )
 
-        logger.debug(
-            "Batch sent to retry topic successfully",
-            extra={
-                "batch_id": failed_batch.batch_id,
-                "retry_topic": retry_topic,
-            },
-        )
+            await self.producer.send(
+                topic=retry_topic,
+                key=failed_batch.batch_id,
+                value=failed_batch,
+                headers={
+                    "retry_count": str(failed_batch.retry_count),
+                    "error_category": error_category,
+                    "event_count": str(failed_batch.event_count),
+                },
+            )
+
+            logger.debug(
+                "Batch sent to retry topic successfully",
+                extra={
+                    "batch_id": failed_batch.batch_id,
+                    "retry_topic": retry_topic,
+                },
+            )
 
     async def _send_to_dlq(
         self,
@@ -273,6 +328,7 @@ class DeltaRetryHandler:
         Send batch to dead-letter queue.
 
         Creates FailedDeltaBatch with no retry_at (terminal state).
+        Chunks large batches to avoid MessageSizeTooLargeError.
 
         Args:
             batch: Events that exhausted retries
@@ -282,50 +338,76 @@ class DeltaRetryHandler:
             batch_id: Batch identifier
             first_failure_at: Original failure timestamp
         """
-        # Create failed batch message (no retry_at for DLQ)
-        failed_batch = FailedDeltaBatch(
-            events=batch,
-            retry_count=retry_count,
-            first_failure_at=first_failure_at,
-            last_error=error_message,
-            error_category=error_category,
-            retry_at=None,  # No more retries
-            table_path=self.table_path,
-        )
+        # Chunk batch if too large to avoid MessageSizeTooLargeError
+        if len(batch) > self.max_events_per_message:
+            chunks = [
+                batch[i : i + self.max_events_per_message]
+                for i in range(0, len(batch), self.max_events_per_message)
+            ]
+            logger.info(
+                "Chunking large batch for DLQ",
+                extra={
+                    "original_size": len(batch),
+                    "chunk_count": len(chunks),
+                    "max_events_per_message": self.max_events_per_message,
+                },
+            )
+        else:
+            chunks = [batch]
 
-        if batch_id:
-            failed_batch.batch_id = batch_id
+        for chunk_idx, chunk in enumerate(chunks):
+            # Create failed batch message (no retry_at for DLQ)
+            failed_batch = FailedDeltaBatch(
+                events=chunk,
+                retry_count=retry_count,
+                first_failure_at=first_failure_at,
+                last_error=error_message,
+                error_category=error_category,
+                retry_at=None,  # No more retries
+                table_path=self.table_path,
+            )
 
-        logger.error(
-            "Sending batch to DLQ",
-            extra={
-                "batch_id": failed_batch.batch_id,
-                "batch_size": failed_batch.event_count,
-                "retry_count": retry_count,
-                "error_category": error_category,
-                "final_error": error_message[:200],
-            },
-        )
+            # Use provided batch_id with chunk suffix if chunking
+            if batch_id:
+                if len(chunks) > 1:
+                    failed_batch.batch_id = f"{batch_id}-chunk{chunk_idx}"
+                else:
+                    failed_batch.batch_id = batch_id
 
-        await self.producer.send(
-            topic=self.dlq_topic,
-            key=failed_batch.batch_id,
-            value=failed_batch,
-            headers={
-                "retry_count": str(retry_count),
-                "error_category": error_category,
-                "event_count": str(failed_batch.event_count),
-                "failed": "true",
-            },
-        )
+            trace_ids = self._extract_trace_ids(chunk)
 
-        logger.info(
-            "Batch sent to DLQ successfully",
-            extra={
-                "batch_id": failed_batch.batch_id,
-                "dlq_topic": self.dlq_topic,
-            },
-        )
+            logger.error(
+                "Sending batch to DLQ",
+                extra={
+                    "batch_id": failed_batch.batch_id,
+                    "batch_size": failed_batch.event_count,
+                    "retry_count": retry_count,
+                    "error_category": error_category,
+                    "final_error": error_message[:200],
+                    "trace_ids": trace_ids,
+                    "chunk": f"{chunk_idx + 1}/{len(chunks)}" if len(chunks) > 1 else None,
+                },
+            )
+
+            await self.producer.send(
+                topic=self.dlq_topic,
+                key=failed_batch.batch_id,
+                value=failed_batch,
+                headers={
+                    "retry_count": str(retry_count),
+                    "error_category": error_category,
+                    "event_count": str(failed_batch.event_count),
+                    "failed": "true",
+                },
+            )
+
+            logger.info(
+                "Batch sent to DLQ successfully",
+                extra={
+                    "batch_id": failed_batch.batch_id,
+                    "dlq_topic": self.dlq_topic,
+                },
+            )
 
 
 __all__ = ["DeltaRetryHandler"]

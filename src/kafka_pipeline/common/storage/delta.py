@@ -324,6 +324,7 @@ class DeltaTableWriter(LoggedClass):
         self,
         df: pl.DataFrame,
         dedupe: bool = True,
+        batch_id: Optional[str] = None,
     ) -> int:
         """
         Append DataFrame to Delta table.
@@ -331,12 +332,13 @@ class DeltaTableWriter(LoggedClass):
         Args:
             df: Data to append
             dedupe: Whether to deduplicate against existing data
+            batch_id: Optional short identifier for log correlation
 
         Returns:
             Number of rows written
         """
         if df.is_empty():
-            self._log(logging.DEBUG, "No data to write")
+            self._log(logging.DEBUG, "No data to write", batch_id=batch_id)
             return 0
 
         initial_count = len(df)
@@ -348,14 +350,15 @@ class DeltaTableWriter(LoggedClass):
                 self._log(
                     logging.DEBUG,
                     "Removed duplicates within batch",
+                    batch_id=batch_id,
                     records_processed=initial_count - len(df),
                 )
 
         # Dedupe against existing data
         if dedupe and self.dedupe_column:
-            df = self._filter_existing(df)
+            df = self._filter_existing(df, batch_id=batch_id)
             if df.is_empty():
-                self._log(logging.DEBUG, "No new records after deduplication")
+                self._log(logging.DEBUG, "No new records after deduplication", batch_id=batch_id)
                 return 0
 
         # Capture IDs we're about to write (for cache update)
@@ -379,6 +382,7 @@ class DeltaTableWriter(LoggedClass):
             self._log(
                 logging.DEBUG,
                 "Added new IDs to dedupe cache",
+                batch_id=batch_id,
                 new_id_count=len(new_ids),
                 cache_size=len(self._cached_dedupe_ids),
             )
@@ -579,7 +583,9 @@ class DeltaTableWriter(LoggedClass):
         rows_written: int = self.append(df, dedupe=True)  # type: ignore[assignment]
         return rows_written
 
-    def _filter_existing(self, df: pl.DataFrame) -> pl.DataFrame:
+    def _filter_existing(
+        self, df: pl.DataFrame, batch_id: Optional[str] = None
+    ) -> pl.DataFrame:
         """Filter out records that already exist in table using cached IDs."""
         if not self.dedupe_column:
             return df
@@ -597,6 +603,7 @@ class DeltaTableWriter(LoggedClass):
                 self._log(
                     logging.DEBUG,
                     "Refreshed dedupe ID cache",
+                    batch_id=batch_id,
                     cache_size=len(self._cached_dedupe_ids),
                     refresh_interval=self._dedupe_cache_refresh_batches,
                 )
@@ -622,6 +629,7 @@ class DeltaTableWriter(LoggedClass):
             self._log(
                 logging.DEBUG,
                 "Filtered existing records",
+                batch_id=batch_id,
                 records_processed=filtered_count,
             )
 

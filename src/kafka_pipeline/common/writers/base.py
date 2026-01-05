@@ -93,6 +93,7 @@ class BaseDeltaWriter:
         self,
         df: pl.DataFrame,
         dedupe: bool = True,
+        batch_id: Optional[str] = None,
     ) -> bool:
         """
         Append DataFrame to Delta table (non-blocking).
@@ -102,6 +103,7 @@ class BaseDeltaWriter:
         Args:
             df: Polars DataFrame to append
             dedupe: Whether to deduplicate against existing data
+            batch_id: Optional short identifier for log correlation
 
         Returns:
             True if write succeeded, False otherwise
@@ -114,11 +116,13 @@ class BaseDeltaWriter:
                 self._delta_writer.append,
                 df,
                 dedupe=dedupe,
+                batch_id=batch_id,
             )
 
             self.logger.info(
                 "Successfully appended to Delta table",
                 extra={
+                    "batch_id": batch_id,
                     "rows_written": rows_written,
                     "table_path": self.table_path,
                 },
@@ -129,6 +133,7 @@ class BaseDeltaWriter:
             self.logger.error(
                 "Failed to append to Delta table",
                 extra={
+                    "batch_id": batch_id,
                     "table_path": self.table_path,
                     "error": str(e),
                     "row_count": len(df),
