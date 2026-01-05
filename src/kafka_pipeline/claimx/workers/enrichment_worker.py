@@ -217,6 +217,7 @@ class ClaimXEnrichmentWorker:
             topics=self.topics,
             group_id=self.consumer_group,
             message_handler=self._handle_enrichment_task,
+            max_batches=self.consumer_config.consumer_max_batches,
         )
 
         # Update readiness: Kafka will be connected when consumer starts

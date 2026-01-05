@@ -78,6 +78,7 @@ class BaseKafkaConsumer:
         group_id: str,
         message_handler: Callable[[ConsumerRecord], Awaitable[None]],
         circuit_breaker: Optional[CircuitBreaker] = None,
+        max_batches: Optional[int] = None,
     ):
         """
         Initialize Kafka consumer.
@@ -88,6 +89,8 @@ class BaseKafkaConsumer:
             group_id: Consumer group ID for offset management
             message_handler: Async callback function to process messages
             circuit_breaker: Optional custom circuit breaker (uses default if None)
+            max_batches: Optional limit on number of batches to process (None = unlimited).
+                        Useful for testing. A batch is one getmany() poll result.
         """
         if not topics:
             raise ValueError("At least one topic must be specified")
@@ -102,6 +105,10 @@ class BaseKafkaConsumer:
             f"kafka_consumer_{group_id}", KAFKA_CIRCUIT_CONFIG
         )
 
+        # Batch limiting for testing
+        self.max_batches = max_batches
+        self._batch_count = 0
+
         log_with_context(
             logger,
             logging.INFO,
@@ -109,6 +116,7 @@ class BaseKafkaConsumer:
             topics=topics,
             group_id=group_id,
             bootstrap_servers=config.bootstrap_servers,
+            max_batches=max_batches,
         )
 
     async def start(self) -> None:
@@ -245,11 +253,27 @@ class BaseKafkaConsumer:
 
         Continuously fetches messages, processes them through the handler,
         and commits offsets after successful processing.
+
+        If max_batches is set, exits after processing that many batches.
         """
-        logger.info("Starting message consumption loop")
+        logger.info(
+            "Starting message consumption loop",
+            extra={"max_batches": self.max_batches},
+        )
 
         while self._running and self._consumer:
             try:
+                # Check if we've reached max_batches limit
+                if self.max_batches is not None and self._batch_count >= self.max_batches:
+                    log_with_context(
+                        logger,
+                        logging.INFO,
+                        "Reached max_batches limit, stopping consumer",
+                        max_batches=self.max_batches,
+                        batches_processed=self._batch_count,
+                    )
+                    return
+
                 # Fetch messages (blocking with timeout)
                 # This is wrapped in circuit breaker to protect against broker failures
                 async def _fetch_messages():
@@ -258,6 +282,10 @@ class BaseKafkaConsumer:
                     return await self._consumer.getmany(timeout_ms=1000)
 
                 data = await self._circuit_breaker.call_async(_fetch_messages)
+
+                # Count this as a batch if we got any messages
+                if data:
+                    self._batch_count += 1
 
                 # Process messages from all partitions
                 for topic_partition, messages in data.items():

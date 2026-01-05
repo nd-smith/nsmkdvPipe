@@ -110,6 +110,7 @@ class ClaimXResultProcessor:
             topics=[self.results_topic],
             group_id=self.consumer_group,
             message_handler=self._handle_result_message,
+            max_batches=self.config.consumer_max_batches,
         )
 
         # Start consumer (this blocks until stopped)

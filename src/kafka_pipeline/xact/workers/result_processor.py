@@ -111,6 +111,7 @@ class ResultProcessor:
             topics=[config.downloads_results_topic],
             group_id="xact-result-processor",
             message_handler=self._handle_result,
+            max_batches=config.consumer_max_batches,
         )
 
         # Background flush task
