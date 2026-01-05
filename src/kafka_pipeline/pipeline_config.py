@@ -387,6 +387,164 @@ class EventhouseSourceConfig:
 
 
 @dataclass
+class ClaimXEventhouseSourceConfig:
+    """Configuration for ClaimX Eventhouse poller.
+
+    Used for polling ClaimX events from Eventhouse.
+    """
+
+    cluster_url: str
+    database: str
+    source_table: str = "ClaimXEvents"
+
+    # Polling configuration
+    poll_interval_seconds: int = 30
+    batch_size: int = 1000
+
+    # Query configuration
+    query_timeout_seconds: int = 120
+
+    # Deduplication configuration
+    claimx_events_table_path: str = ""
+    claimx_events_window_hours: int = 24
+    eventhouse_query_window_hours: int = 1
+    overlap_minutes: int = 5
+
+    # Kafka topic
+    events_topic: str = "claimx.events.raw"
+
+    # Backfill configuration
+    backfill_start_stamp: Optional[str] = None
+    backfill_stop_stamp: Optional[str] = None
+    bulk_backfill: bool = False
+
+    # KQL start stamp for real-time mode
+    kql_start_stamp: Optional[str] = None
+
+    @classmethod
+    def load_config(cls, config_path: Optional[Path] = None) -> "ClaimXEventhouseSourceConfig":
+        """Load ClaimX Eventhouse configuration from config.yaml and environment variables.
+
+        Configuration priority (highest to lowest):
+        1. Environment variables
+        2. config.yaml file (under 'claimx_eventhouse:' key)
+        3. Dataclass defaults
+
+        Optional env var overrides:
+            CLAIMX_EVENTHOUSE_CLUSTER_URL: Kusto cluster URL (fallback: EVENTHOUSE_CLUSTER_URL)
+            CLAIMX_EVENTHOUSE_DATABASE: Database name (fallback: EVENTHOUSE_DATABASE)
+            CLAIMX_EVENTHOUSE_SOURCE_TABLE: Table name (default: ClaimXEvents)
+            CLAIMX_POLL_INTERVAL_SECONDS: Poll interval (default: 30)
+            CLAIMX_POLL_BATCH_SIZE: Max events per poll (default: 1000)
+            CLAIMX_EVENTHOUSE_QUERY_TIMEOUT: Query timeout (default: 120)
+            CLAIMX_EVENTS_TABLE_PATH: Path to claimx_events Delta table
+            CLAIMX_EVENTS_TOPIC: Kafka topic (default: claimx.events.raw)
+        """
+        config_path = config_path or DEFAULT_CONFIG_PATH
+
+        # Load from config.yaml
+        claimx_eventhouse_data: Dict[str, Any] = {}
+        poller_data: Dict[str, Any] = {}
+        dedup_data: Dict[str, Any] = {}
+        if config_path.exists():
+            with open(config_path, "r") as f:
+                yaml_data = yaml.safe_load(f) or {}
+            claimx_eventhouse_data = yaml_data.get("claimx_eventhouse", {})
+            poller_data = claimx_eventhouse_data.get("poller", {})
+            dedup_data = claimx_eventhouse_data.get("dedup", {})
+
+        # Get cluster_url with fallback to xact eventhouse config
+        cluster_url = os.getenv(
+            "CLAIMX_EVENTHOUSE_CLUSTER_URL",
+            os.getenv(
+                "EVENTHOUSE_CLUSTER_URL",
+                claimx_eventhouse_data.get("cluster_url", "")
+            )
+        )
+        database = os.getenv(
+            "CLAIMX_EVENTHOUSE_DATABASE",
+            os.getenv(
+                "EVENTHOUSE_DATABASE",
+                claimx_eventhouse_data.get("database", "")
+            )
+        )
+
+        if not cluster_url:
+            raise ValueError(
+                "ClaimX Eventhouse cluster_url is required. "
+                "Set in config.yaml under 'claimx_eventhouse:' or via CLAIMX_EVENTHOUSE_CLUSTER_URL env var."
+            )
+        if not database:
+            raise ValueError(
+                "ClaimX Eventhouse database is required. "
+                "Set in config.yaml under 'claimx_eventhouse:' or via CLAIMX_EVENTHOUSE_DATABASE env var."
+            )
+
+        # Parse bulk_backfill boolean
+        bulk_backfill_str = os.getenv(
+            "CLAIMX_DEDUP_BULK_BACKFILL",
+            str(poller_data.get("bulk_backfill", False))
+        ).lower()
+        bulk_backfill = bulk_backfill_str in ("true", "1", "yes")
+
+        return cls(
+            cluster_url=cluster_url,
+            database=database,
+            source_table=os.getenv(
+                "CLAIMX_EVENTHOUSE_SOURCE_TABLE",
+                poller_data.get("source_table", "ClaimXEvents")
+            ),
+            poll_interval_seconds=int(os.getenv(
+                "CLAIMX_POLL_INTERVAL_SECONDS",
+                str(poller_data.get("poll_interval_seconds", 30))
+            )),
+            batch_size=int(os.getenv(
+                "CLAIMX_POLL_BATCH_SIZE",
+                str(poller_data.get("batch_size", 1000))
+            )),
+            query_timeout_seconds=int(os.getenv(
+                "CLAIMX_EVENTHOUSE_QUERY_TIMEOUT",
+                str(claimx_eventhouse_data.get("query_timeout_seconds", 120))
+            )),
+            claimx_events_table_path=os.getenv(
+                "CLAIMX_EVENTS_TABLE_PATH",
+                poller_data.get("events_table_path", "")
+            ),
+            claimx_events_window_hours=int(os.getenv(
+                "CLAIMX_DEDUP_EVENTS_WINDOW_HOURS",
+                str(dedup_data.get("claimx_events_window_hours", 24))
+            )),
+            eventhouse_query_window_hours=int(os.getenv(
+                "CLAIMX_DEDUP_EVENTHOUSE_WINDOW_HOURS",
+                str(dedup_data.get("eventhouse_query_window_hours", 1))
+            )),
+            overlap_minutes=int(os.getenv(
+                "CLAIMX_DEDUP_OVERLAP_MINUTES",
+                str(dedup_data.get("overlap_minutes", 5))
+            )),
+            events_topic=os.getenv(
+                "CLAIMX_EVENTS_TOPIC",
+                poller_data.get("events_topic", "claimx.events.raw")
+            ),
+            # Backfill configuration
+            backfill_start_stamp=os.getenv(
+                "CLAIMX_DEDUP_BACKFILL_START_TIMESTAMP",
+                poller_data.get("backfill_start_stamp")
+            ),
+            backfill_stop_stamp=os.getenv(
+                "CLAIMX_DEDUP_BACKFILL_STOP_TIMESTAMP",
+                poller_data.get("backfill_stop_stamp")
+            ),
+            bulk_backfill=bulk_backfill,
+            # KQL start stamp for real-time mode
+            kql_start_stamp=os.getenv(
+                "CLAIMX_DEDUP_KQL_START_TIMESTAMP",
+                dedup_data.get("kql_start_stamp")
+            ),
+        )
+
+
+@dataclass
 class PipelineConfig:
     """Complete pipeline configuration.
 
@@ -401,6 +559,9 @@ class PipelineConfig:
 
     # Eventhouse config (only populated if event_source == eventhouse)
     eventhouse: Optional[EventhouseSourceConfig] = None
+
+    # ClaimX Eventhouse config (optional, can run alongside xact)
+    claimx_eventhouse: Optional[ClaimXEventhouseSourceConfig] = None
 
     # Local Kafka for internal pipeline communication
     local_kafka: LocalKafkaConfig = field(default_factory=LocalKafkaConfig)
@@ -453,16 +614,32 @@ class PipelineConfig:
 
         eventhub_config = None
         eventhouse_config = None
+        claimx_eventhouse_config = None
 
         if event_source == EventSourceType.EVENTHUB:
             eventhub_config = EventHubConfig.from_env()
         else:
             eventhouse_config = EventhouseSourceConfig.load_config(config_path)
 
+        # Optionally load ClaimX Eventhouse config if configured
+        # Check for config section or env vars
+        has_claimx_config = (
+            "claimx_eventhouse" in yaml_data or
+            os.getenv("CLAIMX_EVENTHOUSE_CLUSTER_URL") or
+            os.getenv("CLAIMX_EVENTS_TABLE_PATH")
+        )
+        if has_claimx_config:
+            try:
+                claimx_eventhouse_config = ClaimXEventhouseSourceConfig.load_config(config_path)
+            except ValueError:
+                # ClaimX config not fully specified, leave as None
+                pass
+
         return cls(
             event_source=event_source,
             eventhub=eventhub_config,
             eventhouse=eventhouse_config,
+            claimx_eventhouse=claimx_eventhouse_config,
             local_kafka=local_kafka,
             domain=os.getenv("PIPELINE_DOMAIN", "xact"),
             enable_delta_writes=os.getenv("ENABLE_DELTA_WRITES", "true").lower() == "true",

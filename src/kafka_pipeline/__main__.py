@@ -520,7 +520,7 @@ async def run_result_processor(kafka_config, enable_delta_writes: bool = True):
         await producer.stop()
 
 
-async def run_claimx_eventhouse_poller(local_kafka_config):
+async def run_claimx_eventhouse_poller(pipeline_config):
     """Run the Eventhouse Poller for claimx domain.
 
     Polls Microsoft Fabric Eventhouse for claimx events and produces to claimx.events.raw topic.
@@ -537,39 +537,34 @@ async def run_claimx_eventhouse_poller(local_kafka_config):
     set_log_context(stage="claimx-poller")
     logger.info("Starting ClaimX Eventhouse Poller...")
 
-    # Build Eventhouse config from environment
-    cluster_url = os.getenv("CLAIMX_EVENTHOUSE_CLUSTER_URL") or os.getenv("EVENTHOUSE_CLUSTER_URL", "")
-    database = os.getenv("CLAIMX_EVENTHOUSE_DATABASE") or os.getenv("EVENTHOUSE_DATABASE", "")
+    claimx_eventhouse = pipeline_config.claimx_eventhouse
+    if not claimx_eventhouse:
+        raise ValueError(
+            "ClaimX Eventhouse configuration required for claimx-poller worker. "
+            "Set in config.yaml under 'claimx_eventhouse:' or via CLAIMX_EVENTHOUSE_* env vars."
+        )
 
-    if not cluster_url:
-        raise ValueError("ClaimX Eventhouse cluster_url is required. Set CLAIMX_EVENTHOUSE_CLUSTER_URL or EVENTHOUSE_CLUSTER_URL")
-    if not database:
-        raise ValueError("ClaimX Eventhouse database is required. Set CLAIMX_EVENTHOUSE_DATABASE or EVENTHOUSE_DATABASE")
-
+    # Build Eventhouse config from pipeline config
     eventhouse_config = EventhouseConfig(
-        cluster_url=cluster_url,
-        database=database,
-        query_timeout_seconds=int(os.getenv("CLAIMX_EVENTHOUSE_QUERY_TIMEOUT", "120")),
+        cluster_url=claimx_eventhouse.cluster_url,
+        database=claimx_eventhouse.database,
+        query_timeout_seconds=claimx_eventhouse.query_timeout_seconds,
     )
 
     # Build deduplication config for claimx
-    claimx_events_table_path = os.getenv("CLAIMX_EVENTS_TABLE_PATH", "")
     dedup_config = DedupConfig(
-        xact_events_table_path=claimx_events_table_path,  # Reusing param name for compatibility
-        xact_events_window_hours=int(os.getenv("CLAIMX_DEDUP_EVENTS_WINDOW_HOURS", "24")),
-        eventhouse_query_window_hours=int(os.getenv("CLAIMX_DEDUP_EVENTHOUSE_WINDOW_HOURS", "1")),
-        overlap_minutes=int(os.getenv("CLAIMX_DEDUP_OVERLAP_MINUTES", "5")),
-        kql_start_stamp=os.getenv("CLAIMX_DEDUP_KQL_START_TIMESTAMP"),
+        xact_events_table_path=claimx_eventhouse.claimx_events_table_path,  # Reusing param name for compatibility
+        xact_events_window_hours=claimx_eventhouse.claimx_events_window_hours,
+        eventhouse_query_window_hours=claimx_eventhouse.eventhouse_query_window_hours,
+        overlap_minutes=claimx_eventhouse.overlap_minutes,
+        kql_start_stamp=claimx_eventhouse.kql_start_stamp,
         eventhouse_trace_id_column="event_id",  # claimx uses event_id instead of trace_id
     )
 
-    # Get claimx events topic from config
-    claimx_events_topic = os.getenv("CLAIMX_EVENTS_TOPIC", "claimx.events.raw")
-
     # Create a modified kafka config with claimx events topic
-    claimx_kafka_config = local_kafka_config.model_copy() if hasattr(local_kafka_config, 'model_copy') else local_kafka_config
-    if hasattr(claimx_kafka_config, 'events_topic'):
-        claimx_kafka_config.events_topic = claimx_events_topic
+    local_kafka_config = pipeline_config.local_kafka.to_kafka_config()
+    claimx_kafka_config = local_kafka_config
+    claimx_kafka_config.events_topic = claimx_eventhouse.events_topic
 
     # Build poller config with ClaimXEventMessage schema
     poller_config = PollerConfig(
@@ -578,13 +573,13 @@ async def run_claimx_eventhouse_poller(local_kafka_config):
         dedup=dedup_config,
         event_schema_class=ClaimXEventMessage,
         domain="claimx",
-        poll_interval_seconds=int(os.getenv("CLAIMX_POLL_INTERVAL_SECONDS", "30")),
-        batch_size=int(os.getenv("CLAIMX_POLL_BATCH_SIZE", "1000")),
-        source_table=os.getenv("CLAIMX_EVENTHOUSE_SOURCE_TABLE", "ClaimXEvents"),
-        events_table_path=claimx_events_table_path,
-        backfill_start_stamp=os.getenv("CLAIMX_DEDUP_BACKFILL_START_TIMESTAMP"),
-        backfill_stop_stamp=os.getenv("CLAIMX_DEDUP_BACKFILL_STOP_TIMESTAMP"),
-        bulk_backfill=os.getenv("CLAIMX_DEDUP_BULK_BACKFILL", "").lower() in ("true", "1", "yes"),
+        poll_interval_seconds=claimx_eventhouse.poll_interval_seconds,
+        batch_size=claimx_eventhouse.batch_size,
+        source_table=claimx_eventhouse.source_table,
+        events_table_path=claimx_eventhouse.claimx_events_table_path,
+        backfill_start_stamp=claimx_eventhouse.backfill_start_stamp,
+        backfill_stop_stamp=claimx_eventhouse.backfill_stop_stamp,
+        bulk_backfill=claimx_eventhouse.bulk_backfill,
     )
 
     shutdown_event = get_shutdown_event()
@@ -1180,7 +1175,7 @@ def main():
                 )
         elif args.worker == "claimx-poller":
             # ClaimX Eventhouse poller
-            loop.run_until_complete(run_claimx_eventhouse_poller(local_kafka_config))
+            loop.run_until_complete(run_claimx_eventhouse_poller(pipeline_config))
         elif args.worker == "claimx-ingester":
             # ClaimX event ingester
             claimx_events_table_path = os.getenv("CLAIMX_EVENTS_TABLE_PATH", "")
