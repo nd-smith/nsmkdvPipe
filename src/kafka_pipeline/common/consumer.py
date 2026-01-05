@@ -79,6 +79,7 @@ class BaseKafkaConsumer:
         message_handler: Callable[[ConsumerRecord], Awaitable[None]],
         circuit_breaker: Optional[CircuitBreaker] = None,
         max_batches: Optional[int] = None,
+        enable_message_commit: bool = True,
     ):
         """
         Initialize Kafka consumer.
@@ -91,6 +92,8 @@ class BaseKafkaConsumer:
             circuit_breaker: Optional custom circuit breaker (uses default if None)
             max_batches: Optional limit on number of batches to process (None = unlimited).
                         Useful for testing. A batch is one getmany() poll result.
+            enable_message_commit: If True (default), commit offset after each message.
+                        Set to False for batch processing where handler manages commits.
         """
         if not topics:
             raise ValueError("At least one topic must be specified")
@@ -109,6 +112,9 @@ class BaseKafkaConsumer:
         self.max_batches = max_batches
         self._batch_count = 0
 
+        # Commit control - disable for batch processing
+        self._enable_message_commit = enable_message_commit
+
         log_with_context(
             logger,
             logging.INFO,
@@ -117,6 +123,7 @@ class BaseKafkaConsumer:
             group_id=group_id,
             bootstrap_servers=config.bootstrap_servers,
             max_batches=max_batches,
+            enable_message_commit=enable_message_commit,
         )
 
     async def start(self) -> None:
@@ -247,6 +254,28 @@ class BaseKafkaConsumer:
             update_assigned_partitions(self.group_id, 0)
             self._consumer = None
 
+    async def commit(self) -> None:
+        """
+        Commit current offsets to Kafka.
+
+        Use this for batch processing where enable_message_commit=False.
+        Should be called after successfully processing/writing a batch.
+
+        Raises:
+            Exception: If commit fails
+        """
+        if self._consumer is None:
+            logger.warning("Cannot commit: consumer not started")
+            return
+
+        await self._consumer.commit()
+        log_with_context(
+            logger,
+            logging.DEBUG,
+            "Committed offsets",
+            group_id=self.group_id,
+        )
+
     async def _consume_loop(self) -> None:
         """
         Main message consumption loop.
@@ -322,26 +351,10 @@ class BaseKafkaConsumer:
                 # Note: We call getmany() directly instead of through the circuit breaker
                 # because the circuit breaker uses threading.RLock which can cause deadlocks
                 # when multiple async consumers share the same lock in a single event loop.
-                logger.debug(
-                    "Calling getmany()",
-                    extra={"group_id": self.group_id, "timeout_ms": 1000},
-                )
                 try:
                     data = await self._consumer.getmany(timeout_ms=1000)
-                    logger.debug(
-                        "getmany() returned",
-                        extra={
-                            "group_id": self.group_id,
-                            "partition_count": len(data) if data else 0,
-                            "message_count": sum(len(msgs) for msgs in data.values()) if data else 0,
-                        },
-                    )
                     self._circuit_breaker.record_success()
                 except Exception as fetch_error:
-                    logger.debug(
-                        "getmany() raised exception",
-                        extra={"group_id": self.group_id, "error": str(fetch_error)},
-                    )
                     self._circuit_breaker.record_failure(fetch_error)
                     raise
 
@@ -413,7 +426,9 @@ class BaseKafkaConsumer:
                 ).observe(duration)
 
                 # Commit offset after successful processing (at-least-once semantics)
-                await self._consumer.commit()
+                # Skip if enable_message_commit=False (batch processing mode)
+                if self._enable_message_commit:
+                    await self._consumer.commit()
 
                 # Update offset and lag metrics
                 self._update_partition_metrics(message)
