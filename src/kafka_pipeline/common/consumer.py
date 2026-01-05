@@ -318,14 +318,16 @@ class BaseKafkaConsumer:
                     # Update partition assignment metric
                     update_assigned_partitions(self.group_id, len(assignment))
 
-                # Fetch messages (blocking with timeout)
-                # This is wrapped in circuit breaker to protect against broker failures
-                async def _fetch_messages():
-                    # getmany() returns a dict of TopicPartition -> list of records
-                    # timeout_ms controls how long to wait for messages
-                    return await self._consumer.getmany(timeout_ms=1000)
-
-                data = await self._circuit_breaker.call_async(_fetch_messages)
+                # Fetch messages with timeout
+                # Note: We call getmany() directly instead of through the circuit breaker
+                # because the circuit breaker uses threading.RLock which can cause deadlocks
+                # when multiple async consumers share the same lock in a single event loop.
+                try:
+                    data = await self._consumer.getmany(timeout_ms=1000)
+                    self._circuit_breaker.record_success()
+                except Exception as fetch_error:
+                    self._circuit_breaker.record_failure(fetch_error)
+                    raise
 
                 # Count this as a batch if we got any messages
                 if data:
