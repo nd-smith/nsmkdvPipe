@@ -14,6 +14,7 @@ Usage:
     python -m kafka_pipeline --worker xact-result-processor
 
     # Run specific claimx worker
+    python -m kafka_pipeline --worker claimx-poller
     python -m kafka_pipeline --worker claimx-ingester
     python -m kafka_pipeline --worker claimx-enricher
     python -m kafka_pipeline --worker claimx-downloader
@@ -43,9 +44,9 @@ Architecture:
             → xact-delta-writer → xact_events Delta table (parallel)
 
     claimx Domain:
-        Event Source → claimx events → enrichment.pending → enrichment worker →
-        entity tables + downloads.pending → download worker → downloads.cached →
-        upload worker → downloads.results
+        Eventhouse → claimx-poller → claimx.events.raw → claimx-ingester →
+        enrichment.pending → enrichment worker → entity tables + downloads.pending →
+        download worker → downloads.cached → upload worker → downloads.results
 """
 
 import argparse
@@ -66,7 +67,7 @@ from core.logging.setup import get_logger, setup_logging, setup_multi_worker_log
 WORKER_STAGES = [
     "eventhouse-poller",
     "xact-event-ingester", "xact-local-ingester", "xact-delta-writer", "xact-download", "xact-upload", "xact-result-processor",
-    "claimx-ingester", "claimx-enricher", "claimx-downloader", "claimx-uploader", "claimx-result-processor"
+    "claimx-poller", "claimx-ingester", "claimx-enricher", "claimx-downloader", "claimx-uploader", "claimx-result-processor"
 ]
 
 # Placeholder logger until setup_logging() is called in main()
@@ -153,7 +154,7 @@ Examples:
         "--worker",
         choices=[
             "xact-event-ingester", "xact-local-ingester", "xact-delta-writer", "xact-download", "xact-upload", "xact-result-processor",
-            "claimx-ingester", "claimx-enricher", "claimx-downloader", "claimx-uploader", "claimx-result-processor",
+            "claimx-poller", "claimx-ingester", "claimx-enricher", "claimx-downloader", "claimx-uploader", "claimx-result-processor",
             "all"
         ],
         default="all",
@@ -517,6 +518,97 @@ async def run_result_processor(kafka_config, enable_delta_writes: bool = True):
         # Clean up resources after worker exits
         await worker.stop()
         await producer.stop()
+
+
+async def run_claimx_eventhouse_poller(local_kafka_config):
+    """Run the Eventhouse Poller for claimx domain.
+
+    Polls Microsoft Fabric Eventhouse for claimx events and produces to claimx.events.raw topic.
+    Uses KQL queries with deduplication against claimx_events Delta table.
+
+    Supports graceful shutdown: when shutdown event is set, the poller
+    finishes its current poll cycle before exiting.
+    """
+    from kafka_pipeline.claimx.schemas.events import ClaimXEventMessage
+    from kafka_pipeline.common.eventhouse.dedup import DedupConfig
+    from kafka_pipeline.common.eventhouse.kql_client import EventhouseConfig
+    from kafka_pipeline.common.eventhouse.poller import KQLEventPoller, PollerConfig
+
+    set_log_context(stage="claimx-poller")
+    logger.info("Starting ClaimX Eventhouse Poller...")
+
+    # Build Eventhouse config from environment
+    cluster_url = os.getenv("CLAIMX_EVENTHOUSE_CLUSTER_URL") or os.getenv("EVENTHOUSE_CLUSTER_URL", "")
+    database = os.getenv("CLAIMX_EVENTHOUSE_DATABASE") or os.getenv("EVENTHOUSE_DATABASE", "")
+
+    if not cluster_url:
+        raise ValueError("ClaimX Eventhouse cluster_url is required. Set CLAIMX_EVENTHOUSE_CLUSTER_URL or EVENTHOUSE_CLUSTER_URL")
+    if not database:
+        raise ValueError("ClaimX Eventhouse database is required. Set CLAIMX_EVENTHOUSE_DATABASE or EVENTHOUSE_DATABASE")
+
+    eventhouse_config = EventhouseConfig(
+        cluster_url=cluster_url,
+        database=database,
+        query_timeout_seconds=int(os.getenv("CLAIMX_EVENTHOUSE_QUERY_TIMEOUT", "120")),
+    )
+
+    # Build deduplication config for claimx
+    claimx_events_table_path = os.getenv("CLAIMX_EVENTS_TABLE_PATH", "")
+    dedup_config = DedupConfig(
+        xact_events_table_path=claimx_events_table_path,  # Reusing param name for compatibility
+        xact_events_window_hours=int(os.getenv("CLAIMX_DEDUP_EVENTS_WINDOW_HOURS", "24")),
+        eventhouse_query_window_hours=int(os.getenv("CLAIMX_DEDUP_EVENTHOUSE_WINDOW_HOURS", "1")),
+        overlap_minutes=int(os.getenv("CLAIMX_DEDUP_OVERLAP_MINUTES", "5")),
+        kql_start_stamp=os.getenv("CLAIMX_DEDUP_KQL_START_TIMESTAMP"),
+        eventhouse_trace_id_column="event_id",  # claimx uses event_id instead of trace_id
+    )
+
+    # Get claimx events topic from config
+    claimx_events_topic = os.getenv("CLAIMX_EVENTS_TOPIC", "claimx.events.raw")
+
+    # Create a modified kafka config with claimx events topic
+    claimx_kafka_config = local_kafka_config.model_copy() if hasattr(local_kafka_config, 'model_copy') else local_kafka_config
+    if hasattr(claimx_kafka_config, 'events_topic'):
+        claimx_kafka_config.events_topic = claimx_events_topic
+
+    # Build poller config with ClaimXEventMessage schema
+    poller_config = PollerConfig(
+        eventhouse=eventhouse_config,
+        kafka=claimx_kafka_config,
+        dedup=dedup_config,
+        event_schema_class=ClaimXEventMessage,
+        domain="claimx",
+        poll_interval_seconds=int(os.getenv("CLAIMX_POLL_INTERVAL_SECONDS", "30")),
+        batch_size=int(os.getenv("CLAIMX_POLL_BATCH_SIZE", "1000")),
+        source_table=os.getenv("CLAIMX_EVENTHOUSE_SOURCE_TABLE", "ClaimXEvents"),
+        events_table_path=claimx_events_table_path,
+        backfill_start_stamp=os.getenv("CLAIMX_DEDUP_BACKFILL_START_TIMESTAMP"),
+        backfill_stop_stamp=os.getenv("CLAIMX_DEDUP_BACKFILL_STOP_TIMESTAMP"),
+        bulk_backfill=os.getenv("CLAIMX_DEDUP_BULK_BACKFILL", "").lower() in ("true", "1", "yes"),
+    )
+
+    shutdown_event = get_shutdown_event()
+
+    async def shutdown_watcher(poller: KQLEventPoller):
+        """Wait for shutdown signal and stop poller gracefully."""
+        await shutdown_event.wait()
+        logger.info("Shutdown signal received, stopping claimx eventhouse poller...")
+        await poller.stop()
+
+    async with KQLEventPoller(poller_config) as poller:
+        # Start shutdown watcher alongside poller
+        watcher_task = asyncio.create_task(shutdown_watcher(poller))
+
+        try:
+            await poller.run()
+        finally:
+            # Guard against event loop being closed during shutdown
+            try:
+                watcher_task.cancel()
+                await watcher_task
+            except (asyncio.CancelledError, RuntimeError):
+                # RuntimeError occurs if event loop is closed
+                pass
 
 
 async def run_local_event_ingester(
@@ -1086,6 +1178,9 @@ def main():
                 loop.run_until_complete(
                     run_result_processor(local_kafka_config, enable_delta_writes)
                 )
+        elif args.worker == "claimx-poller":
+            # ClaimX Eventhouse poller
+            loop.run_until_complete(run_claimx_eventhouse_poller(local_kafka_config))
         elif args.worker == "claimx-ingester":
             # ClaimX event ingester
             claimx_events_table_path = os.getenv("CLAIMX_EVENTS_TABLE_PATH", "")
