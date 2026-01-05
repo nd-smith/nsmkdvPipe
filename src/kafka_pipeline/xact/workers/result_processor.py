@@ -11,11 +11,15 @@ Features:
 - Graceful shutdown with pending batch flush
 - Writes successful downloads to xact_attachments table
 - Writes permanent failures to xact_attachments_failed table (optional)
+- Batch ID for log correlation
+- Delta write metrics
+- Optional max_batches limit for testing
 """
 
 import asyncio
 import json
 import time
+import uuid
 from typing import List, Optional
 
 from aiokafka.structs import ConsumerRecord
@@ -23,6 +27,7 @@ from aiokafka.structs import ConsumerRecord
 from core.logging.setup import get_logger
 from kafka_pipeline.config import KafkaConfig
 from kafka_pipeline.common.consumer import BaseKafkaConsumer
+from kafka_pipeline.common.metrics import record_delta_write
 from kafka_pipeline.xact.schemas.results import DownloadResultMessage
 from kafka_pipeline.xact.writers.delta_inventory import (
     DeltaInventoryWriter,
@@ -77,6 +82,7 @@ class ResultProcessor:
         failed_table_path: Optional[str] = None,
         batch_size: Optional[int] = None,
         batch_timeout_seconds: Optional[float] = None,
+        max_batches: Optional[int] = None,
     ):
         """
         Initialize result processor.
@@ -88,10 +94,12 @@ class ResultProcessor:
                                If provided, permanent failures will be written here.
             batch_size: Optional custom batch size (default: 100)
             batch_timeout_seconds: Optional custom timeout (default: 5.0)
+            max_batches: Optional limit on batches to write (for testing). None = unlimited.
         """
         self.config = config
         self.batch_size = batch_size or self.BATCH_SIZE
         self.batch_timeout_seconds = batch_timeout_seconds or self.BATCH_TIMEOUT_SECONDS
+        self.max_batches = max_batches
 
         # Delta writers
         self._inventory_writer = DeltaInventoryWriter(table_path=inventory_table_path)
@@ -104,6 +112,11 @@ class ResultProcessor:
         self._failed_batch: List[DownloadResultMessage] = []
         self._batch_lock = asyncio.Lock()
         self._last_flush = time.monotonic()
+
+        # Progress tracking
+        self._batches_written = 0
+        self._failed_batches_written = 0
+        self._total_records_written = 0
 
         # Kafka consumer
         self._consumer = BaseKafkaConsumer(
@@ -123,6 +136,7 @@ class ResultProcessor:
             extra={
                 "batch_size": self.batch_size,
                 "batch_timeout_seconds": self.batch_timeout_seconds,
+                "max_batches": self.max_batches,
                 "results_topic": config.downloads_results_topic,
                 "inventory_table_path": inventory_table_path,
                 "failed_table_path": failed_table_path,
@@ -207,7 +221,14 @@ class ResultProcessor:
             # Stop consumer
             await self._consumer.stop()
 
-            logger.info("Result processor stopped successfully")
+            logger.info(
+                "Result processor stopped successfully",
+                extra={
+                    "batches_written": self._batches_written,
+                    "failed_batches_written": self._failed_batches_written,
+                    "total_records_written": self._total_records_written,
+                },
+            )
 
         except Exception as e:
             logger.error(
@@ -353,29 +374,53 @@ class ResultProcessor:
         if not self._batch:
             return
 
+        # Generate batch ID for log correlation
+        batch_id = uuid.uuid4().hex[:8]
+
         # Snapshot current batch and reset
         batch = self._batch
         self._batch = []
         self._last_flush = time.monotonic()
 
         batch_size = len(batch)
-        logger.info(
-            "Flushing inventory batch",
-            extra={
-                "batch_size": batch_size,
-                "first_trace_id": batch[0].trace_id,
-                "last_trace_id": batch[-1].trace_id,
-            },
-        )
 
         # Write to Delta inventory table
         # Uses asyncio.to_thread internally for non-blocking I/O
         success = await self._inventory_writer.write_results(batch)
 
-        if not success:
+        # Record metrics
+        record_delta_write(
+            table="xact_attachments",
+            event_count=batch_size,
+            success=success,
+        )
+
+        if success:
+            self._batches_written += 1
+            self._total_records_written += batch_size
+
+            # Build progress message
+            if self.max_batches:
+                progress = f"Batch {self._batches_written}/{self.max_batches}"
+            else:
+                progress = f"Batch {self._batches_written}"
+
+            logger.info(
+                f"{progress}: Successfully wrote {batch_size} records to xact_attachments",
+                extra={
+                    "batch_id": batch_id,
+                    "batch_size": batch_size,
+                    "batches_written": self._batches_written,
+                    "total_records_written": self._total_records_written,
+                    "first_trace_id": batch[0].trace_id,
+                    "last_trace_id": batch[-1].trace_id,
+                },
+            )
+        else:
             logger.error(
                 "Failed to write batch to Delta inventory",
                 extra={
+                    "batch_id": batch_id,
                     "batch_size": batch_size,
                     "first_trace_id": batch[0].trace_id,
                     "last_trace_id": batch[-1].trace_id,
@@ -394,29 +439,46 @@ class ResultProcessor:
         if not self._failed_batch or not self._failed_writer:
             return
 
+        # Generate batch ID for log correlation
+        batch_id = uuid.uuid4().hex[:8]
+
         # Snapshot current batch and reset
         batch = self._failed_batch
         self._failed_batch = []
         self._last_flush = time.monotonic()
 
         batch_size = len(batch)
-        logger.info(
-            "Flushing failed attachments batch",
-            extra={
-                "batch_size": batch_size,
-                "first_trace_id": batch[0].trace_id,
-                "last_trace_id": batch[-1].trace_id,
-            },
-        )
 
         # Write to Delta failed attachments table
         # Uses asyncio.to_thread internally for non-blocking I/O
         success = await self._failed_writer.write_results(batch)
 
-        if not success:
+        # Record metrics
+        record_delta_write(
+            table="xact_attachments_failed",
+            event_count=batch_size,
+            success=success,
+        )
+
+        if success:
+            self._failed_batches_written += 1
+            self._total_records_written += batch_size
+
+            logger.info(
+                f"Successfully wrote {batch_size} records to xact_attachments_failed",
+                extra={
+                    "batch_id": batch_id,
+                    "batch_size": batch_size,
+                    "failed_batches_written": self._failed_batches_written,
+                    "first_trace_id": batch[0].trace_id,
+                    "last_trace_id": batch[-1].trace_id,
+                },
+            )
+        else:
             logger.error(
                 "Failed to write batch to Delta failed attachments table",
                 extra={
+                    "batch_id": batch_id,
                     "batch_size": batch_size,
                     "first_trace_id": batch[0].trace_id,
                     "last_trace_id": batch[-1].trace_id,
