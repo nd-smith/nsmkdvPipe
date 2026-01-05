@@ -99,22 +99,23 @@ class DeltaEventsWriter(BaseDeltaWriter):
         Returns:
             True if write succeeded, False otherwise
         """
+        import asyncio
+
         if not raw_events:
             return True
 
         try:
-            # Create DataFrame from raw events in Eventhouse format
-            raw_df = pl.DataFrame(raw_events)
+            # Run synchronous transform in thread to avoid blocking event loop.
+            # This is critical: flatten_events() does row-by-row JSON parsing which
+            # can take 30+ seconds for large batches. Blocking the event loop would
+            # prevent Kafka heartbeats, causing consumer group rebalancing.
+            def _sync_transform() -> pl.DataFrame:
+                raw_df = pl.DataFrame(raw_events)
+                flattened_df = flatten_events(raw_df)
+                now = datetime.now(timezone.utc)
+                return flattened_df.with_columns(pl.lit(now).alias("created_at"))
 
-            # Use flatten_events() from verisk_pipeline to transform
-            # This ensures schema compatibility with xact_events table
-            flattened_df = flatten_events(raw_df)
-
-            # Add created_at column (pipeline processing timestamp)
-            now = datetime.now(timezone.utc)
-            flattened_df = flattened_df.with_columns(
-                pl.lit(now).alias("created_at")
-            )
+            flattened_df = await asyncio.to_thread(_sync_transform)
 
             # Use base class async append method
             success = await self._async_append(flattened_df, dedupe=True, batch_id=batch_id)
