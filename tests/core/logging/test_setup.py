@@ -1,6 +1,7 @@
 """Tests for logging setup functions."""
 
 import logging
+import os
 import tempfile
 from pathlib import Path
 
@@ -8,7 +9,7 @@ import pytest
 
 from core.logging.context import clear_log_context, get_log_context, set_log_context
 from core.logging.filters import StageContextFilter
-from core.logging.setup import setup_multi_worker_logging
+from core.logging.setup import get_log_file_path, setup_logging, setup_multi_worker_logging
 
 
 class TestSetupMultiWorkerLogging:
@@ -161,3 +162,123 @@ class TestSetupMultiWorkerLogging:
         # Console should have both messages
         assert "Download test" in captured.out
         assert "Upload test" in captured.out
+
+    def test_instance_id_creates_unique_filenames(self, tmp_path):
+        """Instance ID creates process-specific log files."""
+        workers = ["download"]
+
+        setup_multi_worker_logging(
+            workers=workers,
+            domain="kafka",
+            log_dir=tmp_path,
+            use_instance_id=True,
+        )
+
+        log_files = list(tmp_path.rglob("*.log"))
+
+        # All log files should contain process ID suffix
+        pid = os.getpid()
+        for log_file in log_files:
+            assert f"_p{pid}" in log_file.name
+
+    def test_no_instance_id_creates_shared_filenames(self, tmp_path):
+        """Without instance ID, log files are shared (no PID suffix)."""
+        workers = ["download"]
+
+        setup_multi_worker_logging(
+            workers=workers,
+            domain="kafka",
+            log_dir=tmp_path,
+            use_instance_id=False,
+        )
+
+        log_files = list(tmp_path.rglob("*.log"))
+
+        # No log files should contain process ID suffix
+        pid = os.getpid()
+        for log_file in log_files:
+            assert f"_p{pid}" not in log_file.name
+
+
+class TestGetLogFilePath:
+    """Tests for get_log_file_path function."""
+
+    def test_instance_id_appended_to_filename(self, tmp_path):
+        """Instance ID is appended to the log filename."""
+        log_path = get_log_file_path(
+            tmp_path,
+            domain="kafka",
+            stage="download",
+            instance_id="p12345",
+        )
+
+        assert "_p12345.log" in str(log_path)
+        assert "kafka_download_" in log_path.name
+
+    def test_no_instance_id_standard_filename(self, tmp_path):
+        """Without instance ID, standard filename format is used."""
+        log_path = get_log_file_path(
+            tmp_path,
+            domain="kafka",
+            stage="download",
+            instance_id=None,
+        )
+
+        assert log_path.name.endswith(".log")
+        assert "_p" not in log_path.name
+
+    def test_domain_and_stage_in_path(self, tmp_path):
+        """Domain and stage are included in the path structure."""
+        log_path = get_log_file_path(
+            tmp_path,
+            domain="kafka",
+            stage="upload",
+            instance_id="p99",
+        )
+
+        assert "kafka" in str(log_path)
+        assert "upload" in log_path.name
+
+
+class TestSetupLogging:
+    """Tests for setup_logging function."""
+
+    @pytest.fixture(autouse=True)
+    def cleanup(self):
+        """Clean up after each test."""
+        clear_log_context()
+        yield
+        clear_log_context()
+        root_logger = logging.getLogger()
+        root_logger.handlers.clear()
+
+    def test_instance_id_enabled_by_default(self, tmp_path):
+        """Instance ID is enabled by default for multi-worker safety."""
+        setup_logging(
+            name="test",
+            stage="download",
+            domain="kafka",
+            log_dir=tmp_path,
+        )
+
+        log_files = list(tmp_path.rglob("*.log"))
+        assert len(log_files) == 1
+
+        pid = os.getpid()
+        assert f"_p{pid}" in log_files[0].name
+
+    def test_instance_id_can_be_disabled(self, tmp_path):
+        """Instance ID can be disabled for single-worker deployments."""
+        setup_logging(
+            name="test",
+            stage="download",
+            domain="kafka",
+            log_dir=tmp_path,
+            use_instance_id=False,
+        )
+
+        log_files = list(tmp_path.rglob("*.log"))
+        assert len(log_files) == 1
+
+        pid = os.getpid()
+        assert f"_p{pid}" not in log_files[0].name
