@@ -322,26 +322,10 @@ class BaseKafkaConsumer:
                 # Note: We call getmany() directly instead of through the circuit breaker
                 # because the circuit breaker uses threading.RLock which can cause deadlocks
                 # when multiple async consumers share the same lock in a single event loop.
-                logger.debug(
-                    "Calling getmany()",
-                    extra={"group_id": self.group_id, "timeout_ms": 1000},
-                )
                 try:
                     data = await self._consumer.getmany(timeout_ms=1000)
-                    logger.debug(
-                        "getmany() returned",
-                        extra={
-                            "group_id": self.group_id,
-                            "partition_count": len(data) if data else 0,
-                            "message_count": sum(len(msgs) for msgs in data.values()) if data else 0,
-                        },
-                    )
                     self._circuit_breaker.record_success()
                 except Exception as fetch_error:
-                    logger.debug(
-                        "getmany() raised exception",
-                        extra={"group_id": self.group_id, "error": str(fetch_error)},
-                    )
                     self._circuit_breaker.record_failure(fetch_error)
                     raise
 
