@@ -9,6 +9,7 @@ Usage:
     python -m kafka_pipeline --worker xact-event-ingester
     python -m kafka_pipeline --worker xact-local-ingester
     python -m kafka_pipeline --worker xact-delta-writer
+    python -m kafka_pipeline --worker xact-delta-retry
     python -m kafka_pipeline --worker xact-download
     python -m kafka_pipeline --worker xact-upload
     python -m kafka_pipeline --worker xact-result-processor
@@ -42,6 +43,8 @@ Architecture:
             → xact-event-ingester → downloads.pending → download worker →
               downloads.cached → upload worker → downloads.results → result processor
             → xact-delta-writer → xact_events Delta table (parallel)
+              ↓ (on failure)
+            → delta-events.retry.* topics → xact-delta-retry → retry write or DLQ
 
     claimx Domain:
         Eventhouse → claimx-poller → claimx.events.raw → claimx-ingester →
@@ -66,7 +69,7 @@ from core.logging.setup import get_logger, setup_logging, setup_multi_worker_log
 # Worker stages for multi-worker logging
 WORKER_STAGES = [
     "eventhouse-poller",
-    "xact-event-ingester", "xact-local-ingester", "xact-delta-writer", "xact-download", "xact-upload", "xact-result-processor",
+    "xact-event-ingester", "xact-local-ingester", "xact-delta-writer", "xact-delta-retry", "xact-download", "xact-upload", "xact-result-processor",
     "claimx-poller", "claimx-ingester", "claimx-enricher", "claimx-downloader", "claimx-uploader", "claimx-result-processor"
 ]
 
@@ -153,7 +156,7 @@ Examples:
     parser.add_argument(
         "--worker",
         choices=[
-            "xact-event-ingester", "xact-local-ingester", "xact-delta-writer", "xact-download", "xact-upload", "xact-result-processor",
+            "xact-event-ingester", "xact-local-ingester", "xact-delta-writer", "xact-delta-retry", "xact-download", "xact-upload", "xact-result-processor",
             "claimx-poller", "claimx-ingester", "claimx-enricher", "claimx-downloader", "claimx-uploader", "claimx-result-processor",
             "all"
         ],
@@ -377,6 +380,58 @@ async def run_delta_events_worker(kafka_config, events_table_path: str):
             pass
         # Clean up resources after worker exits
         await worker.stop()
+        await producer.stop()
+
+
+async def run_delta_retry_scheduler(kafka_config, events_table_path: str):
+    """Run the Delta Batch Retry Scheduler.
+
+    Consumes failed batches from retry topics and attempts to write them to
+    the xact_events Delta table after the configured delay has elapsed.
+
+    Routes permanently failed batches (retries exhausted) to DLQ.
+
+    Supports graceful shutdown: when shutdown event is set, the scheduler
+    stops consuming from retry topics.
+    """
+    from kafka_pipeline.common.producer import BaseKafkaProducer
+    from kafka_pipeline.xact.retry.scheduler import DeltaBatchRetryScheduler
+
+    set_log_context(stage="xact-delta-retry")
+    logger.info("Starting xact Delta Retry Scheduler...")
+
+    # Create producer for DLQ routing
+    producer = BaseKafkaProducer(config=kafka_config)
+    await producer.start()
+
+    scheduler = DeltaBatchRetryScheduler(
+        config=kafka_config,
+        producer=producer,
+        table_path=events_table_path,
+    )
+    shutdown_event = get_shutdown_event()
+
+    async def shutdown_watcher():
+        """Wait for shutdown signal and stop scheduler gracefully."""
+        await shutdown_event.wait()
+        logger.info("Shutdown signal received, stopping delta retry scheduler...")
+        await scheduler.stop()
+
+    # Start shutdown watcher alongside scheduler
+    watcher_task = asyncio.create_task(shutdown_watcher())
+
+    try:
+        await scheduler.start()
+    finally:
+        # Guard against event loop being closed during shutdown
+        try:
+            watcher_task.cancel()
+            await watcher_task
+        except (asyncio.CancelledError, RuntimeError):
+            # RuntimeError occurs if event loop is closed
+            pass
+        # Clean up resources after scheduler exits
+        await scheduler.stop()
         await producer.stop()
 
 
@@ -933,6 +988,15 @@ async def run_all_workers(
         )
         logger.info("Delta events writer enabled")
 
+        # Add Delta retry scheduler if Delta writes are enabled
+        tasks.append(
+            asyncio.create_task(
+                run_delta_retry_scheduler(local_kafka_config, events_table_path),
+                name="xact-delta-retry",
+            )
+        )
+        logger.info("Delta retry scheduler enabled")
+
     # Add common workers
     tasks.extend([
         asyncio.create_task(
@@ -1016,9 +1080,19 @@ def main():
     # Worker ID for log context
     worker_id = os.getenv("WORKER_ID", f"kafka-{args.worker}")
 
+    # Determine domain from worker name for separate log directories
+    # Extract domain prefix: xact-download -> xact, claimx-enricher -> claimx
+    domain = "kafka"  # Default fallback
+    if args.worker != "all" and "-" in args.worker:
+        domain_prefix = args.worker.split("-")[0]
+        if domain_prefix in ("xact", "claimx"):
+            domain = domain_prefix
+
     # Initialize structured logging infrastructure
     if args.worker == "all":
         # Multi-worker mode: create per-worker log files
+        # Note: For "all" mode, we use "kafka" as the combined domain
+        # Individual workers will still log with domain context from set_log_context()
         setup_multi_worker_logging(
             workers=WORKER_STAGES,
             domain="kafka",
@@ -1027,11 +1101,11 @@ def main():
             console_level=log_level,
         )
     else:
-        # Single worker mode: single log file
+        # Single worker mode: single log file with domain-specific directory
         setup_logging(
             name="kafka_pipeline",
             stage=args.worker,
-            domain="kafka",
+            domain=domain,
             log_dir=log_dir,
             json_format=json_logs,
             console_level=log_level,
@@ -1141,6 +1215,20 @@ def main():
                 loop.run_until_complete(
                     run_delta_events_worker(local_kafka_config, events_table_path)
                 )
+        elif args.worker == "xact-delta-retry":
+            # Delta retry scheduler - retries failed Delta batch writes
+            events_table_path = pipeline_config.events_table_path
+            if pipeline_config.event_source == EventSourceType.EVENTHOUSE:
+                events_table_path = (
+                    pipeline_config.eventhouse.xact_events_table_path
+                    or events_table_path
+                )
+            if not events_table_path:
+                logger.error("DELTA_EVENTS_TABLE_PATH is required for xact-delta-retry")
+                sys.exit(1)
+            loop.run_until_complete(
+                run_delta_retry_scheduler(local_kafka_config, events_table_path)
+            )
         elif args.worker == "xact-download":
             if args.count > 1:
                 loop.run_until_complete(
