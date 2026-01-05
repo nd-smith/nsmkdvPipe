@@ -11,7 +11,7 @@ Uses flatten_events() from kafka_pipeline.xact.writers.transform.
 """
 
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import polars as pl
 
@@ -76,7 +76,11 @@ class DeltaEventsWriter(BaseDeltaWriter):
 
         self.dedupe_window_hours = dedupe_window_hours
 
-    async def write_raw_events(self, raw_events: List[Dict[str, Any]]) -> bool:
+    async def write_raw_events(
+        self,
+        raw_events: List[Dict[str, Any]],
+        batch_id: Optional[str] = None,
+    ) -> bool:
         """
         Write raw Eventhouse events to Delta table (non-blocking).
 
@@ -90,6 +94,7 @@ class DeltaEventsWriter(BaseDeltaWriter):
                 - utcDateTime: Event timestamp
                 - traceId: Trace identifier
                 - data: JSON string with nested event data
+            batch_id: Optional short identifier for log correlation
 
         Returns:
             True if write succeeded, False otherwise
@@ -112,12 +117,13 @@ class DeltaEventsWriter(BaseDeltaWriter):
             )
 
             # Use base class async append method
-            success = await self._async_append(flattened_df, dedupe=True)
+            success = await self._async_append(flattened_df, dedupe=True, batch_id=batch_id)
 
             if success:
                 self.logger.info(
                     "Successfully wrote events to Delta",
                     extra={
+                        "batch_id": batch_id,
                         "event_count": len(raw_events),
                         "columns": len(flattened_df.columns),
                         "table_path": self.table_path,
@@ -130,6 +136,7 @@ class DeltaEventsWriter(BaseDeltaWriter):
             self.logger.error(
                 "Failed to write events to Delta",
                 extra={
+                    "batch_id": batch_id,
                     "event_count": len(raw_events),
                     "table_path": self.table_path,
                     "error": str(e),

@@ -22,6 +22,7 @@ DLQ topic: delta-events.dlq
 """
 
 import json
+import uuid
 from typing import Any, Dict, List, Optional
 
 from aiokafka.structs import ConsumerRecord
@@ -257,11 +258,13 @@ class DeltaEventsWorker:
         if not self._batch:
             return
 
+        # Generate short batch ID for log correlation
+        batch_id = uuid.uuid4().hex[:8]
         batch_size = len(self._batch)
         batch_to_write = self._batch
         self._batch = []  # Clear immediately to accept new events
 
-        success = await self._write_batch(batch_to_write)
+        success = await self._write_batch(batch_to_write, batch_id)
 
         if success:
             self._batches_written += 1
@@ -276,6 +279,7 @@ class DeltaEventsWorker:
             logger.info(
                 f"{progress}: Successfully wrote {batch_size} events to Delta",
                 extra={
+                    "batch_id": batch_id,
                     "batch_size": batch_size,
                     "batches_written": self._batches_written,
                     "total_events_written": self._total_events_written,
@@ -288,6 +292,7 @@ class DeltaEventsWorker:
                 logger.info(
                     "Reached max_batches limit, stopping consumer",
                     extra={
+                        "batch_id": batch_id,
                         "max_batches": self.max_batches,
                         "batches_written": self._batches_written,
                     },
@@ -304,6 +309,7 @@ class DeltaEventsWorker:
             logger.warning(
                 "Batch write failed, routing to retry topic",
                 extra={
+                    "batch_id": batch_id,
                     "batch_size": batch_size,
                     "trace_ids": trace_ids,
                 },
@@ -313,14 +319,16 @@ class DeltaEventsWorker:
                 error=Exception("Delta write returned failure status"),
                 retry_count=0,
                 error_category="transient",
+                batch_id=batch_id,
             )
 
-    async def _write_batch(self, batch: List[Dict[str, Any]]) -> bool:
+    async def _write_batch(self, batch: List[Dict[str, Any]], batch_id: str) -> bool:
         """
         Attempt to write a batch to Delta Lake.
 
         Args:
             batch: List of event dictionaries to write
+            batch_id: Short identifier for log correlation
 
         Returns:
             True if write succeeded, False otherwise
@@ -328,7 +336,7 @@ class DeltaEventsWorker:
         batch_size = len(batch)
 
         try:
-            success = await self.delta_writer.write_raw_events(batch)
+            success = await self.delta_writer.write_raw_events(batch, batch_id=batch_id)
 
             record_delta_write(
                 table="xact_events",
@@ -347,6 +355,7 @@ class DeltaEventsWorker:
             logger.error(
                 "Unexpected error writing batch to Delta",
                 extra={
+                    "batch_id": batch_id,
                     "batch_size": batch_size,
                     "error": str(e),
                     "trace_ids": trace_ids,
