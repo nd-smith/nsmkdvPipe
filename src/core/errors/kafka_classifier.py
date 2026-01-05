@@ -9,6 +9,7 @@ from typing import Optional
 
 from core.errors.exceptions import (
     AuthError,
+    CircuitOpenError,
     ConnectionError,
     KafkaError,
     PermanentError,
@@ -103,6 +104,10 @@ class KafkaErrorClassifier:
         Returns:
             Classified PipelineError subclass
         """
+        # If already a PipelineError (e.g., CircuitOpenError), preserve it
+        if isinstance(error, PipelineError):
+            return error
+
         error_str = str(error).lower()
         error_type = type(error).__name__
         ctx = {"service": "kafka_consumer"}
@@ -221,6 +226,10 @@ class KafkaErrorClassifier:
         Returns:
             Classified PipelineError subclass
         """
+        # If already a PipelineError (e.g., CircuitOpenError), preserve it
+        if isinstance(error, PipelineError):
+            return error
+
         error_str = str(error).lower()
         error_type = type(error).__name__
         ctx = {"service": "kafka_producer"}

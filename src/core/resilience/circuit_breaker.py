@@ -36,6 +36,7 @@ from functools import wraps
 from typing import Callable, Dict, Optional, Protocol, TypeVar
 
 from core.types import ErrorCategory
+from core.errors.exceptions import CircuitOpenError
 
 logger = logging.getLogger(__name__)
 
@@ -48,17 +49,6 @@ class CircuitState(Enum):
     CLOSED = "closed"  # Normal operation
     OPEN = "open"  # Rejecting requests
     HALF_OPEN = "half_open"  # Testing recovery
-
-
-class CircuitOpenError(Exception):
-    """Exception raised when circuit breaker is open."""
-
-    def __init__(self, circuit_name: str, retry_after: float):
-        self.circuit_name = circuit_name
-        self.retry_after = retry_after
-        super().__init__(
-            f"Circuit breaker '{circuit_name}' is open. Retry after {retry_after:.1f}s"
-        )
 
 
 class MetricsCollector(Protocol):
