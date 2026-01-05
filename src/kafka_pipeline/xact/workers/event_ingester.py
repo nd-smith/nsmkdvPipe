@@ -128,6 +128,7 @@ class EventIngesterWorker:
             topics=[self.consumer_config.events_topic],
             group_id=self.consumer_group,
             message_handler=self._handle_event_message,
+            max_batches=self.consumer_config.consumer_max_batches,
         )
 
         # Start consumer (this blocks until stopped)

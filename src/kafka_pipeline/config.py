@@ -120,6 +120,9 @@ class KafkaConfig:
     delta_events_retry_topic_prefix: str = "delta-events.retry"
     delta_events_dlq_topic: str = "delta-events.dlq"
 
+    # Consumer batch limiting for testing
+    consumer_max_batches: Optional[int] = None  # Optional limit on poll batches (None = unlimited)
+
     @classmethod
     def from_env(cls) -> "KafkaConfig":
         """Load configuration from environment variables only.
@@ -384,6 +387,11 @@ def _apply_env_overrides(data: Dict[str, Any]) -> Dict[str, Any]:
     if max_batches_str is not None and max_batches_str.strip():
         result["delta_events_max_batches"] = int(max_batches_str)
 
+    # Special handling for consumer_max_batches (optional int)
+    consumer_max_batches_str = os.getenv("CONSUMER_MAX_BATCHES")
+    if consumer_max_batches_str is not None and consumer_max_batches_str.strip():
+        result["consumer_max_batches"] = int(consumer_max_batches_str)
+
     # Apply concurrency constraints
     if "download_concurrency" in result:
         result["download_concurrency"] = min(50, max(1, result["download_concurrency"]))
@@ -503,6 +511,7 @@ def load_config(
             "delta_events_retry_topic_prefix", "delta-events.retry"
         ),
         delta_events_dlq_topic=data.get("delta_events_dlq_topic", "delta-events.dlq"),
+        consumer_max_batches=data.get("consumer_max_batches"),
     )
 
 
