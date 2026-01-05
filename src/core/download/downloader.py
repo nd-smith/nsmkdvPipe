@@ -12,6 +12,7 @@ Clean interface: DownloadTask -> DownloadOutcome
 
 import asyncio
 import errno
+import logging
 from pathlib import Path
 from typing import Optional
 
@@ -22,7 +23,10 @@ from core.download.models import DownloadOutcome, DownloadTask
 from core.download.streaming import download_to_file, should_stream
 from core.errors.exceptions import ErrorCategory
 from core.security.file_validation import validate_file_type
+from core.security.presigned_urls import check_presigned_url
 from core.security.url_validation import validate_download_url
+
+logger = logging.getLogger(__name__)
 
 
 class AttachmentDownloader:
@@ -31,9 +35,10 @@ class AttachmentDownloader:
 
     This class orchestrates the complete download process:
     1. URL validation (if enabled)
-    2. File type validation (if enabled)
-    3. HTTP download (streaming or in-memory based on size)
-    4. Error classification and reporting
+    2. Presigned URL expiration check (if enabled)
+    3. File type validation (if enabled)
+    4. HTTP download (streaming or in-memory based on size)
+    5. Error classification and reporting
 
     Usage:
         downloader = AttachmentDownloader()
@@ -90,10 +95,12 @@ class AttachmentDownloader:
 
         Steps:
             1. Validate URL (if task.validate_url=True)
-            2. Validate file type from URL (if task.validate_file_type=True)
-            3. Perform HTTP download (streaming or in-memory)
-            4. Validate Content-Type from response (if task.validate_file_type=True)
-            5. Return outcome with metadata
+            2. Check presigned URL expiration (if task.check_expiration=True)
+               - Expired S3/Xact URLs fail permanently (no refresh capability)
+            3. Validate file type from URL (if task.validate_file_type=True)
+            4. Perform HTTP download (streaming or in-memory)
+            5. Validate Content-Type from response (if task.validate_file_type=True)
+            6. Return outcome with metadata
 
         Example:
             task = DownloadTask(
@@ -116,7 +123,26 @@ class AttachmentDownloader:
                     error_category=ErrorCategory.PERMANENT,
                 )
 
-        # Step 2: Validate file type from URL
+        # Step 2: Check presigned URL expiration (Xact S3 URLs)
+        if task.check_expiration:
+            url_info = check_presigned_url(task.url)
+            # S3 presigned URLs are used by Xact - no refresh capability
+            if url_info.url_type == "s3" and url_info.is_expired:
+                expires_at = url_info.expires_at.isoformat() if url_info.expires_at else "unknown"
+                logger.warning(
+                    "Presigned URL expired, sending to DLQ",
+                    extra={
+                        "url_type": url_info.url_type,
+                        "expires_at": expires_at,
+                        "seconds_expired": abs(url_info.seconds_remaining or 0),
+                    },
+                )
+                return DownloadOutcome.validation_failure(
+                    validation_error=f"Presigned URL expired at {expires_at}",
+                    error_category=ErrorCategory.PERMANENT,
+                )
+
+        # Step 3: Validate file type from URL extension
         if task.validate_file_type:
             is_valid, error = validate_file_type(
                 task.url, allowed_extensions=task.allowed_extensions
@@ -127,7 +153,7 @@ class AttachmentDownloader:
                     error_category=ErrorCategory.PERMANENT,
                 )
 
-        # Step 3: Perform HTTP download
+        # Step 4: Perform HTTP download
         session = self._session
         should_close_session = False
 
@@ -163,7 +189,7 @@ class AttachmentDownloader:
                 # Use in-memory download for small files
                 outcome = await self._download_in_memory(task, session)
 
-            # Step 4: Validate Content-Type from response
+            # Step 5: Validate Content-Type from response
             if outcome.success and task.validate_file_type and outcome.content_type:
                 is_valid, error = validate_file_type(
                     task.url,

@@ -468,7 +468,10 @@ async def run_result_processor(kafka_config, enable_delta_writes: bool = True):
 
     Supports graceful shutdown: when shutdown event is set, the worker
     flushes pending batches before exiting.
+
+    On Delta write failure, batches are routed to retry topics for reprocessing.
     """
+    from kafka_pipeline.common.producer import BaseKafkaProducer
     from kafka_pipeline.xact.workers.result_processor import ResultProcessor
 
     set_log_context(stage="xact-result-processor")
@@ -478,8 +481,13 @@ async def run_result_processor(kafka_config, enable_delta_writes: bool = True):
     inventory_table_path = os.getenv("DELTA_INVENTORY_TABLE_PATH", "")
     failed_table_path = os.getenv("DELTA_FAILED_TABLE_PATH", "")
 
+    # Create and start producer for retry topic routing
+    producer = BaseKafkaProducer(kafka_config)
+    await producer.start()
+
     worker = ResultProcessor(
         config=kafka_config,
+        producer=producer,
         inventory_table_path=inventory_table_path if enable_delta_writes else None,
         failed_table_path=failed_table_path if enable_delta_writes and failed_table_path else None,
         batch_size=100,
@@ -508,6 +516,7 @@ async def run_result_processor(kafka_config, enable_delta_writes: bool = True):
             pass
         # Clean up resources after worker exits
         await worker.stop()
+        await producer.stop()
 
 
 async def run_local_event_ingester(
