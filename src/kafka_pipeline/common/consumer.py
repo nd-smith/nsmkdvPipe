@@ -256,10 +256,18 @@ class BaseKafkaConsumer:
 
         If max_batches is set, exits after processing that many batches.
         """
-        logger.info(
+        log_with_context(
+            logger,
+            logging.INFO,
             "Starting message consumption loop",
-            extra={"max_batches": self.max_batches},
+            max_batches=self.max_batches,
+            topics=self.topics,
+            group_id=self.group_id,
         )
+
+        # Track partition assignment status for logging
+        _logged_waiting_for_assignment = False
+        _logged_assignment_received = False
 
         while self._running and self._consumer:
             try:
@@ -273,6 +281,42 @@ class BaseKafkaConsumer:
                         batches_processed=self._batch_count,
                     )
                     return
+
+                # Check partition assignment before fetching
+                # During consumer group rebalances, getmany() can block indefinitely
+                # waiting for partition assignment (ignoring timeout_ms).
+                # This check ensures we don't hang during startup with multiple consumers.
+                assignment = self._consumer.assignment()
+                if not assignment:
+                    if not _logged_waiting_for_assignment:
+                        log_with_context(
+                            logger,
+                            logging.INFO,
+                            "Waiting for partition assignment (consumer group rebalance in progress)",
+                            group_id=self.group_id,
+                            topics=self.topics,
+                        )
+                        _logged_waiting_for_assignment = True
+                    # Sleep briefly and retry - don't call getmany() during rebalance
+                    await asyncio.sleep(0.5)
+                    continue
+
+                # Log when we first receive partition assignment
+                if not _logged_assignment_received:
+                    partition_info = [
+                        f"{tp.topic}:{tp.partition}" for tp in assignment
+                    ]
+                    log_with_context(
+                        logger,
+                        logging.INFO,
+                        "Partition assignment received, starting message consumption",
+                        group_id=self.group_id,
+                        partition_count=len(assignment),
+                        partitions=partition_info,
+                    )
+                    _logged_assignment_received = True
+                    # Update partition assignment metric
+                    update_assigned_partitions(self.group_id, len(assignment))
 
                 # Fetch messages (blocking with timeout)
                 # This is wrapped in circuit breaker to protect against broker failures
