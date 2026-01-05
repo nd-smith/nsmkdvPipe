@@ -24,6 +24,8 @@ class DownloadTask:
         timeout: Timeout in seconds (default: 60)
         validate_url: Whether to validate URL against domain allowlist (default: True)
         validate_file_type: Whether to validate file extension/content-type (default: True)
+        check_expiration: Whether to check if presigned URLs are expired (default: False)
+            When enabled, expired S3 presigned URLs (Xact) fail permanently.
         allowed_domains: Optional custom domain allowlist (None = use defaults)
         allowed_extensions: Optional custom file extension allowlist (None = use defaults)
         max_size: Optional maximum file size in bytes (None = no limit)
@@ -34,6 +36,7 @@ class DownloadTask:
     timeout: int = 60
     validate_url: bool = True
     validate_file_type: bool = True
+    check_expiration: bool = False
     allowed_domains: Optional[Set[str]] = None
     allowed_extensions: Optional[Set[str]] = None
     max_size: Optional[int] = None

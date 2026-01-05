@@ -679,6 +679,7 @@ class DownloadWorker:
             timeout=60,  # TODO: Make configurable
             validate_url=True,
             validate_file_type=True,
+            check_expiration=True,  # Xact S3 URLs cannot be refreshed
             # Use default allowed domains and extensions from security module
             allowed_domains=None,
             allowed_extensions=None,

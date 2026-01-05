@@ -4,6 +4,7 @@ Tests for AttachmentDownloader with DownloadTask/DownloadOutcome interface.
 Test coverage:
 - Successful downloads (small and large files)
 - URL validation (domain allowlist)
+- Presigned URL expiration check
 - File type validation (extension and Content-Type)
 - HTTP errors (4xx, 5xx, timeouts, connection errors)
 - Max size enforcement
@@ -246,6 +247,197 @@ class TestAttachmentDownloaderValidation:
         assert outcome.success is False
         assert "exceeds maximum" in outcome.validation_error
         assert outcome.error_category == ErrorCategory.PERMANENT
+
+
+class TestAttachmentDownloaderExpiration:
+    """Test presigned URL expiration checking."""
+
+    @pytest.mark.asyncio
+    async def test_expired_s3_url_fails_permanently(self, temp_output_dir):
+        """Test that expired S3/Xact presigned URLs fail permanently."""
+        # S3 presigned URL with expired timestamp (year 2020)
+        expired_s3_url = (
+            "https://s3.amazonaws.com/bucket/file.pdf"
+            "?X-Amz-Algorithm=AWS4-HMAC-SHA256"
+            "&X-Amz-Date=20200101T000000Z"
+            "&X-Amz-Expires=3600"
+            "&X-Amz-Signature=abc123"
+        )
+        task = DownloadTask(
+            url=expired_s3_url,
+            destination=temp_output_dir / "file.pdf",
+            validate_url=False,  # Skip URL validation for this test
+            check_expiration=True,
+        )
+
+        downloader = AttachmentDownloader()
+        outcome = await downloader.download(task)
+
+        assert outcome.success is False
+        assert "Presigned URL expired" in outcome.validation_error
+        assert outcome.error_category == ErrorCategory.PERMANENT
+
+    @pytest.mark.asyncio
+    async def test_valid_s3_url_passes_expiration_check(self, temp_output_dir):
+        """Test that non-expired S3 URLs pass the expiration check."""
+        from datetime import datetime, timezone
+
+        # Generate a URL that expires far in the future
+        future_date = datetime(2099, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        date_str = future_date.strftime("%Y%m%dT%H%M%SZ")
+
+        valid_s3_url = (
+            f"https://s3.amazonaws.com/bucket/file.pdf"
+            f"?X-Amz-Algorithm=AWS4-HMAC-SHA256"
+            f"&X-Amz-Date={date_str}"
+            f"&X-Amz-Expires=3600"
+            f"&X-Amz-Signature=abc123"
+        )
+        task = DownloadTask(
+            url=valid_s3_url,
+            destination=temp_output_dir / "file.pdf",
+            validate_url=False,
+            validate_file_type=False,
+            check_expiration=True,
+        )
+
+        content = b"PDF content"
+        response = DownloadResponse(
+            content=content, status_code=200, content_type="application/pdf"
+        )
+
+        mock_session = AsyncMock(spec=aiohttp.ClientSession)
+        mock_head_response = AsyncMock()
+        mock_head_response.content_length = len(content)
+        mock_session.head.return_value.__aenter__.return_value = mock_head_response
+        mock_session.close = AsyncMock()
+
+        with patch("core.download.downloader.download_url") as mock_download, patch(
+            "core.download.downloader.create_session"
+        ) as mock_create:
+            mock_download.return_value = (response, None)
+            mock_create.return_value = mock_session
+
+            downloader = AttachmentDownloader()
+            outcome = await downloader.download(task)
+
+            # Should pass expiration check and succeed
+            assert outcome.success is True
+
+    @pytest.mark.asyncio
+    async def test_non_presigned_url_passes_when_check_enabled(self, temp_output_dir):
+        """Test that non-presigned URLs pass when check_expiration is enabled."""
+        task = DownloadTask(
+            url="https://claimxperience.com/file.pdf",
+            destination=temp_output_dir / "file.pdf",
+            check_expiration=True,
+        )
+
+        content = b"PDF content"
+        response = DownloadResponse(
+            content=content, status_code=200, content_type="application/pdf"
+        )
+
+        mock_session = AsyncMock(spec=aiohttp.ClientSession)
+        mock_head_response = AsyncMock()
+        mock_head_response.content_length = len(content)
+        mock_session.head.return_value.__aenter__.return_value = mock_head_response
+        mock_session.close = AsyncMock()
+
+        with patch("core.download.downloader.download_url") as mock_download, patch(
+            "core.download.downloader.create_session"
+        ) as mock_create:
+            mock_download.return_value = (response, None)
+            mock_create.return_value = mock_session
+
+            downloader = AttachmentDownloader()
+            outcome = await downloader.download(task)
+
+            # Non-presigned URL should pass through
+            assert outcome.success is True
+
+    @pytest.mark.asyncio
+    async def test_expiration_check_disabled_by_default(self, temp_output_dir):
+        """Test that expiration check is disabled by default."""
+        # Expired S3 URL
+        expired_s3_url = (
+            "https://s3.amazonaws.com/bucket/file.pdf"
+            "?X-Amz-Algorithm=AWS4-HMAC-SHA256"
+            "&X-Amz-Date=20200101T000000Z"
+            "&X-Amz-Expires=3600"
+            "&X-Amz-Signature=abc123"
+        )
+        task = DownloadTask(
+            url=expired_s3_url,
+            destination=temp_output_dir / "file.pdf",
+            validate_url=False,
+            validate_file_type=False,
+            # check_expiration defaults to False
+        )
+
+        content = b"PDF content"
+        response = DownloadResponse(
+            content=content, status_code=200, content_type="application/pdf"
+        )
+
+        mock_session = AsyncMock(spec=aiohttp.ClientSession)
+        mock_head_response = AsyncMock()
+        mock_head_response.content_length = len(content)
+        mock_session.head.return_value.__aenter__.return_value = mock_head_response
+        mock_session.close = AsyncMock()
+
+        with patch("core.download.downloader.download_url") as mock_download, patch(
+            "core.download.downloader.create_session"
+        ) as mock_create:
+            mock_download.return_value = (response, None)
+            mock_create.return_value = mock_session
+
+            downloader = AttachmentDownloader()
+            outcome = await downloader.download(task)
+
+            # Should succeed because check_expiration is False by default
+            assert outcome.success is True
+
+    @pytest.mark.asyncio
+    async def test_claimx_expired_url_not_blocked(self, temp_output_dir):
+        """Test that expired ClaimX URLs are NOT blocked (they can be refreshed)."""
+        # ClaimX URL with expired timestamp
+        expired_claimx_url = (
+            "https://api.claimxperience.com/media/file.pdf"
+            "?systemDate=1577836800000"  # 2020-01-01 in ms
+            "&expires=3600000"  # 1 hour in ms
+            "&signature=abc123"
+        )
+        task = DownloadTask(
+            url=expired_claimx_url,
+            destination=temp_output_dir / "file.pdf",
+            validate_url=False,
+            validate_file_type=False,
+            check_expiration=True,
+        )
+
+        content = b"PDF content"
+        response = DownloadResponse(
+            content=content, status_code=200, content_type="application/pdf"
+        )
+
+        mock_session = AsyncMock(spec=aiohttp.ClientSession)
+        mock_head_response = AsyncMock()
+        mock_head_response.content_length = len(content)
+        mock_session.head.return_value.__aenter__.return_value = mock_head_response
+        mock_session.close = AsyncMock()
+
+        with patch("core.download.downloader.download_url") as mock_download, patch(
+            "core.download.downloader.create_session"
+        ) as mock_create:
+            mock_download.return_value = (response, None)
+            mock_create.return_value = mock_session
+
+            downloader = AttachmentDownloader()
+            outcome = await downloader.download(task)
+
+            # ClaimX URLs should NOT be blocked (they can be refreshed)
+            assert outcome.success is True
 
 
 class TestAttachmentDownloaderErrors:
