@@ -14,13 +14,13 @@ Features:
 - Batch ID for log correlation
 - Delta write metrics
 - Optional max_batches limit for testing
+- Retry via Kafka topics on Delta write failure
 """
 
 import asyncio
-import json
 import time
 import uuid
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from aiokafka.structs import ConsumerRecord
 
@@ -28,6 +28,8 @@ from core.logging.setup import get_logger
 from kafka_pipeline.config import KafkaConfig
 from kafka_pipeline.common.consumer import BaseKafkaConsumer
 from kafka_pipeline.common.metrics import record_delta_write
+from kafka_pipeline.common.producer import BaseKafkaProducer
+from kafka_pipeline.xact.retry.handler import DeltaRetryHandler
 from kafka_pipeline.xact.schemas.results import DownloadResultMessage
 from kafka_pipeline.xact.writers.delta_inventory import (
     DeltaInventoryWriter,
@@ -61,8 +63,11 @@ class ResultProcessor:
 
     Usage:
         >>> config = KafkaConfig.from_env()
+        >>> producer = BaseKafkaProducer(config)
+        >>> await producer.start()
         >>> processor = ResultProcessor(
-        ...     config,
+        ...     config=config,
+        ...     producer=producer,
         ...     inventory_table_path="abfss://.../xact_attachments",
         ...     failed_table_path="abfss://.../xact_attachments_failed",
         ... )
@@ -78,6 +83,7 @@ class ResultProcessor:
     def __init__(
         self,
         config: KafkaConfig,
+        producer: BaseKafkaProducer,
         inventory_table_path: str,
         failed_table_path: Optional[str] = None,
         batch_size: Optional[int] = None,
@@ -89,6 +95,7 @@ class ResultProcessor:
 
         Args:
             config: Kafka configuration
+            producer: Kafka producer for retry topic routing (required)
             inventory_table_path: Full abfss:// path to xact_attachments Delta table
             failed_table_path: Optional path to xact_attachments_failed Delta table.
                                If provided, permanent failures will be written here.
@@ -97,6 +104,7 @@ class ResultProcessor:
             max_batches: Optional limit on batches to write (for testing). None = unlimited.
         """
         self.config = config
+        self.producer = producer
         self.batch_size = batch_size or self.BATCH_SIZE
         self.batch_timeout_seconds = batch_timeout_seconds or self.BATCH_TIMEOUT_SECONDS
         self.max_batches = max_batches
@@ -106,6 +114,15 @@ class ResultProcessor:
         self._failed_writer: Optional[DeltaFailedAttachmentsWriter] = None
         if failed_table_path:
             self._failed_writer = DeltaFailedAttachmentsWriter(table_path=failed_table_path)
+
+        # Retry handler for failed Delta writes
+        self._retry_handler = DeltaRetryHandler(
+            config=config,
+            producer=producer,
+            table_path=inventory_table_path,
+            retry_topic_prefix="result-processor.retry",
+            dlq_topic="result-processor.dlq",
+        )
 
         # Batching state - separate batches for success and failed
         self._batch: List[DownloadResultMessage] = []
@@ -118,13 +135,14 @@ class ResultProcessor:
         self._failed_batches_written = 0
         self._total_records_written = 0
 
-        # Kafka consumer
+        # Kafka consumer - disable auto-commit for manual control after Delta writes
         self._consumer = BaseKafkaConsumer(
             config=config,
             topics=[config.downloads_results_topic],
             group_id="xact-result-processor",
             message_handler=self._handle_result,
             max_batches=config.consumer_max_batches,
+            enable_message_commit=False,
         )
 
         # Background flush task
@@ -367,7 +385,8 @@ class ResultProcessor:
         Flush current batch (internal, assumes lock held).
 
         Converts batch to inventory records and writes to Delta.
-        Resets batch and updates flush timestamp.
+        On success: commits offsets, updates counters.
+        On failure: routes batch to retry topics.
 
         Note: This method assumes the caller holds self._batch_lock
         """
@@ -399,6 +418,9 @@ class ResultProcessor:
             self._batches_written += 1
             self._total_records_written += batch_size
 
+            # Commit offsets after successful Delta write
+            await self._consumer.commit()
+
             # Build progress message
             if self.max_batches:
                 progress = f"Batch {self._batches_written}/{self.max_batches}"
@@ -417,8 +439,9 @@ class ResultProcessor:
                 },
             )
         else:
-            logger.error(
-                "Failed to write batch to Delta inventory",
+            # Route failed batch to retry topics
+            logger.warning(
+                "Delta write failed, routing batch to retry topic",
                 extra={
                     "batch_id": batch_id,
                     "batch_size": batch_size,
@@ -426,13 +449,23 @@ class ResultProcessor:
                     "last_trace_id": batch[-1].trace_id,
                 },
             )
+            # Convert DownloadResultMessage objects to dicts for retry handler
+            batch_dicts = [msg.model_dump() for msg in batch]
+            await self._retry_handler.handle_batch_failure(
+                batch=batch_dicts,
+                error=Exception("Delta write to xact_attachments failed"),
+                retry_count=0,
+                error_category="transient",
+                batch_id=batch_id,
+            )
 
     async def _flush_failed_batch(self) -> None:
         """
         Flush current failed batch (internal, assumes lock held).
 
         Converts failed batch to records and writes to Delta.
-        Resets failed batch and updates flush timestamp.
+        On success: commits offsets, updates counters.
+        On failure: routes batch to retry topics.
 
         Note: This method assumes the caller holds self._batch_lock
         """
@@ -464,6 +497,9 @@ class ResultProcessor:
             self._failed_batches_written += 1
             self._total_records_written += batch_size
 
+            # Commit offsets after successful Delta write
+            await self._consumer.commit()
+
             logger.info(
                 f"Successfully wrote {batch_size} records to xact_attachments_failed",
                 extra={
@@ -475,14 +511,25 @@ class ResultProcessor:
                 },
             )
         else:
-            logger.error(
-                "Failed to write batch to Delta failed attachments table",
+            # Route failed batch to retry topics
+            logger.warning(
+                "Delta write failed, routing batch to retry topic",
                 extra={
                     "batch_id": batch_id,
                     "batch_size": batch_size,
+                    "table": "xact_attachments_failed",
                     "first_trace_id": batch[0].trace_id,
                     "last_trace_id": batch[-1].trace_id,
                 },
+            )
+            # Convert DownloadResultMessage objects to dicts for retry handler
+            batch_dicts = [msg.model_dump() for msg in batch]
+            await self._retry_handler.handle_batch_failure(
+                batch=batch_dicts,
+                error=Exception("Delta write to xact_attachments_failed failed"),
+                retry_count=0,
+                error_category="transient",
+                batch_id=batch_id,
             )
 
     @property
