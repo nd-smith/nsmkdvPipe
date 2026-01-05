@@ -5,6 +5,7 @@ Tests chunked streaming for large files, memory bounds, and file I/O.
 """
 
 import asyncio
+import errno
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -84,7 +85,7 @@ async def test_stream_download_url_success(mock_session, mock_response):
     mock_session.get.assert_called_once()
     call_args = mock_session.get.call_args
     assert call_args[0][0] == "https://example.com/file.pdf"
-    assert call_args[1]["allow_redirects"] is False
+    assert call_args[1]["allow_redirects"] is True  # Default is True for S3 presigned URLs
 
 
 @pytest.mark.asyncio
@@ -216,7 +217,7 @@ async def test_download_to_file_success(mock_session, mock_response, tmp_path):
     mock_session.get = Mock(return_value=mock_ctx)
 
     # Execute
-    bytes_written, error = await download_to_file(
+    result, error = await download_to_file(
         "https://example.com/file.pdf",
         output_path,
         mock_session,
@@ -224,7 +225,8 @@ async def test_download_to_file_success(mock_session, mock_response, tmp_path):
 
     # Verify
     assert error is None
-    assert bytes_written == len(expected_content)
+    assert result.bytes_written == len(expected_content)
+    assert result.content_type == "application/pdf"
     assert output_path.exists()
     assert output_path.read_bytes() == expected_content
 
@@ -254,8 +256,7 @@ async def test_download_to_file_stream_error(mock_session, tmp_path):
 @pytest.mark.asyncio
 async def test_download_to_file_write_error(mock_session, mock_response, tmp_path):
     """Test download to file with disk write error."""
-    # Use invalid path to trigger OSError
-    output_path = tmp_path / "nonexistent_dir" / "output.pdf"
+    output_path = tmp_path / "output.pdf"
 
     chunks = [b"chunk1"]
 
@@ -272,15 +273,25 @@ async def test_download_to_file_write_error(mock_session, mock_response, tmp_pat
     mock_ctx.__aexit__ = AsyncMock(return_value=None)
     mock_session.get = Mock(return_value=mock_ctx)
 
-    # Execute
-    bytes_written, error = await download_to_file(
-        "https://example.com/file.pdf",
-        output_path,
-        mock_session,
-    )
+    # Mock open to raise OSError when writing
+    import builtins
+    original_open = builtins.open
+
+    def mock_open_error(*args, **kwargs):
+        if args[0] == output_path and 'wb' in args:
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return original_open(*args, **kwargs)
+
+    with patch("builtins.open", side_effect=mock_open_error):
+        # Execute
+        result, error = await download_to_file(
+            "https://example.com/file.pdf",
+            output_path,
+            mock_session,
+        )
 
     # Verify
-    assert bytes_written is None
+    assert result is None
     assert error is not None
     assert "write error" in error.error_message.lower()
     assert error.error_category == ErrorCategory.PERMANENT

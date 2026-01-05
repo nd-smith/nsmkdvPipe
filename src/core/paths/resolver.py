@@ -52,20 +52,26 @@ def generate_blob_path(
     """
     url_filename, file_type = extract_filename_from_url(download_url)
 
+    # Add extension back to filename
+    if file_type and file_type != "UNKNOWN":
+        url_filename_with_ext = f"{url_filename}.{file_type.lower()}"
+    else:
+        url_filename_with_ext = url_filename
+
     # Build filename based on bucket type
     if status_subtype == "documentsReceived":
-        filename = f"{assignment_id}_{url_filename}"
+        filename = f"{assignment_id}_{url_filename_with_ext}"
 
     elif status_subtype == "firstNoticeOfLossReceived":
-        filename = f"{assignment_id}_FNOL_{url_filename}"
+        filename = f"{assignment_id}_FNOL_{url_filename_with_ext}"
 
     elif status_subtype == "estimatePackageReceived":
         version = estimate_version or "unknown"
-        filename = f"{assignment_id}_{version}_{url_filename}"
+        filename = f"{assignment_id}_{version}_{url_filename_with_ext}"
 
     else:
         # Default pattern for unknown subtypes
-        filename = f"{assignment_id}_{url_filename}"
+        filename = f"{assignment_id}_{url_filename_with_ext}"
 
     blob_path = f"{status_subtype}/{assignment_id}/{trace_id}/{filename}"
     return blob_path, file_type

@@ -6,8 +6,4 @@ Reuses integration test fixtures from parent conftest.py.
 
 import pytest
 
-# Import fixtures from integration tests
-pytest_plugins = [
-    "tests.kafka_pipeline.integration.claimx.conftest",
-    "tests.kafka_pipeline.integration.conftest",
-]
+# Fixtures are automatically discovered from parent conftest.py files

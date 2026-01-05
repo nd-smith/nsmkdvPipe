@@ -21,7 +21,11 @@ import pytest
 from core.download.downloader import AttachmentDownloader
 from core.download.http_client import DownloadError, DownloadResponse
 from core.download.models import DownloadTask
-from core.download.streaming import STREAM_THRESHOLD, StreamDownloadError
+from core.download.streaming import (
+    STREAM_THRESHOLD,
+    DownloadToFileResult,
+    StreamDownloadError,
+)
 from core.errors.exceptions import ErrorCategory
 
 
@@ -103,7 +107,12 @@ class TestAttachmentDownloaderSuccess:
             "core.download.downloader.create_session"
         ) as mock_create:
             mock_should_stream.return_value = True
-            mock_stream.return_value = (bytes_written, None)
+            mock_stream.return_value = (
+                DownloadToFileResult(
+                    bytes_written=bytes_written, content_type="application/pdf"
+                ),
+                None,
+            )
             mock_create.return_value = mock_session
             mock_session.close = AsyncMock()
 
@@ -572,9 +581,12 @@ class TestAttachmentDownloaderErrors:
         )
 
         with patch("core.download.downloader.download_url") as mock_download, patch(
+            "core.download.downloader.should_stream"
+        ) as mock_should_stream, patch(
             "asyncio.to_thread"
         ) as mock_to_thread:
             mock_download.return_value = (response, None)
+            mock_should_stream.return_value = False  # Force in-memory path
             mock_to_thread.side_effect = OSError("Disk full")
 
             downloader = AttachmentDownloader()
