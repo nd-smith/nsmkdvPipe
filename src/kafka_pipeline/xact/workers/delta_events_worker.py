@@ -296,9 +296,17 @@ class DeltaEventsWorker:
                     await self.consumer.stop()
         else:
             # Route to Kafka retry topic
+            trace_ids = [
+                e.get("traceId") or e.get("trace_id")
+                for e in batch_to_write[:10]
+                if e.get("traceId") or e.get("trace_id")
+            ]
             logger.warning(
                 "Batch write failed, routing to retry topic",
-                extra={"batch_size": batch_size},
+                extra={
+                    "batch_size": batch_size,
+                    "trace_ids": trace_ids,
+                },
             )
             await self.retry_handler.handle_batch_failure(
                 batch=batch_to_write,
@@ -331,11 +339,17 @@ class DeltaEventsWorker:
             return success
 
         except Exception as e:
+            trace_ids = [
+                evt.get("traceId") or evt.get("trace_id")
+                for evt in batch[:10]
+                if evt.get("traceId") or evt.get("trace_id")
+            ]
             logger.error(
                 "Unexpected error writing batch to Delta",
                 extra={
                     "batch_size": batch_size,
                     "error": str(e),
+                    "trace_ids": trace_ids,
                 },
                 exc_info=True,
             )
