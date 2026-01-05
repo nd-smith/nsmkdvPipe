@@ -12,6 +12,7 @@ Clean interface: DownloadTask -> DownloadOutcome
 
 import asyncio
 import errno
+import logging
 from pathlib import Path
 from typing import Optional
 
@@ -24,6 +25,8 @@ from core.errors.exceptions import ErrorCategory
 from core.security.file_validation import validate_file_type
 from core.security.presigned_urls import check_presigned_url
 from core.security.url_validation import validate_download_url
+
+logger = logging.getLogger(__name__)
 
 
 class AttachmentDownloader:
@@ -126,6 +129,14 @@ class AttachmentDownloader:
             # S3 presigned URLs are used by Xact - no refresh capability
             if url_info.url_type == "s3" and url_info.is_expired:
                 expires_at = url_info.expires_at.isoformat() if url_info.expires_at else "unknown"
+                logger.warning(
+                    "Presigned URL expired, sending to DLQ",
+                    extra={
+                        "url_type": url_info.url_type,
+                        "expires_at": expires_at,
+                        "seconds_expired": abs(url_info.seconds_remaining or 0),
+                    },
+                )
                 return DownloadOutcome.validation_failure(
                     validation_error=f"Presigned URL expired at {expires_at}",
                     error_category=ErrorCategory.PERMANENT,
