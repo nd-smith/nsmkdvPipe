@@ -22,6 +22,7 @@ class JSONFormatter(logging.Formatter):
         # Correlation and tracing
         "trace_id",
         "correlation_id",
+        "batch_id",
         "duration_ms",
         # HTTP
         "http_status",
@@ -169,9 +170,15 @@ class ConsoleFormatter(logging.Formatter):
 
         prefix = " - ".join(parts)
 
-        # Add trace_id if present
+        # Add batch_id and/or trace_id if present
+        batch_id = getattr(record, "batch_id", None)
         trace_id = getattr(record, "trace_id", None)
-        if trace_id:
+
+        if batch_id and trace_id:
+            return f"{prefix} - [batch:{batch_id}] [{trace_id[:8]}] {record.getMessage()}"
+        elif batch_id:
+            return f"{prefix} - [batch:{batch_id}] {record.getMessage()}"
+        elif trace_id:
             return f"{prefix} - [{trace_id[:8]}] {record.getMessage()}"
 
         return f"{prefix} - {record.getMessage()}"
