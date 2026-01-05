@@ -155,11 +155,14 @@ class DeltaEventsWorker:
         )
 
         # Create and start consumer with message handler
+        # Disable per-message commits - we commit after batch writes to ensure
+        # offsets are only committed after data is durably written to Delta Lake
         self.consumer = BaseKafkaConsumer(
             config=self.config,
             topics=[self.config.events_topic],
             group_id=self.consumer_group,
             message_handler=self._handle_event_message,
+            enable_message_commit=False,
         )
 
         # Start consumer (this blocks until stopped)
@@ -269,6 +272,12 @@ class DeltaEventsWorker:
         if success:
             self._batches_written += 1
             self._total_events_written += batch_size
+
+            # Commit offsets after successful Delta write
+            # This ensures at-least-once semantics: offsets are only committed
+            # after data is durably written to Delta Lake
+            if self.consumer:
+                await self.consumer.commit()
 
             # Build progress message
             if self.max_batches:
