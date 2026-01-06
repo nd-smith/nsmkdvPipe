@@ -680,17 +680,38 @@ class PipelineConfig:
                 # ClaimX config not fully specified, leave as None
                 pass
 
+        # Load delta configuration from yaml with env var override
+        delta_config = yaml_data.get("delta", {})
+        domain = os.getenv("PIPELINE_DOMAIN", "xact")
+        domain_delta_config = delta_config.get(domain, {})
+
+        # Enable delta writes: env var > yaml > default True
+        enable_delta_writes_str = os.getenv("ENABLE_DELTA_WRITES")
+        if enable_delta_writes_str is not None:
+            enable_delta_writes = enable_delta_writes_str.lower() == "true"
+        else:
+            enable_delta_writes = delta_config.get("enable_writes", True)
+
         return cls(
             event_source=event_source,
             eventhub=eventhub_config,
             eventhouse=eventhouse_config,
             claimx_eventhouse=claimx_eventhouse_config,
             local_kafka=local_kafka,
-            domain=os.getenv("PIPELINE_DOMAIN", "xact"),
-            enable_delta_writes=os.getenv("ENABLE_DELTA_WRITES", "true").lower() == "true",
-            events_table_path=os.getenv("DELTA_EVENTS_TABLE_PATH", ""),
-            inventory_table_path=os.getenv("DELTA_INVENTORY_TABLE_PATH", ""),
-            failed_table_path=os.getenv("DELTA_FAILED_TABLE_PATH", ""),
+            domain=domain,
+            enable_delta_writes=enable_delta_writes,
+            events_table_path=os.getenv(
+                "DELTA_EVENTS_TABLE_PATH",
+                domain_delta_config.get("events_table_path", "")
+            ),
+            inventory_table_path=os.getenv(
+                "DELTA_INVENTORY_TABLE_PATH",
+                domain_delta_config.get("inventory_table_path", "")
+            ),
+            failed_table_path=os.getenv(
+                "DELTA_FAILED_TABLE_PATH",
+                domain_delta_config.get("failed_table_path", "")
+            ),
         )
 
     @property

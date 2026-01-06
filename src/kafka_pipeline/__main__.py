@@ -514,7 +514,12 @@ async def run_upload_worker(kafka_config):
         await worker.stop()
 
 
-async def run_result_processor(kafka_config, enable_delta_writes: bool = True):
+async def run_result_processor(
+    kafka_config,
+    enable_delta_writes: bool = True,
+    inventory_table_path: str = "",
+    failed_table_path: str = "",
+):
     """Run the Result Processor worker.
 
     Reads download results from local Kafka and writes to Delta Lake tables:
@@ -525,6 +530,12 @@ async def run_result_processor(kafka_config, enable_delta_writes: bool = True):
     flushes pending batches before exiting.
 
     On Delta write failure, batches are routed to retry topics for reprocessing.
+
+    Args:
+        kafka_config: Kafka configuration for local broker
+        enable_delta_writes: Whether to write to Delta tables
+        inventory_table_path: Full abfss:// path to xact_attachments Delta table
+        failed_table_path: Optional path to xact_attachments_failed Delta table
     """
     from kafka_pipeline.common.producer import BaseKafkaProducer
     from kafka_pipeline.xact.workers.result_processor import ResultProcessor
@@ -532,9 +543,14 @@ async def run_result_processor(kafka_config, enable_delta_writes: bool = True):
     set_log_context(stage="xact-result-processor")
     logger.info("Starting xact Result Processor worker...")
 
-    # Get table paths from environment
-    inventory_table_path = os.getenv("DELTA_INVENTORY_TABLE_PATH", "")
-    failed_table_path = os.getenv("DELTA_FAILED_TABLE_PATH", "")
+    # Validate inventory table path when delta writes are enabled
+    if enable_delta_writes and not inventory_table_path:
+        logger.error(
+            "inventory_table_path is required for xact-result-processor "
+            "when enable_delta_writes=True. Configure via DELTA_INVENTORY_TABLE_PATH "
+            "environment variable or delta.xact.inventory_table_path in config.yaml."
+        )
+        raise ValueError("inventory_table_path is required when delta writes are enabled")
 
     # Create and start producer for retry topic routing
     producer = BaseKafkaProducer(
@@ -1016,7 +1032,12 @@ async def run_all_workers(
             name="xact-upload",
         ),
         asyncio.create_task(
-            run_result_processor(local_kafka_config, enable_delta_writes),
+            run_result_processor(
+                local_kafka_config,
+                enable_delta_writes,
+                inventory_table_path=pipeline_config.inventory_table_path,
+                failed_table_path=pipeline_config.failed_table_path,
+            ),
             name="xact-result-processor",
         ),
     ])
@@ -1263,11 +1284,18 @@ def main():
                     run_worker_pool(
                         run_result_processor, args.count, "xact-result-processor",
                         local_kafka_config, enable_delta_writes,
+                        inventory_table_path=pipeline_config.inventory_table_path,
+                        failed_table_path=pipeline_config.failed_table_path,
                     )
                 )
             else:
                 loop.run_until_complete(
-                    run_result_processor(local_kafka_config, enable_delta_writes)
+                    run_result_processor(
+                        local_kafka_config,
+                        enable_delta_writes,
+                        inventory_table_path=pipeline_config.inventory_table_path,
+                        failed_table_path=pipeline_config.failed_table_path,
+                    )
                 )
         elif args.worker == "claimx-poller":
             # ClaimX Eventhouse poller
