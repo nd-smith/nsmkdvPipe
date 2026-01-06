@@ -25,6 +25,7 @@ Concurrent Processing (WP-313):
 """
 
 import asyncio
+import hashlib
 import shutil
 import tempfile
 import time
@@ -684,7 +685,8 @@ class DownloadWorker:
             )
 
         # Check dedup cache (simple in-memory duplicate prevention)
-        if self._is_duplicate(task_message.trace_id):
+        # Use attachment_url as key since one trace_id can have multiple attachments
+        if self._is_duplicate(task_message.attachment_url):
             logger.info(
                 "Skipping duplicate download (already processed recently)",
                 extra={
@@ -743,7 +745,7 @@ class DownloadWorker:
             if outcome.success:
                 await self._handle_success(task_message, outcome, processing_time_ms)
                 # Mark as processed in dedup cache to prevent future duplicates
-                self._mark_processed(task_message.trace_id)
+                self._mark_processed(task_message.attachment_url)
                 record_message_consumed(
                     message.topic, self.CONSUMER_GROUP, len(message.value), success=True
                 )
@@ -1105,47 +1107,60 @@ class DownloadWorker:
             )
 
 
-    def _is_duplicate(self, trace_id: str) -> bool:
+    @staticmethod
+    def _hash_url(url: str) -> str:
+        """Hash URL to create compact dedup key (16 chars)."""
+        return hashlib.md5(url.encode()).hexdigest()[:16]
+
+    def _is_duplicate(self, attachment_url: str) -> bool:
         """
-        Check if trace_id is in dedup cache (already processed recently).
+        Check if attachment_url is in dedup cache (already processed recently).
+
+        Uses a hash of attachment_url as the dedup key since one trace_id can have
+        multiple attachments. This prevents re-downloading the same URL.
 
         Args:
-            trace_id: Trace ID to check
+            attachment_url: Attachment URL to check
 
         Returns:
             True if duplicate (already in cache), False otherwise
         """
         now = time.time()
-        
+        url_hash = self._hash_url(attachment_url)
+
         # Check if in cache and not expired
-        if trace_id in self._dedup_cache:
-            cached_time = self._dedup_cache[trace_id]
+        if url_hash in self._dedup_cache:
+            cached_time = self._dedup_cache[url_hash]
             if now - cached_time < self._dedup_cache_ttl_seconds:
                 return True
             # Expired - remove from cache
-            del self._dedup_cache[trace_id]
-        
+            del self._dedup_cache[url_hash]
+
         return False
 
-    def _mark_processed(self, trace_id: str) -> None:
+    def _mark_processed(self, attachment_url: str) -> None:
         """
-        Add trace_id to dedup cache to prevent re-processing.
+        Add attachment_url hash to dedup cache to prevent re-processing.
+
+        Uses a hash of attachment_url as the dedup key since one trace_id can have
+        multiple attachments. This prevents re-downloading the same URL.
 
         Implements simple LRU eviction if cache is full.
 
         Args:
-            trace_id: Trace ID to mark as processed
+            attachment_url: Attachment URL to mark as processed
         """
         now = time.time()
-        
+        url_hash = self._hash_url(attachment_url)
+
         # If cache is full, evict oldest entries (simple LRU)
         if len(self._dedup_cache) >= self._dedup_cache_max_size:
             # Sort by timestamp and remove oldest 10%
             sorted_items = sorted(self._dedup_cache.items(), key=lambda x: x[1])
             evict_count = self._dedup_cache_max_size // 10
-            for trace_id_to_evict, _ in sorted_items[:evict_count]:
-                del self._dedup_cache[trace_id_to_evict]
-            
+            for hash_to_evict, _ in sorted_items[:evict_count]:
+                del self._dedup_cache[hash_to_evict]
+
             logger.debug(
                 "Evicted old entries from dedup cache",
                 extra={
@@ -1153,22 +1168,22 @@ class DownloadWorker:
                     "cache_size": len(self._dedup_cache),
                 },
             )
-        
+
         # Add to cache
-        self._dedup_cache[trace_id] = now
+        self._dedup_cache[url_hash] = now
 
     def _cleanup_dedup_cache(self) -> None:
         """Remove expired entries from dedup cache (TTL-based cleanup)."""
         now = time.time()
         expired_keys = [
-            trace_id
-            for trace_id, cached_time in self._dedup_cache.items()
+            url
+            for url, cached_time in self._dedup_cache.items()
             if now - cached_time >= self._dedup_cache_ttl_seconds
         ]
-        
-        for trace_id in expired_keys:
-            del self._dedup_cache[trace_id]
-        
+
+        for url in expired_keys:
+            del self._dedup_cache[url]
+
         if expired_keys:
             logger.debug(
                 "Cleaned up expired dedup cache entries",
