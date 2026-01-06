@@ -23,7 +23,6 @@ class DeltaWriter(BaseDeltaWriter):
     Features:
     - Direct DataFrame append/merge operations
     - Non-blocking writes via asyncio
-    - Automatic deduplication support
     - Z-ordering optimization
 
     Usage:
@@ -42,19 +41,17 @@ class DeltaWriter(BaseDeltaWriter):
     async def write_dataframe(
         self,
         df: pl.DataFrame,
-        dedupe: bool = True,
     ) -> bool:
         """
         Write DataFrame to Delta table using append mode.
 
         Args:
             df: Polars DataFrame to write
-            dedupe: Whether to deduplicate against existing data (default: True)
 
         Returns:
             True if write succeeded, False otherwise
         """
-        return await self._async_append(df, dedupe=dedupe)
+        return await self._async_append(df)
 
     async def merge_dataframe(
         self,
@@ -82,7 +79,6 @@ class DeltaWriter(BaseDeltaWriter):
     async def write_records(
         self,
         records: List[Dict[str, Any]],
-        dedupe: bool = True,
     ) -> bool:
         """
         Write records (list of dicts) to Delta table.
@@ -91,7 +87,6 @@ class DeltaWriter(BaseDeltaWriter):
 
         Args:
             records: List of dictionaries to write
-            dedupe: Whether to deduplicate against existing data (default: True)
 
         Returns:
             True if write succeeded, False otherwise
@@ -100,7 +95,7 @@ class DeltaWriter(BaseDeltaWriter):
             return True
 
         df = pl.DataFrame(records)
-        return await self._async_append(df, dedupe=dedupe)
+        return await self._async_append(df)
 
     async def merge_records(
         self,

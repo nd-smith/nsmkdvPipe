@@ -2,7 +2,7 @@
 Delta Events Worker - Writes events to Delta Lake xact_events table.
 
 This worker consumes events from the events.raw topic and writes them to
-the xact_events Delta table for analytics and deduplication tracking.
+the xact_events Delta table for analytics.
 
 Separated from EventIngesterWorker to follow single-responsibility principle:
 - EventIngesterWorker: Parse events → produce download tasks
@@ -57,9 +57,9 @@ class DeltaEventsWorker:
     - Batch accumulation for efficient Delta writes
     - Configurable batch size via config.delta_events_batch_size
     - Optional batch limit for testing via config.delta_events_max_batches
-    - Deduplication by trace_id within configurable time window
     - Graceful shutdown with pending batch flush
     - Failed batches route to Kafka retry topics
+    - Deduplication handled by daily Fabric maintenance job
 
     Usage:
         >>> config = KafkaConfig.from_env()
@@ -82,7 +82,6 @@ class DeltaEventsWorker:
         producer: BaseKafkaProducer,
         events_table_path: str,
         domain: str = "xact",
-        dedupe_window_hours: int = 24,
     ):
         """
         Initialize Delta events worker.
@@ -93,7 +92,6 @@ class DeltaEventsWorker:
             producer: Kafka producer for retry topic routing (required).
             events_table_path: Full abfss:// path to xact_events Delta table
             domain: Domain identifier (default: "xact")
-            dedupe_window_hours: Hours to check for duplicate trace_ids (default: 24)
         """
         self.config = config
         self.domain = domain
@@ -129,7 +127,6 @@ class DeltaEventsWorker:
 
         self.delta_writer = DeltaEventsWriter(
             table_path=events_table_path,
-            dedupe_window_hours=dedupe_window_hours,
         )
 
         # Initialize retry handler

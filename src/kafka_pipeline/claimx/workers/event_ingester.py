@@ -49,11 +49,10 @@ class ClaimXEventIngesterWorker:
     Unlike xact pipeline (which directly downloads attachments), claimx
     requires API enrichment first to get entity data and download URLs.
 
-    Also writes events to Delta Lake claimx_events table for analytics
-    and deduplication tracking.
+    Also writes events to Delta Lake claimx_events table for analytics.
 
     Features:
-    - Event deduplication ready (event_id preservation)
+    - Event ID preservation for downstream tracking
     - All events trigger enrichment (not just file events)
     - Non-blocking Delta Lake writes for analytics
     - Graceful shutdown with background task tracking
@@ -101,7 +100,6 @@ class ClaimXEventIngesterWorker:
         if self.enable_delta_writes and events_table_path:
             self.delta_writer = ClaimXEventsDeltaWriter(
                 table_path=events_table_path,
-                dedupe_window_hours=24,
             )
         elif self.enable_delta_writes:
             logger.warning(

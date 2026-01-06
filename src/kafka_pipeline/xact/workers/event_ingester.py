@@ -55,7 +55,7 @@ class EventIngesterWorker:
     Features:
     - URL validation with domain allowlist
     - Automatic blob path generation
-    - Event deduplication ready (trace_id preservation)
+    - Trace ID preservation for downstream tracking
     - Graceful handling of events without attachments
     - Sanitized logging of validation failures
 

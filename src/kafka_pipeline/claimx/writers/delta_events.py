@@ -2,12 +2,13 @@
 Delta Lake writer for ClaimX events table.
 
 Writes ClaimX events to the claimx_events Delta table with:
-- Deduplication by event_id
 - Async/non-blocking writes
 - Schema compatibility with verisk_pipeline claimx_events table
 
 Unlike xact events, ClaimX events are not flattened - they maintain
 the simple event structure from Eventhouse/webhooks.
+
+Note: Deduplication handled by daily Fabric maintenance job.
 """
 
 from datetime import datetime, timezone
@@ -20,15 +21,15 @@ from kafka_pipeline.common.writers.base import BaseDeltaWriter
 
 class ClaimXEventsDeltaWriter(BaseDeltaWriter):
     """
-    Writer for claimx_events Delta table with deduplication and async support.
+    Writer for claimx_events Delta table with async support.
 
     ClaimX events have a simpler structure than xact events - no flattening needed.
     Events are written directly from Eventhouse rows to the Delta table.
 
     Features:
-    - Deduplication by event_id within configurable time window
     - Non-blocking writes using asyncio.to_thread
     - Schema compatibility with verisk_pipeline claimx_events table
+    - Deduplication handled by daily Fabric maintenance job
 
     Input format (raw Eventhouse rows from ClaimXEventMessage):
         - event_id: Unique event identifier
@@ -54,25 +55,20 @@ class ClaimXEventsDeltaWriter(BaseDeltaWriter):
     def __init__(
         self,
         table_path: str,
-        dedupe_window_hours: int = 24,
     ):
         """
         Initialize ClaimX events writer.
 
         Args:
             table_path: Full abfss:// path to claimx_events Delta table
-            dedupe_window_hours: Hours to check for duplicate event_ids (default: 24)
         """
-        # Initialize base class with deduplication on event_id
+        # Initialize base class
         super().__init__(
             table_path=table_path,
-            dedupe_column="event_id",
-            dedupe_window_hours=dedupe_window_hours,
             timestamp_column="ingested_at",
             partition_column="event_date",
+            z_order_columns=["event_date", "event_id", "event_type"],
         )
-
-        self.dedupe_window_hours = dedupe_window_hours
 
     async def write_events(self, events: List[Dict[str, Any]]) -> bool:
         """
@@ -112,7 +108,7 @@ class ClaimXEventsDeltaWriter(BaseDeltaWriter):
             )
 
             # Use base class async append method
-            success = await self._async_append(df, dedupe=True)
+            success = await self._async_append(df)
 
             if success:
                 self.logger.info(

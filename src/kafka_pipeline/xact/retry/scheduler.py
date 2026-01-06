@@ -57,7 +57,6 @@ class DeltaBatchRetryScheduler:
         config: KafkaConfig,
         producer: BaseKafkaProducer,
         table_path: str,
-        dedupe_window_hours: int = 24,
     ):
         """
         Initialize Delta batch retry scheduler.
@@ -66,7 +65,6 @@ class DeltaBatchRetryScheduler:
             config: Kafka configuration
             producer: Kafka producer for DLQ messages
             table_path: Delta table path for writes
-            dedupe_window_hours: Deduplication window for Delta writes
         """
         self.config = config
         self.producer = producer
@@ -87,7 +85,6 @@ class DeltaBatchRetryScheduler:
         # Initialize Delta writer for retries
         self.delta_writer = DeltaEventsWriter(
             table_path=table_path,
-            dedupe_window_hours=dedupe_window_hours,
         )
 
         self._consumer: Optional[BaseKafkaConsumer] = None

@@ -3,11 +3,12 @@ Delta Lake writer for event analytics table.
 
 Writes events to the xact_events Delta table with:
 - Flattening of nested JSON structures using xact transform module
-- Deduplication by trace_id
 - Async/non-blocking writes
 - Schema compatibility with legacy xact_events table
 
 Uses flatten_events() from kafka_pipeline.xact.writers.transform.
+
+Note: Deduplication handled by daily Fabric maintenance job.
 """
 
 from datetime import datetime, timezone
@@ -21,16 +22,16 @@ from kafka_pipeline.xact.writers.transform import flatten_events
 
 class DeltaEventsWriter(BaseDeltaWriter):
     """
-    Writer for xact_events Delta table with deduplication and async support.
+    Writer for xact_events Delta table with async support.
 
     Uses flatten_events() from kafka_pipeline.xact.writers.transform to transform
     raw Eventhouse rows into the correct xact_events schema with all 28 columns.
 
     Features:
     - Flattening of nested JSON using xact transform module
-    - Deduplication by trace_id within configurable time window
     - Non-blocking writes using asyncio.to_thread
     - Schema compatibility with legacy xact_events table
+    - Deduplication handled by daily Fabric maintenance job
 
     Input format (raw Eventhouse rows):
         - type: Full event type string (e.g., "verisk.claims.property.xn.documentsReceived")
@@ -54,28 +55,20 @@ class DeltaEventsWriter(BaseDeltaWriter):
     def __init__(
         self,
         table_path: str,
-        dedupe_window_hours: int = 24,
     ):
         """
         Initialize Delta events writer.
 
         Args:
             table_path: Full abfss:// path to xact_events Delta table
-            dedupe_window_hours: Hours to check for duplicate trace_ids (default: 24)
         """
-        # Initialize base class with deduplication on trace_id
-        # Uses ingested_at for dedup window - works for real-time operations where
-        # ingested_at ≈ created_at. For backfills of old events, dedup may not work
-        # optimally but the table will still be correct (duplicates handled by trace_id uniqueness)
+        # Initialize base class
         super().__init__(
             table_path=table_path,
-            dedupe_column="trace_id",
-            dedupe_window_hours=dedupe_window_hours,
             timestamp_column="created_at",
             partition_column="event_date",
+            z_order_columns=["event_date", "trace_id", "type"],
         )
-
-        self.dedupe_window_hours = dedupe_window_hours
 
     async def write_raw_events(
         self,
@@ -119,7 +112,7 @@ class DeltaEventsWriter(BaseDeltaWriter):
             flattened_df = await asyncio.to_thread(_sync_transform)
 
             # Use base class async append method
-            success = await self._async_append(flattened_df, dedupe=True, batch_id=batch_id)
+            success = await self._async_append(flattened_df, batch_id=batch_id)
 
             if success:
                 self.logger.info(
