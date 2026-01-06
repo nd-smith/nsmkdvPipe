@@ -1295,9 +1295,16 @@ class KQLEventPoller:
 
         events_processed = 0
         events_for_delta = []
+        events_skipped = 0
 
         for row in rows:
             try:
+                # Skip known typo event types (duplicates of correctly-typed events)
+                event_type = row.get("type", "")
+                if "qaAproved" in event_type:  # Typo: missing 'p' in Approved
+                    events_skipped += 1
+                    continue
+
                 # Convert row to EventMessage
                 event = self._row_to_event(row)
 
@@ -1335,6 +1342,12 @@ class KQLEventPoller:
                     self._duplicate_count += 1
                 else:
                     self._seen_trace_ids.add(event_id)
+
+        if events_skipped > 0:
+            logger.info(
+                "Skipped events with known typo types",
+                extra={"skipped_count": events_skipped, "processed_count": events_processed},
+            )
 
         return events_processed
 
