@@ -137,9 +137,10 @@ class BaseKafkaProducer:
 
         # Apply worker-specific producer settings (merged defaults + overrides)
         # These come from config.get_worker_config(domain, worker_name, "producer")
+        # Note: aiokafka doesn't have a 'retries' parameter like kafka-python
+        # It handles retries internally based on retry_backoff_ms and request_timeout_ms
         kafka_producer_config.update({
             "acks": self.producer_config.get("acks", "all"),
-            "retries": self.producer_config.get("retries", 3),
             "retry_backoff_ms": self.producer_config.get("retry_backoff_ms", 1000),
         })
 

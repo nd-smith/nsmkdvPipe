@@ -9,6 +9,7 @@ Writes download results to the xact_attachments Delta table with:
 This is an inventory table - it tracks where files are stored in OneLake.
 """
 
+import asyncio
 import time
 from datetime import datetime, timezone
 from typing import List
@@ -102,8 +103,10 @@ class DeltaInventoryWriter(BaseDeltaWriter):
         start_time = time.monotonic()
 
         try:
-            # Convert results to DataFrame
-            df = self._results_to_dataframe(results)
+            # Run synchronous DataFrame conversion in thread to avoid blocking event loop.
+            # This is critical: blocking the event loop would prevent Kafka heartbeats,
+            # causing consumer group rebalancing.
+            df = await asyncio.to_thread(self._results_to_dataframe, results)
 
             # Use base class async append method
             success = await self._async_append(df)
@@ -250,8 +253,10 @@ class DeltaFailedAttachmentsWriter(BaseDeltaWriter):
         start_time = time.monotonic()
 
         try:
-            # Convert results to DataFrame
-            df = self._results_to_dataframe(results)
+            # Run synchronous DataFrame conversion in thread to avoid blocking event loop.
+            # This is critical: blocking the event loop would prevent Kafka heartbeats,
+            # causing consumer group rebalancing.
+            df = await asyncio.to_thread(self._results_to_dataframe, results)
 
             # Use base class async merge method
             # Merge on (trace_id, attachment_url) for idempotency

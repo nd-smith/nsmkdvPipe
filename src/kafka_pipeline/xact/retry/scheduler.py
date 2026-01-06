@@ -71,6 +71,8 @@ class DeltaBatchRetryScheduler:
         self.config = config
         self.producer = producer
         self.table_path = table_path
+        self.domain = "xact"
+        self.worker_name = "delta_retry_scheduler"
 
         # Initialize retry handler for routing failures
         self.retry_handler = DeltaRetryHandler(
@@ -129,12 +131,11 @@ class DeltaBatchRetryScheduler:
         )
 
         # Create consumer for all retry topics
-        consumer_group = f"{self.config.consumer_group_prefix}-delta-retry-scheduler"
-
         self._consumer = BaseKafkaConsumer(
             config=self.config,
+            domain=self.domain,
+            worker_name=self.worker_name,
             topics=self.retry_topics,
-            group_id=consumer_group,
             message_handler=self._handle_retry_message,
         )
 

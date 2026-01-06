@@ -97,9 +97,14 @@ class DeltaEventsWorker:
         self.producer = producer
 
         # Batch configuration - use worker-specific config
-        processing_config = config.get_worker_config(domain, "delta_events_worker", "processing")
+        processing_config = config.get_worker_config(domain, "delta_events_writer", "processing")
         self.batch_size = processing_config.get("batch_size", 100)
         self.max_batches = processing_config.get("max_batches")  # None = unlimited
+
+        # Retry configuration from worker processing settings
+        self._retry_delays = processing_config.get("retry_delays", [300, 600, 1200, 2400])
+        self._retry_topic_prefix = processing_config.get("retry_topic_prefix", "delta-events.retry")
+        self._dlq_topic = processing_config.get("dlq_topic", "delta-events.dlq")
 
         # Batch state
         self._batch: List[Dict[str, Any]] = []
@@ -120,22 +125,25 @@ class DeltaEventsWorker:
             config=config,
             producer=producer,
             table_path=events_table_path,
-            retry_delays=config.retry_delays,
-            retry_topic_prefix=config.delta_events_retry_topic_prefix,
-            dlq_topic=config.delta_events_dlq_topic,
+            retry_delays=self._retry_delays,
+            retry_topic_prefix=self._retry_topic_prefix,
+            dlq_topic=self._dlq_topic,
         )
 
         logger.info(
             "Initialized DeltaEventsWorker",
             extra={
                 "domain": domain,
-                "worker_name": "delta_events_worker",
-                "consumer_group": config.get_consumer_group(domain, "delta_events_worker"),
+                "worker_name": "delta_events_writer",
+                "consumer_group": config.get_consumer_group(domain, "delta_events_writer"),
                 "events_topic": config.get_topic(domain, "events"),
                 "events_table_path": events_table_path,
                 "dedupe_window_hours": dedupe_window_hours,
                 "batch_size": self.batch_size,
                 "max_batches": self.max_batches,
+                "retry_delays": self._retry_delays,
+                "retry_topic_prefix": self._retry_topic_prefix,
+                "dlq_topic": self._dlq_topic,
             },
         )
 
@@ -163,7 +171,7 @@ class DeltaEventsWorker:
         self.consumer = BaseKafkaConsumer(
             config=self.config,
             domain=self.domain,
-            worker_name="delta_events_worker",
+            worker_name="delta_events_writer",
             topics=[self.config.get_topic(self.domain, "events")],
             message_handler=self._handle_event_message,
             enable_message_commit=False,

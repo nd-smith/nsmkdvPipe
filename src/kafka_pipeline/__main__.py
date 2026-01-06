@@ -352,7 +352,7 @@ async def run_delta_events_worker(kafka_config, events_table_path: str):
     producer = BaseKafkaProducer(
         config=kafka_config,
         domain="xact",
-        worker_name="delta_events_worker",
+        worker_name="delta_events_writer",
     )
     await producer.start()
 
@@ -406,7 +406,11 @@ async def run_delta_retry_scheduler(kafka_config, events_table_path: str):
     logger.info("Starting xact Delta Retry Scheduler...")
 
     # Create producer for DLQ routing
-    producer = BaseKafkaProducer(config=kafka_config)
+    producer = BaseKafkaProducer(
+        config=kafka_config,
+        domain="xact",
+        worker_name="delta_retry_scheduler",
+    )
     await producer.start()
 
     scheduler = DeltaBatchRetryScheduler(
@@ -543,7 +547,11 @@ async def run_result_processor(kafka_config, enable_delta_writes: bool = True):
     failed_table_path = os.getenv("DELTA_FAILED_TABLE_PATH", "")
 
     # Create and start producer for retry topic routing
-    producer = BaseKafkaProducer(kafka_config)
+    producer = BaseKafkaProducer(
+        config=kafka_config,
+        domain="xact",
+        worker_name="result_processor",
+    )
     await producer.start()
 
     worker = ResultProcessor(
@@ -624,7 +632,12 @@ async def run_claimx_eventhouse_poller(pipeline_config):
     # Create a modified kafka config with claimx events topic
     local_kafka_config = pipeline_config.local_kafka.to_kafka_config()
     claimx_kafka_config = local_kafka_config
-    claimx_kafka_config.events_topic = claimx_eventhouse.events_topic
+    # Update the claimx domain's events topic from eventhouse config
+    if "claimx" not in claimx_kafka_config.claimx or not claimx_kafka_config.claimx:
+        claimx_kafka_config.claimx = {"topics": {}}
+    if "topics" not in claimx_kafka_config.claimx:
+        claimx_kafka_config.claimx["topics"] = {}
+    claimx_kafka_config.claimx["topics"]["events"] = claimx_eventhouse.events_topic
 
     # Build poller config with ClaimXEventMessage schema
     poller_config = PollerConfig(

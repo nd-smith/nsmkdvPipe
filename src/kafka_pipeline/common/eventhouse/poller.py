@@ -430,7 +430,11 @@ class KQLEventPoller:
         self._deduplicator = EventhouseDeduplicator(self.config.dedup)
 
         # Initialize Kafka producer
-        self._producer = BaseKafkaProducer(self.config.kafka)
+        self._producer = BaseKafkaProducer(
+            config=self.config.kafka,
+            domain=self.config.domain,
+            worker_name="eventhouse_poller",
+        )
         await self._producer.start()
 
         self._running = True
@@ -1107,7 +1111,7 @@ class KQLEventPoller:
                 event_id = event_key
 
             await self._producer.send(
-                topic=self.config.kafka.events_topic,
+                topic=self.config.kafka.get_topic(self.config.domain, "events"),
                 key=event_key,
                 value=event,
                 headers={"event_id": event_id},
