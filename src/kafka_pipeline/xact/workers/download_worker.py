@@ -155,6 +155,7 @@ class DownloadWorker:
         # Concurrency control (WP-313)
         self._semaphore: Optional[asyncio.Semaphore] = None
         self._in_flight_tasks: Set[str] = set()  # Track by trace_id
+        self._in_flight_urls: Set[str] = set()  # Track by URL hash to prevent concurrent duplicates
         self._in_flight_lock = asyncio.Lock()
         self._shutdown_event: Optional[asyncio.Event] = None
 
@@ -230,6 +231,7 @@ class DownloadWorker:
         self._semaphore = asyncio.Semaphore(self.concurrency)
         self._shutdown_event = asyncio.Event()
         self._in_flight_tasks = set()
+        self._in_flight_urls = set()
 
         # Create shared HTTP session with connection pooling
         connector = aiohttp.TCPConnector(
@@ -707,6 +709,34 @@ class DownloadWorker:
                 success=True,
             )
 
+        # Check if URL is already being processed concurrently (prevents duplicate downloads in same batch)
+        url_hash = self._hash_url(task_message.attachment_url)
+        async with self._in_flight_lock:
+            if url_hash in self._in_flight_urls:
+                logger.info(
+                    "Skipping concurrent duplicate download (already in-flight)",
+                    extra={
+                        "trace_id": task_message.trace_id,
+                        "attachment_url": task_message.attachment_url,
+                        "retry_count": task_message.retry_count,
+                    },
+                )
+                # Return success - the in-flight download will handle this URL
+                # If it fails, retry mechanism will pick it up from retry topic
+                return TaskResult(
+                    message=message,
+                    task_message=task_message,
+                    outcome=DownloadOutcome(
+                        success=True,
+                        error_message=None,
+                        error_category=None,
+                    ),
+                    processing_time_ms=int((time.perf_counter() - start_time) * 1000),
+                    success=True,
+                )
+            # Mark URL as in-flight before releasing lock
+            self._in_flight_urls.add(url_hash)
+
         # Track messages received for cycle output (only non-duplicates)
         self._messages_received += 1
 
@@ -784,6 +814,7 @@ class DownloadWorker:
             # Remove from in-flight tracking
             async with self._in_flight_lock:
                 self._in_flight_tasks.discard(task_message.trace_id)
+                self._in_flight_urls.discard(url_hash)
 
     async def _handle_batch_results(self, results: List[TaskResult]) -> bool:
         """
