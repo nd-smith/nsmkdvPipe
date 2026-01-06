@@ -1111,7 +1111,7 @@ class KQLEventPoller:
                 event_id = event_key
 
             await self._producer.send(
-                topic=self.config.kafka.events_topic,
+                topic=self.config.kafka.get_topic(self.config.domain, "events"),
                 key=event_key,
                 value=event,
                 headers={"event_id": event_id},
