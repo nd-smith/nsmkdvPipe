@@ -85,21 +85,21 @@ class ClaimXUploadWorker:
         await worker.stop()
     """
 
-    CONSUMER_GROUP = "claimx-upload-worker"
-    WORKER_NAME = "claimx_upload_worker"
-    DOMAIN = "claimx"
+    WORKER_NAME = "upload_worker"
 
-    def __init__(self, config: KafkaConfig):
+    def __init__(self, config: KafkaConfig, domain: str = "claimx"):
         """
         Initialize ClaimX upload worker.
 
         Args:
             config: Kafka configuration
+            domain: Domain identifier (default: "claimx")
 
         Raises:
             ValueError: If no OneLake path is configured for claimx domain
         """
         self.config = config
+        self.domain = domain
 
         # Validate OneLake configuration for claimx domain
         if not config.onelake_domain_paths and not config.onelake_base_path:
@@ -110,9 +110,14 @@ class ClaimXUploadWorker:
                 "  - ONELAKE_BASE_PATH env var (fallback for all domains)"
             )
 
-        # Topic to consume from - use environment variable or default
-        self.topic = os.getenv("KAFKA_CLAIMX_DOWNLOADS_CACHED_TOPIC", "claimx.downloads.cached")
-        self.results_topic = os.getenv("KAFKA_CLAIMX_DOWNLOADS_RESULTS_TOPIC", "claimx.downloads.results")
+        # Get worker-specific processing config
+        processing_config = config.get_worker_config(domain, self.WORKER_NAME, "processing")
+        self.concurrency = processing_config.get("concurrency", 10)
+        self.batch_size = processing_config.get("batch_size", 20)
+
+        # Topic to consume from
+        self.topic = config.get_topic(domain, "downloads_cached")
+        self.results_topic = config.get_topic(domain, "downloads_results")
 
         # Consumer will be created in start()
         self._consumer: Optional[AIOKafkaConsumer] = None
@@ -125,13 +130,17 @@ class ClaimXUploadWorker:
         self._shutdown_event: Optional[asyncio.Event] = None
 
         # Create producer for result messages
-        self.producer = BaseKafkaProducer(config=config)
+        self.producer = BaseKafkaProducer(
+            config=config,
+            domain=domain,
+            worker_name=self.WORKER_NAME,
+        )
 
         # OneLake client (lazy initialized in start())
         self.onelake_client: Optional[OneLakeClient] = None
 
-        # Health check server
-        health_port = getattr(config, 'claimx_upload_health_port', 8083)
+        # Health check server - use worker-specific port from config
+        health_port = processing_config.get("health_port", 8083)
         self.health_server = HealthCheckServer(
             port=health_port,
             worker_name="claimx-uploader",
@@ -140,12 +149,13 @@ class ClaimXUploadWorker:
         logger.info(
             "Initialized ClaimX upload worker",
             extra={
-                "consumer_group": self.CONSUMER_GROUP,
+                "domain": domain,
+                "worker_name": self.WORKER_NAME,
+                "consumer_group": config.get_consumer_group(domain, self.WORKER_NAME),
                 "topic": self.topic,
                 "results_topic": self.results_topic,
-                "domain": self.DOMAIN,
-                "upload_concurrency": config.upload_concurrency,
-                "upload_batch_size": config.upload_batch_size,
+                "upload_concurrency": self.concurrency,
+                "upload_batch_size": self.batch_size,
             },
         )
 

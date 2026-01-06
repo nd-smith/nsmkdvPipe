@@ -105,38 +105,38 @@ class ClaimXDownloadWorker:
         await worker.stop()
     """
 
-    CONSUMER_GROUP = "claimx-download-worker"
-    WORKER_NAME = "claimx_download_worker"
+    WORKER_NAME = "download_worker"
 
-    # ClaimX-specific topic names (will be configurable in REORG-401)
-    DOWNLOADS_PENDING_TOPIC = "claimx.downloads.pending"
-    DOWNLOADS_CACHED_TOPIC = "claimx.downloads.cached"
-    DLQ_TOPIC = "claimx.downloads.dlq"
-
-    def __init__(self, config: KafkaConfig, temp_dir: Optional[Path] = None):
+    def __init__(self, config: KafkaConfig, domain: str = "claimx", temp_dir: Optional[Path] = None):
         """
         Initialize ClaimX download worker.
 
         Args:
             config: Kafka configuration
+            domain: Domain identifier (default: "claimx")
             temp_dir: Optional directory for temporary downloads (None = system temp)
         """
         self.config = config
+        self.domain = domain
 
         # Temp dir for in-progress downloads
         self.temp_dir = temp_dir or Path(tempfile.gettempdir()) / "claimx_download_worker"
         self.temp_dir.mkdir(parents=True, exist_ok=True)
 
         # Cache dir for completed downloads awaiting upload
-        self.cache_dir = Path(config.cache_dir) / "claimx"
+        self.cache_dir = Path(config.cache_dir) / domain
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
+        # Get worker-specific processing config
+        processing_config = config.get_worker_config(domain, self.WORKER_NAME, "processing")
+        self.concurrency = processing_config.get("concurrency", 10)
+        self.batch_size = processing_config.get("batch_size", 20)
+
         # Build list of topics to consume from (pending + retry topics)
-        # Note: ClaimX will use same retry topic structure as xact
         retry_topics = [
-            self._get_retry_topic(i) for i in range(len(config.retry_delays))
+            config.get_retry_topic(domain, i) for i in range(len(config.retry_delays))
         ]
-        self.topics = [self.DOWNLOADS_PENDING_TOPIC] + retry_topics
+        self.topics = [config.get_topic(domain, "downloads_pending")] + retry_topics
 
         # Consumer will be created in start()
         self._consumer: Optional[AIOKafkaConsumer] = None
@@ -152,7 +152,11 @@ class ClaimXDownloadWorker:
         self._http_session: Optional[aiohttp.ClientSession] = None
 
         # Create producer for cached messages
-        self.producer = BaseKafkaProducer(config=config)
+        self.producer = BaseKafkaProducer(
+            config=config,
+            domain=domain,
+            worker_name=self.WORKER_NAME,
+        )
 
         # Create downloader instance (reused across tasks)
         self.downloader = AttachmentDownloader()
@@ -163,8 +167,8 @@ class ClaimXDownloadWorker:
         # Create retry handler for error routing (lazy initialized in start())
         self.retry_handler: Optional[DownloadRetryHandler] = None
 
-        # Health check server
-        health_port = getattr(config, 'claimx_download_health_port', 8082)
+        # Health check server - use worker-specific port from config
+        health_port = processing_config.get("health_port", 8082)
         self.health_server = HealthCheckServer(
             port=health_port,
             worker_name="claimx-downloader",
@@ -173,27 +177,16 @@ class ClaimXDownloadWorker:
         logger.info(
             "Initialized ClaimX download worker with concurrent processing",
             extra={
-                "consumer_group": self.CONSUMER_GROUP,
+                "domain": domain,
+                "worker_name": self.WORKER_NAME,
+                "consumer_group": config.get_consumer_group(domain, self.WORKER_NAME),
                 "topics": self.topics,
                 "temp_dir": str(self.temp_dir),
                 "cache_dir": str(self.cache_dir),
-                "download_concurrency": config.download_concurrency,
-                "download_batch_size": config.download_batch_size,
+                "download_concurrency": self.concurrency,
+                "download_batch_size": self.batch_size,
             },
         )
-
-    def _get_retry_topic(self, retry_level: int) -> str:
-        """
-        Get retry topic name for a specific retry level.
-
-        Args:
-            retry_level: Retry level (0-based index into retry_delays)
-
-        Returns:
-            Topic name (e.g., "claimx.downloads.retry.300s")
-        """
-        delay_seconds = self.config.retry_delays[retry_level]
-        return f"claimx.downloads.retry.{delay_seconds}s"
 
     async def start(self) -> None:
         """
@@ -213,8 +206,8 @@ class ClaimXDownloadWorker:
         logger.info(
             "Starting ClaimX download worker with concurrent processing",
             extra={
-                "download_concurrency": self.config.download_concurrency,
-                "download_batch_size": self.config.download_batch_size,
+                "download_concurrency": self.concurrency,
+                "download_batch_size": self.batch_size,
             },
         )
 
@@ -222,14 +215,14 @@ class ClaimXDownloadWorker:
         await self.health_server.start()
 
         # Initialize concurrency control
-        self._semaphore = asyncio.Semaphore(self.config.download_concurrency)
+        self._semaphore = asyncio.Semaphore(self.concurrency)
         self._shutdown_event = asyncio.Event()
         self._in_flight_tasks = set()
 
         # Create shared HTTP session with connection pooling
         connector = aiohttp.TCPConnector(
-            limit=self.config.download_concurrency,
-            limit_per_host=self.config.download_concurrency,
+            limit=self.concurrency,
+            limit_per_host=self.concurrency,
         )
         self._http_session = aiohttp.ClientSession(connector=connector)
 
@@ -276,8 +269,9 @@ class ClaimXDownloadWorker:
 
         # Update connection status
         update_connection_status("consumer", connected=True)
+        consumer_group = self.config.get_consumer_group(self.domain, self.WORKER_NAME)
         partition_count = len(self._consumer.assignment()) if self._consumer else 0
-        update_assigned_partitions(self.CONSUMER_GROUP, partition_count)
+        update_assigned_partitions(consumer_group, partition_count)
 
         logger.info(
             "ClaimX download worker started successfully",
@@ -305,19 +299,30 @@ class ClaimXDownloadWorker:
 
     async def _create_consumer(self) -> None:
         """Create and start the Kafka consumer."""
+        # Get worker-specific consumer config (merged with defaults)
+        consumer_config_dict = self.config.get_worker_config(self.domain, self.WORKER_NAME, "consumer")
+        
         consumer_config = {
             "bootstrap_servers": self.config.bootstrap_servers,
-            "group_id": self.CONSUMER_GROUP,
+            "group_id": self.config.get_consumer_group(self.domain, self.WORKER_NAME),
             "enable_auto_commit": False,  # Manual commit after batch processing
-            "auto_offset_reset": self.config.auto_offset_reset,
-            "max_poll_records": self.config.download_batch_size,
-            "max_poll_interval_ms": self.config.max_poll_interval_ms,
-            "session_timeout_ms": self.config.session_timeout_ms,
+            "auto_offset_reset": consumer_config_dict.get("auto_offset_reset", "earliest"),
+            "max_poll_records": self.batch_size,
+            "max_poll_interval_ms": consumer_config_dict.get("max_poll_interval_ms", 300000),
+            "session_timeout_ms": consumer_config_dict.get("session_timeout_ms", 60000),
             # Connection timeout settings
             "request_timeout_ms": self.config.request_timeout_ms,
             "metadata_max_age_ms": self.config.metadata_max_age_ms,
             "connections_max_idle_ms": self.config.connections_max_idle_ms,
         }
+
+        # Add optional consumer settings if present in worker config
+        if "heartbeat_interval_ms" in consumer_config_dict:
+            consumer_config["heartbeat_interval_ms"] = consumer_config_dict["heartbeat_interval_ms"]
+        if "fetch_min_bytes" in consumer_config_dict:
+            consumer_config["fetch_min_bytes"] = consumer_config_dict["fetch_min_bytes"]
+        if "fetch_max_wait_ms" in consumer_config_dict:
+            consumer_config["fetch_max_wait_ms"] = consumer_config_dict["fetch_max_wait_ms"]
 
         # Configure security based on protocol
         if self.config.security_protocol != "PLAINTEXT":
@@ -416,8 +421,9 @@ class ClaimXDownloadWorker:
         await self.health_server.stop()
 
         # Update metrics
+        consumer_group = self.config.get_consumer_group(self.domain, self.WORKER_NAME)
         update_connection_status("consumer", connected=False)
-        update_assigned_partitions(self.CONSUMER_GROUP, 0)
+        update_assigned_partitions(consumer_group, 0)
         update_downloads_concurrent(self.WORKER_NAME, 0)
         update_downloads_batch_size(self.WORKER_NAME, 0)
 
@@ -469,7 +475,7 @@ class ClaimXDownloadWorker:
                 # Fetch batch of messages
                 data = await self._consumer.getmany(
                     timeout_ms=1000,
-                    max_records=self.config.download_batch_size,
+                    max_records=self.batch_size,
                 )
 
                 if not data:
@@ -490,7 +496,7 @@ class ClaimXDownloadWorker:
                     "Processing message batch",
                     extra={
                         "batch_size": len(messages),
-                        "download_concurrency": self.config.download_concurrency,
+                        "download_concurrency": self.concurrency,
                     },
                 )
 
@@ -654,16 +660,17 @@ class ClaimXDownloadWorker:
             processing_time_ms = int((time.perf_counter() - start_time) * 1000)
 
             # Record processing duration metric
+            consumer_group = self.config.get_consumer_group(self.domain, self.WORKER_NAME)
             duration = time.perf_counter() - start_time
             message_processing_duration_seconds.labels(
-                topic=message.topic, consumer_group=self.CONSUMER_GROUP
+                topic=message.topic, consumer_group=consumer_group
             ).observe(duration)
 
             # Handle outcome: cache and produce cached message
             if outcome.success:
                 await self._handle_success(task_message, outcome, processing_time_ms)
                 record_message_consumed(
-                    message.topic, self.CONSUMER_GROUP, len(message.value), success=True
+                    message.topic, consumer_group, len(message.value), success=True
                 )
                 return TaskResult(
                     message=message,
@@ -675,7 +682,7 @@ class ClaimXDownloadWorker:
             else:
                 await self._handle_failure(task_message, outcome, processing_time_ms)
                 record_message_consumed(
-                    message.topic, self.CONSUMER_GROUP, len(message.value), success=False
+                    message.topic, consumer_group, len(message.value), success=False
                 )
                 # Check if this is a circuit breaker error that should prevent commit
                 is_circuit_error = outcome.error_category == ErrorCategory.CIRCUIT_OPEN
@@ -826,8 +833,9 @@ class ClaimXDownloadWorker:
             downloaded_at=datetime.now(timezone.utc),
         )
 
+        cached_topic = self.config.get_topic(self.domain, "downloads_cached")
         await self.producer.send(
-            topic=self.DOWNLOADS_CACHED_TOPIC,
+            topic=cached_topic,
             key=task_message.media_id,
             value=cached_message,
         )
@@ -836,7 +844,7 @@ class ClaimXDownloadWorker:
             "Produced ClaimX cached download message",
             extra={
                 "media_id": task_message.media_id,
-                "topic": self.DOWNLOADS_CACHED_TOPIC,
+                "topic": cached_topic,
                 "cache_path": str(cache_path),
             },
         )
@@ -882,9 +890,11 @@ class ClaimXDownloadWorker:
         )
 
         # Record error metric
+        pending_topic = self.config.get_topic(self.domain, "downloads_pending")
+        consumer_group = self.config.get_consumer_group(self.domain, self.WORKER_NAME)
         record_processing_error(
-            self.DOWNLOADS_PENDING_TOPIC,
-            self.CONSUMER_GROUP,
+            pending_topic,
+            consumer_group,
             error_category.value,
         )
 
