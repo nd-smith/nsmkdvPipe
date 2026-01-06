@@ -377,8 +377,48 @@ class ClaimXUploadWorker:
 
         consumer_group = self.config.get_consumer_group(self.domain, self.WORKER_NAME)
 
+        # Track partition assignment status for logging
+        _logged_waiting_for_assignment = False
+        _logged_assignment_received = False
+
         while self._running:
             try:
+                # Check partition assignment before fetching
+                # During consumer group rebalances, getmany() can block indefinitely
+                # waiting for partition assignment (ignoring timeout_ms).
+                # This check ensures we don't hang during startup with multiple consumers.
+                assignment = self._consumer.assignment()
+                if not assignment:
+                    if not _logged_waiting_for_assignment:
+                        logger.info(
+                            "Waiting for partition assignment (consumer group rebalance in progress)",
+                            extra={
+                                "consumer_group": consumer_group,
+                                "topic": self.topic,
+                            },
+                        )
+                        _logged_waiting_for_assignment = True
+                    # Sleep briefly and retry - don't call getmany() during rebalance
+                    await asyncio.sleep(0.5)
+                    continue
+
+                # Log when we first receive partition assignment
+                if not _logged_assignment_received:
+                    partition_info = [
+                        f"{tp.topic}:{tp.partition}" for tp in assignment
+                    ]
+                    logger.info(
+                        "Partition assignment received, starting message consumption",
+                        extra={
+                            "consumer_group": consumer_group,
+                            "partition_count": len(assignment),
+                            "partitions": partition_info,
+                        },
+                    )
+                    _logged_assignment_received = True
+                    # Update partition assignment metric
+                    update_assigned_partitions(consumer_group, len(assignment))
+
                 # Fetch batch of messages
                 batch: Dict[str, List[ConsumerRecord]] = await self._consumer.getmany(
                     timeout_ms=1000,
