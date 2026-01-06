@@ -129,6 +129,7 @@ class LocalKafkaConfig:
     # Topics for internal pipeline
     events_topic: str = "xact.events.raw"  # Raw events from source
     downloads_pending_topic: str = "xact.downloads.pending"
+    downloads_cached_topic: str = "xact.downloads.cached"
     downloads_results_topic: str = "xact.downloads.results"
     dlq_topic: str = "xact.downloads.dlq"
 
@@ -209,6 +210,10 @@ class LocalKafkaConfig:
                 "KAFKA_DOWNLOADS_PENDING_TOPIC",
                 kafka_data.get("downloads_pending_topic", "xact.downloads.pending")
             ),
+            downloads_cached_topic=os.getenv(
+                "KAFKA_DOWNLOADS_CACHED_TOPIC",
+                kafka_data.get("downloads_cached_topic", "xact.downloads.cached")
+            ),
             downloads_results_topic=os.getenv(
                 "KAFKA_DOWNLOADS_RESULTS_TOPIC",
                 kafka_data.get("downloads_results_topic", "xact.downloads.results")
@@ -252,6 +257,7 @@ class LocalKafkaConfig:
             "topics": {
                 "events": self.events_topic,
                 "downloads_pending": self.downloads_pending_topic,
+                "downloads_cached": self.downloads_cached_topic,
                 "downloads_results": self.downloads_results_topic,
                 "dlq": self.dlq_topic,
             },
