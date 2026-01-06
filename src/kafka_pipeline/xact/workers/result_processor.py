@@ -311,7 +311,7 @@ class ResultProcessor:
             raise
 
         # Route by status
-        if result.status == "success":
+        if result.status == "completed":
             # Add to success batch
             self._messages_success += 1
             async with self._batch_lock:

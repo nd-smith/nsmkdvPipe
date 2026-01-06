@@ -205,9 +205,9 @@ class TestUploadWorkerProcessing:
 
         result_msg = call_args.kwargs["value"]
         assert isinstance(result_msg, DownloadResultMessage)
-        assert result_msg.status == "success"
+        assert result_msg.status == "completed"
         assert result_msg.trace_id == "evt-123"
-        assert result_msg.destination_path == "claims/C-456/document.pdf"
+        assert result_msg.blob_path == "claims/C-456/document.pdf"
         assert result_msg.bytes_downloaded == 2048
 
         # Verify cache file was cleaned up
@@ -566,7 +566,7 @@ class TestUploadWorkerConcurrency:
         calls = worker.producer.send.call_args_list
         success_count = sum(
             1 for c in calls
-            if c.kwargs["value"].status == "success"
+            if c.kwargs["value"].status == "completed"
         )
         failure_count = sum(
             1 for c in calls

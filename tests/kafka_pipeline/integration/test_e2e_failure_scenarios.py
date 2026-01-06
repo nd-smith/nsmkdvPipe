@@ -812,7 +812,7 @@ async def test_large_file_streaming_memory_bounds(
             from kafka_pipeline.xact.schemas.results import DownloadResultMessage
             result = DownloadResultMessage.model_validate_json(result_messages[0]["value"])
             assert result.trace_id == test_event.trace_id
-            assert result.status == "success"
+            assert result.status == "completed"
             assert result.bytes_downloaded == large_file_size
 
         finally:

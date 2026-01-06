@@ -317,7 +317,7 @@ async def test_scheduler_redelivers_after_delay(
                 DownloadResultMessage.model_validate_json(msg["value"])
                 for msg in result_messages
                 if DownloadResultMessage.model_validate_json(msg["value"]).trace_id == test_task.trace_id
-                and DownloadResultMessage.model_validate_json(msg["value"]).status == "success"
+                and DownloadResultMessage.model_validate_json(msg["value"]).status == "completed"
             ]
 
             assert len(success_results) > 0, "No success result message found"
@@ -700,7 +700,7 @@ async def test_multiple_retries_then_success(
                     DownloadResultMessage.model_validate_json(msg["value"])
                     for msg in result_messages
                     if DownloadResultMessage.model_validate_json(msg["value"]).trace_id == test_task.trace_id
-                    and DownloadResultMessage.model_validate_json(msg["value"]).status == "success"
+                    and DownloadResultMessage.model_validate_json(msg["value"]).status == "completed"
                 ]
 
                 assert len(success_results) > 0, "No success result message found"
