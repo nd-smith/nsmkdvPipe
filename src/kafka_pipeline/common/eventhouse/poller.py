@@ -1119,12 +1119,13 @@ class KQLEventPoller:
                 # Subsequent poll - from last poll time with 5-minute overlap
                 poll_from = self._last_poll_time - timedelta(minutes=5)
 
-        # Build simple KQL query (no deduplication at polling level)
+        # Build KQL query with checkpoint filtering (skips already-processed rows in KQL)
         query = self._build_query(
             base_table=self.config.source_table,
             poll_from=poll_from,
             poll_to=poll_to,
             limit=self.config.batch_size,
+            checkpoint=self._checkpoint,
         )
 
         # Execute query
@@ -1132,11 +1133,8 @@ class KQLEventPoller:
         result = await self._kql_client.execute_query(query)
         query_duration_ms = (time.perf_counter() - query_start) * 1000
 
-        # Filter rows to skip those at/before checkpoint (deterministic resume)
-        rows_to_process = self._filter_checkpoint_rows(result.rows) if result.rows else []
-
-        # Process results (only rows after checkpoint)
-        events_count = await self._process_filtered_results(rows_to_process)
+        # Process results (checkpoint filtering already done in KQL)
+        events_count = await self._process_filtered_results(result.rows if result.rows else [])
 
         # Save checkpoint after successful processing (use last row from original result)
         if result.rows:
@@ -1208,6 +1206,10 @@ class KQLEventPoller:
     def _filter_checkpoint_rows(self, rows: list[dict]) -> list[dict]:
         """
         Filter rows to skip those at/before the checkpoint.
+
+        DEPRECATED: Checkpoint filtering is now done in KQL via _build_query().
+        This method is kept for backwards compatibility but is no longer called
+        in the main polling path.
 
         Uses deterministic ordering (ingestion_time asc, traceId asc) to determine
         which rows to skip. A row is skipped if:
@@ -1404,34 +1406,52 @@ class KQLEventPoller:
         poll_from: datetime,
         poll_to: datetime,
         limit: int = 1000,
+        checkpoint: Optional[PollerCheckpoint] = None,
     ) -> str:
         """
-        Build KQL query with time filter and deterministic ordering.
+        Build KQL query with time filter, checkpoint filtering, and deterministic ordering.
 
         Uses deterministic ordering (ingestion_time asc, traceId asc) to enable
         exact resume from checkpoint without duplicates or gaps.
+
+        When a checkpoint is provided, filters directly in KQL to skip rows
+        at or before the checkpoint (more efficient than fetching then filtering in Python).
 
         Args:
             base_table: Source table name in Eventhouse
             poll_from: Start of time window
             poll_to: End of time window
             limit: Max rows to return (default: 1000)
+            checkpoint: Optional checkpoint for filtering already-processed rows
 
         Returns:
             Complete KQL query string
         """
-        # Format datetime for KQL
-        from_str = poll_from.strftime("%Y-%m-%dT%H:%M:%SZ")
-        to_str = poll_to.strftime("%Y-%m-%dT%H:%M:%SZ")
+        # Format datetime for KQL (with microseconds for precise checkpoint resume)
+        from_str = poll_from.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        to_str = poll_to.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
         # Get trace_id column name - Eventhouse uses camelCase 'traceId'
         trace_id_column = "traceId"
 
+        # Build where clause with optional checkpoint filtering
+        if checkpoint:
+            # Filter in KQL: skip rows at or before checkpoint
+            # (ingestion_time > checkpoint_time) OR
+            # (ingestion_time == checkpoint_time AND traceId > checkpoint_trace_id)
+            checkpoint_time_str = checkpoint.to_datetime().strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+            escaped_trace_id = checkpoint.last_trace_id.replace("'", "\\'")
+            where_clause = f"""| where ingestion_time() > datetime({checkpoint_time_str})
+    or (ingestion_time() == datetime({checkpoint_time_str}) and {trace_id_column} > '{escaped_trace_id}')
+| where ingestion_time() < datetime({to_str})"""
+        else:
+            where_clause = f"""| where ingestion_time() >= datetime({from_str})
+| where ingestion_time() < datetime({to_str})"""
+
         # Deterministic ordering enables exact checkpoint resume
         query = f"""
 {base_table}
-| where ingestion_time() >= datetime({from_str})
-| where ingestion_time() < datetime({to_str})
+{where_clause}
 | extend ingestion_time = ingestion_time()
 | order by ingestion_time asc, {trace_id_column} asc
 | take {limit}
@@ -1444,6 +1464,7 @@ class KQLEventPoller:
                 "poll_from": from_str,
                 "poll_to": to_str,
                 "limit": limit,
+                "has_checkpoint": checkpoint is not None,
             },
         )
 
