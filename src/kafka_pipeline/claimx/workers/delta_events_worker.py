@@ -1,24 +1,25 @@
 """
-Delta Events Worker - Writes events to Delta Lake xact_events table.
+ClaimX Delta Events Worker - Writes events to Delta Lake claimx_events table.
 
-This worker consumes events from the events.raw topic and writes them to
-the xact_events Delta table for analytics.
+This worker consumes events from the claimx events.raw topic and writes them to
+the claimx_events Delta table for analytics.
 
-Separated from EventIngesterWorker to follow single-responsibility principle:
-- EventIngesterWorker: Parse events → produce download tasks
-- DeltaEventsWorker: Parse events → write to Delta Lake
+Separated from ClaimXEventIngesterWorker to follow single-responsibility principle:
+- ClaimXEventIngesterWorker: Parse events -> produce enrichment tasks
+- ClaimXDeltaEventsWorker: Parse events -> write to Delta Lake
 
 Features:
 - Batch accumulation for efficient Delta writes
 - Configurable batch size via delta_events_batch_size
+- Configurable flush timeout to ensure pending events are written
 - Optional batch limit for testing via delta_events_max_batches
 - Retry via Kafka topics with exponential backoff
 
 Consumer group: {prefix}-delta-events
-Input topic: events.raw
-Output: Delta table xact_events (no Kafka output)
-Retry topics: delta-events.retry.{delay}m
-DLQ topic: delta-events.dlq
+Input topic: claimx.events.raw
+Output: Delta table claimx_events (no Kafka output)
+Retry topics: claimx-delta-events.retry.{delay}m
+DLQ topic: claimx-delta-events.dlq
 """
 
 import asyncio
@@ -28,34 +29,36 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from aiokafka.structs import ConsumerRecord
+from pydantic import ValidationError
 
 from core.logging.setup import get_logger
 from kafka_pipeline.config import KafkaConfig
 from kafka_pipeline.common.consumer import BaseKafkaConsumer
 from kafka_pipeline.common.producer import BaseKafkaProducer
 from kafka_pipeline.common.metrics import record_delta_write
-from kafka_pipeline.xact.retry.handler import DeltaRetryHandler
-from kafka_pipeline.xact.writers import DeltaEventsWriter
+from kafka_pipeline.claimx.schemas.events import ClaimXEventMessage
+from kafka_pipeline.claimx.writers import ClaimXEventsDeltaWriter
 
 logger = get_logger(__name__)
 
 
-class DeltaEventsWorker:
+class ClaimXDeltaEventsWorker:
     """
-    Worker to consume events and write them to Delta Lake in batches.
+    Worker to consume ClaimX events and write them to Delta Lake in batches.
 
-    Processes EventMessage records from the events.raw topic and writes
-    them to the xact_events Delta table using the flatten_events() transform.
+    Processes ClaimXEventMessage records from the claimx events.raw topic and writes
+    them to the claimx_events Delta table using the ClaimXEventsDeltaWriter.
 
-    This worker runs independently of the EventIngesterWorker, consuming
+    This worker runs independently of the ClaimXEventIngesterWorker, consuming
     from the same topic but with a different consumer group. This allows:
-    - Independent scaling of Delta writes vs download task creation
+    - Independent scaling of Delta writes vs enrichment task creation
     - Fault isolation between Delta writes and Kafka pipeline
     - Batching optimization for Delta writes
 
     Features:
     - Batch accumulation for efficient Delta writes
     - Configurable batch size via config.delta_events_batch_size
+    - Configurable flush timeout for low-traffic periods
     - Optional batch limit for testing via config.delta_events_max_batches
     - Graceful shutdown with pending batch flush
     - Failed batches route to Kafka retry topics
@@ -65,7 +68,7 @@ class DeltaEventsWorker:
         >>> config = KafkaConfig.from_env()
         >>> producer = BaseKafkaProducer(config)
         >>> await producer.start()
-        >>> worker = DeltaEventsWorker(
+        >>> worker = ClaimXDeltaEventsWorker(
         ...     config=config,
         ...     producer=producer,
         ...     events_table_path="abfss://..."
@@ -81,17 +84,17 @@ class DeltaEventsWorker:
         config: KafkaConfig,
         producer: BaseKafkaProducer,
         events_table_path: str,
-        domain: str = "xact",
+        domain: str = "claimx",
     ):
         """
-        Initialize Delta events worker.
+        Initialize ClaimX Delta events worker.
 
         Args:
             config: Kafka configuration for consumer (topic names, connection settings).
                     Also provides delta_events_batch_size and delta_events_max_batches.
             producer: Kafka producer for retry topic routing (required).
-            events_table_path: Full abfss:// path to xact_events Delta table
-            domain: Domain identifier (default: "xact")
+            events_table_path: Full abfss:// path to claimx_events Delta table
+            domain: Domain identifier (default: "claimx")
         """
         self.config = config
         self.domain = domain
@@ -109,8 +112,10 @@ class DeltaEventsWorker:
 
         # Retry configuration from worker processing settings
         self._retry_delays = processing_config.get("retry_delays", [300, 600, 1200, 2400])
-        self._retry_topic_prefix = processing_config.get("retry_topic_prefix", "delta-events.retry")
-        self._dlq_topic = processing_config.get("dlq_topic", "delta-events.dlq")
+        self._retry_topic_prefix = processing_config.get(
+            "retry_topic_prefix", "claimx-delta-events.retry"
+        )
+        self._dlq_topic = processing_config.get("dlq_topic", "claimx-delta-events.dlq")
 
         # Batch state
         self._batch: List[Dict[str, Any]] = []
@@ -127,24 +132,14 @@ class DeltaEventsWorker:
 
         # Initialize Delta writer
         if not events_table_path:
-            raise ValueError("events_table_path is required for DeltaEventsWorker")
+            raise ValueError("events_table_path is required for ClaimXDeltaEventsWorker")
 
-        self.delta_writer = DeltaEventsWriter(
+        self.delta_writer = ClaimXEventsDeltaWriter(
             table_path=events_table_path,
-        )
-
-        # Initialize retry handler
-        self.retry_handler = DeltaRetryHandler(
-            config=config,
-            producer=producer,
-            table_path=events_table_path,
-            retry_delays=self._retry_delays,
-            retry_topic_prefix=self._retry_topic_prefix,
-            dlq_topic=self._dlq_topic,
         )
 
         logger.info(
-            "Initialized DeltaEventsWorker",
+            "Initialized ClaimXDeltaEventsWorker",
             extra={
                 "domain": domain,
                 "worker_name": "delta_events_writer",
@@ -162,7 +157,7 @@ class DeltaEventsWorker:
 
     async def start(self) -> None:
         """
-        Start the delta events worker.
+        Start the ClaimX delta events worker.
 
         Initializes consumer and begins consuming events from the events.raw topic.
         Runs until stop() is called or max_batches is reached (if configured).
@@ -171,10 +166,11 @@ class DeltaEventsWorker:
             Exception: If consumer fails to start
         """
         logger.info(
-            "Starting DeltaEventsWorker",
+            "Starting ClaimXDeltaEventsWorker",
             extra={
                 "batch_size": self.batch_size,
                 "max_batches": self.max_batches,
+                "flush_timeout_seconds": self._flush_timeout_seconds,
             },
         )
         self._running = True
@@ -202,12 +198,12 @@ class DeltaEventsWorker:
 
     async def stop(self) -> None:
         """
-        Stop the delta events worker.
+        Stop the ClaimX delta events worker.
 
         Flushes any pending batch, then gracefully shuts down consumer,
         committing any pending offsets.
         """
-        logger.info("Stopping DeltaEventsWorker")
+        logger.info("Stopping ClaimXDeltaEventsWorker")
         self._running = False
 
         # Cancel cycle output task
@@ -231,7 +227,7 @@ class DeltaEventsWorker:
             await self.consumer.stop()
 
         logger.info(
-            "DeltaEventsWorker stopped successfully",
+            "ClaimXDeltaEventsWorker stopped successfully",
             extra={
                 "batches_written": self._batches_written,
                 "total_events_written": self._total_events_written,
@@ -245,7 +241,7 @@ class DeltaEventsWorker:
         Adds the event to the batch and flushes when batch is full.
 
         Args:
-            record: ConsumerRecord containing EventMessage JSON
+            record: ConsumerRecord containing ClaimXEventMessage JSON
         """
         # Track events received for cycle output
         self._events_received += 1
@@ -263,12 +259,15 @@ class DeltaEventsWorker:
                 await self.consumer.stop()
             return
 
-        # Decode message - keep as raw dict, don't convert to EventMessage
+        # Decode and parse message
         try:
             message_data = json.loads(record.value.decode("utf-8"))
-        except json.JSONDecodeError as e:
+            # Parse as ClaimXEventMessage to validate, then convert to dict
+            event = ClaimXEventMessage.from_eventhouse_row(message_data)
+            event_dict = event.model_dump()
+        except (json.JSONDecodeError, ValidationError) as e:
             logger.error(
-                "Failed to parse message JSON",
+                "Failed to parse ClaimX message",
                 extra={
                     "topic": record.topic,
                     "partition": record.partition,
@@ -279,13 +278,13 @@ class DeltaEventsWorker:
             )
             raise
 
-        # Add to batch (raw dict with data already as dict)
-        self._batch.append(message_data)
+        # Add to batch
+        self._batch.append(event_dict)
 
         logger.debug(
-            "Added event to batch",
+            "Added ClaimX event to batch",
             extra={
-                "trace_id": message_data.get("traceId"),
+                "event_id": event.event_id,
                 "batch_size": len(self._batch),
                 "batch_threshold": self.batch_size,
             },
@@ -337,7 +336,7 @@ class DeltaEventsWorker:
             flush_reason = " (timeout flush)" if timeout_flush else ""
 
             logger.info(
-                f"{progress}: Successfully wrote {batch_size} events to Delta{flush_reason}",
+                f"{progress}: Successfully wrote {batch_size} ClaimX events to Delta{flush_reason}",
                 extra={
                     "batch_id": batch_id,
                     "batch_size": batch_size,
@@ -350,7 +349,10 @@ class DeltaEventsWorker:
 
             # Log to console when a timeout flush happens
             if timeout_flush:
-                print(f"[DeltaEventsWorker] Timeout flush: wrote {batch_size} pending events to Delta")
+                print(
+                    f"[ClaimXDeltaEventsWorker] Timeout flush: "
+                    f"wrote {batch_size} pending events to Delta"
+                )
 
             # Stop immediately if we've reached max_batches
             if self.max_batches and self._batches_written >= self.max_batches:
@@ -366,26 +368,18 @@ class DeltaEventsWorker:
                     await self.consumer.stop()
         else:
             # Route to Kafka retry topic
-            trace_ids = [
-                e.get("traceId") or e.get("trace_id")
-                for e in batch_to_write[:10]
-                if e.get("traceId") or e.get("trace_id")
+            event_ids = [
+                e.get("event_id") for e in batch_to_write[:10] if e.get("event_id")
             ]
             logger.warning(
-                "Batch write failed, routing to retry topic",
+                "ClaimX batch write failed, routing to retry topic",
                 extra={
                     "batch_id": batch_id,
                     "batch_size": batch_size,
-                    "trace_ids": trace_ids,
+                    "event_ids": event_ids,
                 },
             )
-            await self.retry_handler.handle_batch_failure(
-                batch=batch_to_write,
-                error=Exception("Delta write returned failure status"),
-                retry_count=0,
-                error_category="transient",
-                batch_id=batch_id,
-            )
+            await self._route_to_retry(batch_to_write, batch_id)
 
     async def _write_batch(self, batch: List[Dict[str, Any]], batch_id: str) -> bool:
         """
@@ -401,10 +395,10 @@ class DeltaEventsWorker:
         batch_size = len(batch)
 
         try:
-            success = await self.delta_writer.write_raw_events(batch, batch_id=batch_id)
+            success = await self.delta_writer.write_events(batch)
 
             record_delta_write(
-                table="xact_events",
+                table="claimx_events",
                 event_count=batch_size,
                 success=success,
             )
@@ -412,27 +406,88 @@ class DeltaEventsWorker:
             return success
 
         except Exception as e:
-            trace_ids = [
-                evt.get("traceId") or evt.get("trace_id")
-                for evt in batch[:10]
-                if evt.get("traceId") or evt.get("trace_id")
-            ]
+            event_ids = [evt.get("event_id") for evt in batch[:10] if evt.get("event_id")]
             logger.error(
-                "Unexpected error writing batch to Delta",
+                "Unexpected error writing ClaimX batch to Delta",
                 extra={
                     "batch_id": batch_id,
                     "batch_size": batch_size,
                     "error": str(e),
-                    "trace_ids": trace_ids,
+                    "event_ids": event_ids,
                 },
                 exc_info=True,
             )
             record_delta_write(
-                table="xact_events",
+                table="claimx_events",
                 event_count=batch_size,
                 success=False,
             )
             return False
+
+    async def _route_to_retry(
+        self,
+        batch: List[Dict[str, Any]],
+        batch_id: str,
+        retry_count: int = 0,
+    ) -> None:
+        """
+        Route failed batch to retry topic.
+
+        Args:
+            batch: List of event dictionaries that failed
+            batch_id: Short identifier for log correlation
+            retry_count: Current retry count (0-indexed)
+        """
+        if retry_count >= len(self._retry_delays):
+            # Exceeded max retries, route to DLQ
+            logger.error(
+                "ClaimX batch exceeded max retries, routing to DLQ",
+                extra={
+                    "batch_id": batch_id,
+                    "batch_size": len(batch),
+                    "retry_count": retry_count,
+                    "max_retries": len(self._retry_delays),
+                },
+            )
+            topic = self._dlq_topic
+        else:
+            # Route to appropriate retry topic
+            delay_seconds = self._retry_delays[retry_count]
+            delay_minutes = delay_seconds // 60
+            topic = f"{self._retry_topic_prefix}.{delay_minutes}m"
+
+        try:
+            # Serialize batch for retry
+            retry_message = {
+                "batch_id": batch_id,
+                "retry_count": retry_count + 1,
+                "events": batch,
+            }
+            await self.producer.send(
+                topic=topic,
+                key=batch_id,
+                value=retry_message,
+            )
+            logger.info(
+                "Routed ClaimX failed batch to retry topic",
+                extra={
+                    "batch_id": batch_id,
+                    "batch_size": len(batch),
+                    "retry_topic": topic,
+                    "retry_count": retry_count + 1,
+                },
+            )
+        except Exception as e:
+            logger.error(
+                "Failed to route ClaimX batch to retry topic",
+                extra={
+                    "batch_id": batch_id,
+                    "batch_size": len(batch),
+                    "retry_topic": topic,
+                    "error": str(e),
+                },
+                exc_info=True,
+            )
 
     async def _periodic_cycle_output(self) -> None:
         """
@@ -459,7 +514,7 @@ class DeltaEventsWorker:
                         pending_count = len(self._batch)
                         logger.info(
                             f"Flush timeout reached ({self._flush_timeout_seconds}s), "
-                            f"flushing {pending_count} pending events",
+                            f"flushing {pending_count} pending ClaimX events",
                             extra={
                                 "pending_count": pending_count,
                                 "time_since_last_flush": time_since_last_flush,
@@ -467,7 +522,7 @@ class DeltaEventsWorker:
                             },
                         )
                         print(
-                            f"[DeltaEventsWorker] Flush timeout: {pending_count} events pending "
+                            f"[ClaimXDeltaEventsWorker] Flush timeout: {pending_count} events pending "
                             f"for {time_since_last_flush:.0f}s, triggering flush"
                         )
                         await self._flush_batch(timeout_flush=True)
@@ -496,4 +551,4 @@ class DeltaEventsWorker:
             raise
 
 
-__all__ = ["DeltaEventsWorker"]
+__all__ = ["ClaimXDeltaEventsWorker"]
