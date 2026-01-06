@@ -478,6 +478,33 @@ kafka:
 
 
 # =============================================================================
+# DELTA LAKE TABLE CONFIGURATION
+# =============================================================================
+# Paths to Delta tables for the pipeline. These support both xact and claimx domains.
+# Format: abfss://workspace@onelake.dfs.fabric.microsoft.com/lakehouse/Tables/{table}
+delta:
+  # Enable/disable Delta Lake writes globally
+  enable_writes: true
+
+  # XACT domain tables
+  xact:
+    # Path to xact_events table (for deduplication and analytics)
+    events_table_path: ""
+
+    # Path to xact_attachments table (for tracking downloaded attachments)
+    inventory_table_path: ""
+
+    # Path to xact_attachments_failed table (for tracking permanent failures)
+    # Optional: If not set, permanent failures are only tracked in DLQ
+    failed_table_path: ""
+
+  # ClaimX domain tables
+  claimx:
+    # Path to claimx_events table
+    events_table_path: ""
+
+
+# =============================================================================
 # EVENTHOUSE INTEGRATION (for Kafka pipeline event source)
 # =============================================================================
 eventhouse:
