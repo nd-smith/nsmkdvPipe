@@ -349,7 +349,11 @@ async def run_delta_events_worker(kafka_config, events_table_path: str):
     logger.info("Starting xact Delta Events worker...")
 
     # Create producer for retry topic routing
-    producer = BaseKafkaProducer(config=kafka_config)
+    producer = BaseKafkaProducer(
+        config=kafka_config,
+        domain="xact",
+        worker_name="delta_events_writer",
+    )
     await producer.start()
 
     worker = DeltaEventsWorker(
@@ -401,7 +405,11 @@ async def run_delta_retry_scheduler(kafka_config, events_table_path: str):
     logger.info("Starting xact Delta Retry Scheduler...")
 
     # Create producer for DLQ routing
-    producer = BaseKafkaProducer(config=kafka_config)
+    producer = BaseKafkaProducer(
+        config=kafka_config,
+        domain="xact",
+        worker_name="delta_retry_scheduler",
+    )
     await producer.start()
 
     scheduler = DeltaBatchRetryScheduler(
@@ -538,7 +546,11 @@ async def run_result_processor(kafka_config, enable_delta_writes: bool = True):
     failed_table_path = os.getenv("DELTA_FAILED_TABLE_PATH", "")
 
     # Create and start producer for retry topic routing
-    producer = BaseKafkaProducer(kafka_config)
+    producer = BaseKafkaProducer(
+        config=kafka_config,
+        domain="xact",
+        worker_name="result_processor",
+    )
     await producer.start()
 
     worker = ResultProcessor(
