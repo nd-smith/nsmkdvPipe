@@ -1011,6 +1011,7 @@ class DownloadWorker:
                     "trace_id": task_message.trace_id,
                     "error_category": error_category.value,
                     "retry_count": task_message.retry_count,
+                    "error_message": error_message,
                 },
             )
 
