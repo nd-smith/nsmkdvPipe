@@ -85,15 +85,33 @@ class EventHubConfig:
         )
 
     def to_kafka_config(self) -> KafkaConfig:
-        """Convert to KafkaConfig for use with BaseKafkaConsumer."""
+        """Convert to KafkaConfig for use with BaseKafkaConsumer.
+
+        Creates a hierarchical KafkaConfig matching the new config.yaml structure.
+        """
+        # Build xact domain config for Event Hub source
+        xact_config = {
+            "topics": {
+                "events": self.events_topic,
+            },
+            "consumer_group_prefix": self.consumer_group.rsplit("-", 1)[0] if "-" in self.consumer_group else "xact",
+            "event_ingester": {
+                "consumer": {
+                    "group_id": self.consumer_group,
+                }
+            },
+        }
+
         return KafkaConfig(
             bootstrap_servers=self.bootstrap_servers,
             security_protocol=self.security_protocol,
             sasl_mechanism=self.sasl_mechanism,
             sasl_plain_username=self.sasl_username,
             sasl_plain_password=self.sasl_password,
-            events_topic=self.events_topic,
-            auto_offset_reset=self.auto_offset_reset,
+            consumer_defaults={
+                "auto_offset_reset": self.auto_offset_reset,
+            },
+            xact=xact_config,
         )
 
 
@@ -224,22 +242,43 @@ class LocalKafkaConfig:
         )
 
     def to_kafka_config(self) -> KafkaConfig:
-        """Convert to KafkaConfig for use with workers."""
+        """Convert to KafkaConfig for use with workers.
+
+        Creates a hierarchical KafkaConfig matching the new config.yaml structure.
+        Maps flat LocalKafkaConfig fields to domain-specific nested config.
+        """
+        # Build xact domain config from flat fields
+        xact_config = {
+            "topics": {
+                "events": self.events_topic,
+                "downloads_pending": self.downloads_pending_topic,
+                "downloads_results": self.downloads_results_topic,
+                "dlq": self.dlq_topic,
+            },
+            "consumer_group_prefix": self.consumer_group_prefix,
+            "retry_delays": self.retry_delays,
+            "max_retries": self.max_retries,
+            # Worker-specific configs with defaults
+            "delta_events_writer": {
+                "processing": {
+                    "batch_size": self.delta_events_batch_size,
+                    "retry_delays": self.retry_delays,
+                    "max_retries": self.max_retries,
+                    "retry_topic_prefix": "delta-events.retry",
+                    "dlq_topic": "delta-events.dlq",
+                }
+            },
+        }
+
         return KafkaConfig(
             bootstrap_servers=self.bootstrap_servers,
             security_protocol=self.security_protocol,
             sasl_mechanism=self.sasl_mechanism,
-            events_topic=self.events_topic,
-            downloads_pending_topic=self.downloads_pending_topic,
-            downloads_results_topic=self.downloads_results_topic,
-            dlq_topic=self.dlq_topic,
-            consumer_group_prefix=self.consumer_group_prefix,
-            retry_delays=self.retry_delays,
-            max_retries=self.max_retries,
+            xact=xact_config,
+            claimx={},  # ClaimX can be configured separately
             onelake_base_path=self.onelake_base_path,
             onelake_domain_paths=self.onelake_domain_paths,
             cache_dir=self.cache_dir,
-            delta_events_batch_size=self.delta_events_batch_size,
         )
 
 
