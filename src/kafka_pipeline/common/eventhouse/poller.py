@@ -12,7 +12,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional, Set
+from typing import Any, Callable, Dict, Optional, Set, Type
 
 import yaml
 
@@ -26,7 +26,6 @@ from kafka_pipeline.common.eventhouse.kql_client import (
     KQLQueryResult,
 )
 from kafka_pipeline.common.producer import BaseKafkaProducer
-from kafka_pipeline.xact.schemas.events import EventMessage
 
 logger = get_logger(__name__)
 
@@ -43,6 +42,10 @@ class PollerConfig:
 
     # Deduplication configuration
     dedup: DedupConfig
+
+    # Event schema class for row-to-event conversion
+    # Must have a from_eventhouse_row(row: Dict[str, Any]) classmethod
+    event_schema_class: Optional[Type] = None
 
     # Domain identifier for OneLake routing (e.g., "xact", "claimx")
     domain: str = "xact"
@@ -67,7 +70,7 @@ class PollerConfig:
     )
 
     # Delta Lake settings
-    events_table_path: str = ""  # Path to xact_events table
+    events_table_path: str = ""  # Path to events table (xact_events or claimx_events)
 
     # Backpressure settings
     max_kafka_lag: int = 10_000  # Pause polling if lag exceeds this
@@ -301,6 +304,13 @@ class KQLEventPoller:
         self._running = False
         self._shutdown_event = asyncio.Event()
 
+        # Event schema class - default to xact EventMessage if not specified
+        if config.event_schema_class is None:
+            from kafka_pipeline.xact.schemas.events import EventMessage
+            self._event_schema_class = EventMessage
+        else:
+            self._event_schema_class = config.event_schema_class
+
         # Components (initialized on start)
         self._kql_client: Optional[KQLClient] = None
         self._deduplicator: Optional[EventhouseDeduplicator] = None
@@ -351,6 +361,7 @@ class KQLEventPoller:
                 "poll_interval": config.poll_interval_seconds,
                 "batch_size": config.batch_size,
                 "pipeline_domain": config.domain,
+                "event_schema": self._event_schema_class.__name__,
             },
         )
 
@@ -1056,105 +1067,82 @@ class KQLEventPoller:
         # Track stats for backfill reporting
         if events_for_delta:
             for event in events_for_delta:
-                if event.trace_id in self._seen_trace_ids:
+                # Get event ID based on schema type
+                if hasattr(event, 'trace_id'):
+                    event_id = event.trace_id
+                elif hasattr(event, 'event_id'):
+                    event_id = event.event_id
+                else:
+                    event_id = str(hash(str(event)))
+
+                if event_id in self._seen_trace_ids:
                     self._duplicate_count += 1
                 else:
-                    self._seen_trace_ids.add(event.trace_id)
+                    self._seen_trace_ids.add(event_id)
 
         return events_processed
 
-    async def _publish_event(self, event: EventMessage) -> None:
+    async def _publish_event(self, event: Any) -> None:
         """
-        Publish EventMessage to the events.raw topic.
+        Publish event message to the events.raw topic.
 
-        EventMessage schema matches verisk_pipeline EventRecord.
+        Supports both xact EventMessage and claimx ClaimXEventMessage.
 
         Args:
-            event: EventMessage to publish
+            event: Event message to publish (EventMessage or ClaimXEventMessage)
         """
         try:
+            # Determine event key based on schema type
+            if hasattr(event, 'trace_id'):
+                # xact EventMessage
+                event_key = event.trace_id
+                event_id = event.trace_id
+            elif hasattr(event, 'event_id'):
+                # claimx ClaimXEventMessage
+                event_key = event.event_id
+                event_id = event.event_id
+            else:
+                # Fallback
+                event_key = str(hash(str(event)))
+                event_id = event_key
+
             await self._producer.send(
                 topic=self.config.kafka.events_topic,
-                key=event.trace_id,
+                key=event_key,
                 value=event,
-                headers={"trace_id": event.trace_id},
+                headers={"event_id": event_id},
             )
 
             logger.debug(
                 "Published event to events.raw",
                 extra={
-                    "trace_id": event.trace_id,
-                    "type": event.type,
-                    "status_subtype": event.status_subtype,
-                    "attachment_count": len(event.attachments) if event.attachments else 0,
+                    "event_id": event_id,
+                    "domain": self.config.domain,
                 },
             )
         except Exception as e:
             logger.error(
                 "Failed to publish event",
                 extra={
-                    "trace_id": event.trace_id,
                     "error": str(e)[:200],
                 },
             )
 
-    def _row_to_event(self, row: dict[str, Any]) -> EventMessage:
+    def _row_to_event(self, row: dict[str, Any]) -> Any:
         """
-        Convert a KQL result row to EventMessage.
+        Convert a KQL result row to event message using configured schema class.
 
-        Creates EventMessage matching verisk_pipeline EventRecord schema:
-        - type: Full event type string
-        - version: Event version
-        - utc_datetime: Event timestamp
-        - trace_id: Trace identifier
-        - data: JSON string with nested event data
-
-        Eventhouse source columns:
-        - type: "verisk.claims.property.xn.documentsReceived"
-        - version: Event version number
-        - utcDateTime: Event timestamp
-        - traceId: UUID trace identifier (camelCase!)
-        - data: JSON object containing payload and nested attachments
+        Uses the event_schema_class from config which must have a
+        from_eventhouse_row(row: Dict[str, Any]) classmethod.
 
         Args:
             row: Dictionary from KQL result
 
         Returns:
-            EventMessage matching verisk_pipeline EventRecord schema
+            Event message instance (EventMessage or ClaimXEventMessage)
         """
-        # Extract trace_id (supports both traceId and trace_id column names)
-        trace_id = row.get("traceId", row.get("trace_id", ""))
-
-        # Extract full event type
-        full_type = row.get("type", "")
-
-        # Extract version - preserve original type (int preferred)
-        version = row.get("version", 1)
-
-        # Extract timestamp as string
-        timestamp_val = row.get("utcDateTime", row.get("timestamp", ""))
-        if isinstance(timestamp_val, datetime):
-            utc_datetime = timestamp_val.isoformat()
-        else:
-            utc_datetime = str(timestamp_val) if timestamp_val else ""
-
-        # Extract data field as JSON string
-        data_val = row.get("data", {})
-        if isinstance(data_val, dict):
-            data = json.dumps(data_val)
-        elif isinstance(data_val, str):
-            data = data_val
-        else:
-            data = "{}"
-
-        # Create EventMessage using from_eventhouse_row for proper parsing
-        return EventMessage.from_eventhouse_row({
-            "type": full_type,
-            "version": version,
-            "utcDateTime": utc_datetime,
-            "traceId": trace_id,
-            "data": data,
-        })
+        # Use the configured event schema class to convert the row
+        return self._event_schema_class.from_eventhouse_row(row)
 
     @property
     def is_running(self) -> bool:

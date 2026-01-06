@@ -9,11 +9,13 @@ Usage:
     python -m kafka_pipeline --worker xact-event-ingester
     python -m kafka_pipeline --worker xact-local-ingester
     python -m kafka_pipeline --worker xact-delta-writer
+    python -m kafka_pipeline --worker xact-delta-retry
     python -m kafka_pipeline --worker xact-download
     python -m kafka_pipeline --worker xact-upload
     python -m kafka_pipeline --worker xact-result-processor
 
     # Run specific claimx worker
+    python -m kafka_pipeline --worker claimx-poller
     python -m kafka_pipeline --worker claimx-ingester
     python -m kafka_pipeline --worker claimx-enricher
     python -m kafka_pipeline --worker claimx-downloader
@@ -41,11 +43,13 @@ Architecture:
             → xact-event-ingester → downloads.pending → download worker →
               downloads.cached → upload worker → downloads.results → result processor
             → xact-delta-writer → xact_events Delta table (parallel)
+              ↓ (on failure)
+            → delta-events.retry.* topics → xact-delta-retry → retry write or DLQ
 
     claimx Domain:
-        Event Source → claimx events → enrichment.pending → enrichment worker →
-        entity tables + downloads.pending → download worker → downloads.cached →
-        upload worker → downloads.results
+        Eventhouse → claimx-poller → claimx.events.raw → claimx-ingester →
+        enrichment.pending → enrichment worker → entity tables + downloads.pending →
+        download worker → downloads.cached → upload worker → downloads.results
 """
 
 import argparse
@@ -65,8 +69,8 @@ from core.logging.setup import get_logger, setup_logging, setup_multi_worker_log
 # Worker stages for multi-worker logging
 WORKER_STAGES = [
     "eventhouse-poller",
-    "xact-event-ingester", "xact-local-ingester", "xact-delta-writer", "xact-download", "xact-upload", "xact-result-processor",
-    "claimx-ingester", "claimx-enricher", "claimx-downloader", "claimx-uploader", "claimx-result-processor"
+    "xact-event-ingester", "xact-local-ingester", "xact-delta-writer", "xact-delta-retry", "xact-download", "xact-upload", "xact-result-processor",
+    "claimx-poller", "claimx-ingester", "claimx-enricher", "claimx-downloader", "claimx-uploader", "claimx-result-processor"
 ]
 
 # Placeholder logger until setup_logging() is called in main()
@@ -152,8 +156,8 @@ Examples:
     parser.add_argument(
         "--worker",
         choices=[
-            "xact-event-ingester", "xact-local-ingester", "xact-delta-writer", "xact-download", "xact-upload", "xact-result-processor",
-            "claimx-ingester", "claimx-enricher", "claimx-downloader", "claimx-uploader", "claimx-result-processor",
+            "xact-event-ingester", "xact-local-ingester", "xact-delta-writer", "xact-delta-retry", "xact-download", "xact-upload", "xact-result-processor",
+            "claimx-poller", "claimx-ingester", "claimx-enricher", "claimx-downloader", "claimx-uploader", "claimx-result-processor",
             "all"
         ],
         default="all",
@@ -379,6 +383,58 @@ async def run_delta_events_worker(kafka_config, events_table_path: str):
         await producer.stop()
 
 
+async def run_delta_retry_scheduler(kafka_config, events_table_path: str):
+    """Run the Delta Batch Retry Scheduler.
+
+    Consumes failed batches from retry topics and attempts to write them to
+    the xact_events Delta table after the configured delay has elapsed.
+
+    Routes permanently failed batches (retries exhausted) to DLQ.
+
+    Supports graceful shutdown: when shutdown event is set, the scheduler
+    stops consuming from retry topics.
+    """
+    from kafka_pipeline.common.producer import BaseKafkaProducer
+    from kafka_pipeline.xact.retry.scheduler import DeltaBatchRetryScheduler
+
+    set_log_context(stage="xact-delta-retry")
+    logger.info("Starting xact Delta Retry Scheduler...")
+
+    # Create producer for DLQ routing
+    producer = BaseKafkaProducer(config=kafka_config)
+    await producer.start()
+
+    scheduler = DeltaBatchRetryScheduler(
+        config=kafka_config,
+        producer=producer,
+        table_path=events_table_path,
+    )
+    shutdown_event = get_shutdown_event()
+
+    async def shutdown_watcher():
+        """Wait for shutdown signal and stop scheduler gracefully."""
+        await shutdown_event.wait()
+        logger.info("Shutdown signal received, stopping delta retry scheduler...")
+        await scheduler.stop()
+
+    # Start shutdown watcher alongside scheduler
+    watcher_task = asyncio.create_task(shutdown_watcher())
+
+    try:
+        await scheduler.start()
+    finally:
+        # Guard against event loop being closed during shutdown
+        try:
+            watcher_task.cancel()
+            await watcher_task
+        except (asyncio.CancelledError, RuntimeError):
+            # RuntimeError occurs if event loop is closed
+            pass
+        # Clean up resources after scheduler exits
+        await scheduler.stop()
+        await producer.stop()
+
+
 async def run_download_worker(kafka_config):
     """Run the Download Worker.
 
@@ -517,6 +573,92 @@ async def run_result_processor(kafka_config, enable_delta_writes: bool = True):
         # Clean up resources after worker exits
         await worker.stop()
         await producer.stop()
+
+
+async def run_claimx_eventhouse_poller(pipeline_config):
+    """Run the Eventhouse Poller for claimx domain.
+
+    Polls Microsoft Fabric Eventhouse for claimx events and produces to claimx.events.raw topic.
+    Uses KQL queries with deduplication against claimx_events Delta table.
+
+    Supports graceful shutdown: when shutdown event is set, the poller
+    finishes its current poll cycle before exiting.
+    """
+    from kafka_pipeline.claimx.schemas.events import ClaimXEventMessage
+    from kafka_pipeline.common.eventhouse.dedup import DedupConfig
+    from kafka_pipeline.common.eventhouse.kql_client import EventhouseConfig
+    from kafka_pipeline.common.eventhouse.poller import KQLEventPoller, PollerConfig
+
+    set_log_context(stage="claimx-poller")
+    logger.info("Starting ClaimX Eventhouse Poller...")
+
+    claimx_eventhouse = pipeline_config.claimx_eventhouse
+    if not claimx_eventhouse:
+        raise ValueError(
+            "ClaimX Eventhouse configuration required for claimx-poller worker. "
+            "Set in config.yaml under 'claimx_eventhouse:' or via CLAIMX_EVENTHOUSE_* env vars."
+        )
+
+    # Build Eventhouse config from pipeline config
+    eventhouse_config = EventhouseConfig(
+        cluster_url=claimx_eventhouse.cluster_url,
+        database=claimx_eventhouse.database,
+        query_timeout_seconds=claimx_eventhouse.query_timeout_seconds,
+    )
+
+    # Build deduplication config for claimx
+    dedup_config = DedupConfig(
+        xact_events_table_path=claimx_eventhouse.claimx_events_table_path,  # Reusing param name for compatibility
+        xact_events_window_hours=claimx_eventhouse.claimx_events_window_hours,
+        eventhouse_query_window_hours=claimx_eventhouse.eventhouse_query_window_hours,
+        overlap_minutes=claimx_eventhouse.overlap_minutes,
+        kql_start_stamp=claimx_eventhouse.kql_start_stamp,
+        eventhouse_trace_id_column="event_id",  # claimx uses event_id instead of trace_id
+    )
+
+    # Create a modified kafka config with claimx events topic
+    local_kafka_config = pipeline_config.local_kafka.to_kafka_config()
+    claimx_kafka_config = local_kafka_config
+    claimx_kafka_config.events_topic = claimx_eventhouse.events_topic
+
+    # Build poller config with ClaimXEventMessage schema
+    poller_config = PollerConfig(
+        eventhouse=eventhouse_config,
+        kafka=claimx_kafka_config,
+        dedup=dedup_config,
+        event_schema_class=ClaimXEventMessage,
+        domain="claimx",
+        poll_interval_seconds=claimx_eventhouse.poll_interval_seconds,
+        batch_size=claimx_eventhouse.batch_size,
+        source_table=claimx_eventhouse.source_table,
+        events_table_path=claimx_eventhouse.claimx_events_table_path,
+        backfill_start_stamp=claimx_eventhouse.backfill_start_stamp,
+        backfill_stop_stamp=claimx_eventhouse.backfill_stop_stamp,
+        bulk_backfill=claimx_eventhouse.bulk_backfill,
+    )
+
+    shutdown_event = get_shutdown_event()
+
+    async def shutdown_watcher(poller: KQLEventPoller):
+        """Wait for shutdown signal and stop poller gracefully."""
+        await shutdown_event.wait()
+        logger.info("Shutdown signal received, stopping claimx eventhouse poller...")
+        await poller.stop()
+
+    async with KQLEventPoller(poller_config) as poller:
+        # Start shutdown watcher alongside poller
+        watcher_task = asyncio.create_task(shutdown_watcher(poller))
+
+        try:
+            await poller.run()
+        finally:
+            # Guard against event loop being closed during shutdown
+            try:
+                watcher_task.cancel()
+                await watcher_task
+            except (asyncio.CancelledError, RuntimeError):
+                # RuntimeError occurs if event loop is closed
+                pass
 
 
 async def run_local_event_ingester(
@@ -846,6 +988,15 @@ async def run_all_workers(
         )
         logger.info("Delta events writer enabled")
 
+        # Add Delta retry scheduler if Delta writes are enabled
+        tasks.append(
+            asyncio.create_task(
+                run_delta_retry_scheduler(local_kafka_config, events_table_path),
+                name="xact-delta-retry",
+            )
+        )
+        logger.info("Delta retry scheduler enabled")
+
     # Add common workers
     tasks.extend([
         asyncio.create_task(
@@ -929,9 +1080,19 @@ def main():
     # Worker ID for log context
     worker_id = os.getenv("WORKER_ID", f"kafka-{args.worker}")
 
+    # Determine domain from worker name for separate log directories
+    # Extract domain prefix: xact-download -> xact, claimx-enricher -> claimx
+    domain = "kafka"  # Default fallback
+    if args.worker != "all" and "-" in args.worker:
+        domain_prefix = args.worker.split("-")[0]
+        if domain_prefix in ("xact", "claimx"):
+            domain = domain_prefix
+
     # Initialize structured logging infrastructure
     if args.worker == "all":
         # Multi-worker mode: create per-worker log files
+        # Note: For "all" mode, we use "kafka" as the combined domain
+        # Individual workers will still log with domain context from set_log_context()
         setup_multi_worker_logging(
             workers=WORKER_STAGES,
             domain="kafka",
@@ -940,11 +1101,11 @@ def main():
             console_level=log_level,
         )
     else:
-        # Single worker mode: single log file
+        # Single worker mode: single log file with domain-specific directory
         setup_logging(
             name="kafka_pipeline",
             stage=args.worker,
-            domain="kafka",
+            domain=domain,
             log_dir=log_dir,
             json_format=json_logs,
             console_level=log_level,
@@ -1054,6 +1215,20 @@ def main():
                 loop.run_until_complete(
                     run_delta_events_worker(local_kafka_config, events_table_path)
                 )
+        elif args.worker == "xact-delta-retry":
+            # Delta retry scheduler - retries failed Delta batch writes
+            events_table_path = pipeline_config.events_table_path
+            if pipeline_config.event_source == EventSourceType.EVENTHOUSE:
+                events_table_path = (
+                    pipeline_config.eventhouse.xact_events_table_path
+                    or events_table_path
+                )
+            if not events_table_path:
+                logger.error("DELTA_EVENTS_TABLE_PATH is required for xact-delta-retry")
+                sys.exit(1)
+            loop.run_until_complete(
+                run_delta_retry_scheduler(local_kafka_config, events_table_path)
+            )
         elif args.worker == "xact-download":
             if args.count > 1:
                 loop.run_until_complete(
@@ -1086,6 +1261,9 @@ def main():
                 loop.run_until_complete(
                     run_result_processor(local_kafka_config, enable_delta_writes)
                 )
+        elif args.worker == "claimx-poller":
+            # ClaimX Eventhouse poller
+            loop.run_until_complete(run_claimx_eventhouse_poller(pipeline_config))
         elif args.worker == "claimx-ingester":
             # ClaimX event ingester
             claimx_events_table_path = os.getenv("CLAIMX_EVENTS_TABLE_PATH", "")

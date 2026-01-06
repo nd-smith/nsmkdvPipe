@@ -87,15 +87,13 @@ class EventIngesterWorker:
         self.producer: Optional[BaseKafkaProducer] = None
         self.consumer: Optional[BaseKafkaConsumer] = None
 
-        # Consumer group for event ingestion
-        self.consumer_group = f"{config.consumer_group_prefix}-event-ingester"
-
         logger.info(
             "Initialized EventIngesterWorker",
             extra={
-                "consumer_group": self.consumer_group,
-                "events_topic": config.events_topic,
-                "pending_topic": self.producer_config.downloads_pending_topic,
+                "domain": domain,
+                "worker_name": "event_ingester",
+                "events_topic": config.get_topic(domain, "events"),
+                "pending_topic": self.producer_config.get_topic(domain, "downloads_pending"),
                 "pipeline_domain": self.domain,
                 "separate_producer_config": producer_config is not None,
             },
@@ -119,16 +117,20 @@ class EventIngesterWorker:
         logger.info("Starting EventIngesterWorker")
 
         # Start producer first (uses producer_config for local Kafka)
-        self.producer = BaseKafkaProducer(self.producer_config)
+        self.producer = BaseKafkaProducer(
+            config=self.producer_config,
+            domain=self.domain,
+            worker_name="event_ingester",
+        )
         await self.producer.start()
 
         # Create and start consumer with message handler (uses consumer_config)
         self.consumer = BaseKafkaConsumer(
             config=self.consumer_config,
-            topics=[self.consumer_config.events_topic],
-            group_id=self.consumer_group,
+            domain=self.domain,
+            worker_name="event_ingester",
+            topics=[self.consumer_config.get_topic(self.domain, "events")],
             message_handler=self._handle_event_message,
-            max_batches=self.consumer_config.consumer_max_batches,
         )
 
         # Start consumer (this blocks until stopped)
@@ -298,7 +300,7 @@ class EventIngesterWorker:
         # Produce download task to pending topic
         try:
             metadata = await self.producer.send(
-                topic=self.producer_config.downloads_pending_topic,
+                topic=self.producer_config.get_topic(self.domain, "downloads_pending"),
                 key=event.trace_id,
                 value=download_task,
                 headers={"trace_id": event.trace_id},
