@@ -940,12 +940,12 @@ class KQLEventPoller:
             # Build paginated query with deterministic ordering
             # Use composite key comparison for exact resume:
             # (ingestion_time > start) OR (ingestion_time == start AND traceId > last_trace_id)
-            # Note: traceId is a guid type in Eventhouse, so we cast the literal to guid()
+            # Note: KQL doesn't support > comparison on guid types, so convert to string
             if current_trace_id:
                 # Resume from checkpoint - skip records at/before checkpoint
                 escaped_trace_id = current_trace_id.replace("'", "\\'")
                 where_clause = f"""| where ingestion_time() > datetime({start_str})
-    or (ingestion_time() == datetime({start_str}) and {trace_id_column} > guid('{escaped_trace_id}'))
+    or (ingestion_time() == datetime({start_str}) and tostring({trace_id_column}) > '{escaped_trace_id}')
 | where ingestion_time() < datetime({stop_str})"""
             else:
                 # No checkpoint - start from beginning of window
@@ -1440,11 +1440,11 @@ class KQLEventPoller:
             # Filter in KQL: skip rows at or before checkpoint
             # (ingestion_time > checkpoint_time) OR
             # (ingestion_time == checkpoint_time AND traceId > checkpoint_trace_id)
-            # Note: traceId is a guid type in Eventhouse, so we cast the literal to guid()
+            # Note: KQL doesn't support > comparison on guid types, so convert to string
             checkpoint_time_str = checkpoint.to_datetime().strftime("%Y-%m-%dT%H:%M:%S.%fZ")
             escaped_trace_id = checkpoint.last_trace_id.replace("'", "\\'")
             where_clause = f"""| where ingestion_time() > datetime({checkpoint_time_str})
-    or (ingestion_time() == datetime({checkpoint_time_str}) and {trace_id_column} > guid('{escaped_trace_id}'))
+    or (ingestion_time() == datetime({checkpoint_time_str}) and tostring({trace_id_column}) > '{escaped_trace_id}')
 | where ingestion_time() < datetime({to_str})"""
         else:
             where_clause = f"""| where ingestion_time() >= datetime({from_str})
