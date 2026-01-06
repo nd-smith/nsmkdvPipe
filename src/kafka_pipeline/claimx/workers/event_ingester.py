@@ -69,6 +69,7 @@ class ClaimXEventIngesterWorker:
     def __init__(
         self,
         config: KafkaConfig,
+        domain: str = "claimx",
         enable_delta_writes: bool = True,
         events_table_path: str = "",
         enrichment_topic: str = "",
@@ -79,6 +80,7 @@ class ClaimXEventIngesterWorker:
 
         Args:
             config: Kafka configuration for consumer (topic names, connection settings)
+            domain: Domain identifier (default: "claimx")
             enable_delta_writes: Whether to enable Delta Lake writes (default: True)
             events_table_path: Full abfss:// path to claimx_events Delta table
             enrichment_topic: Topic name for enrichment tasks (e.g., "claimx.enrichment.pending")
@@ -88,14 +90,12 @@ class ClaimXEventIngesterWorker:
         """
         self.consumer_config = config
         self.producer_config = producer_config if producer_config else config
-        self.enrichment_topic = enrichment_topic or "claimx.enrichment.pending"
+        self.domain = domain
+        self.enrichment_topic = enrichment_topic or config.get_topic(domain, "enrichment_pending")
         self.producer: Optional[BaseKafkaProducer] = None
         self.consumer: Optional[BaseKafkaConsumer] = None
         self.delta_writer: Optional[ClaimXEventsDeltaWriter] = None
         self.enable_delta_writes = enable_delta_writes
-
-        # Consumer group for ClaimX event ingestion
-        self.consumer_group = f"{config.consumer_group_prefix}-claimx-event-ingester"
 
         # Initialize Delta writer if enabled and path provided
         if self.enable_delta_writes and events_table_path:
@@ -112,8 +112,9 @@ class ClaimXEventIngesterWorker:
         self._pending_tasks: Set[asyncio.Task] = set()
         self._task_counter = 0  # For unique task naming
 
-        # Health check server
-        health_port = getattr(config, 'claimx_event_ingester_health_port', 8084)
+        # Health check server - use worker-specific port from config
+        processing_config = config.get_worker_config(domain, "event_ingester", "processing")
+        health_port = processing_config.get("health_port", 8084)
         self.health_server = HealthCheckServer(
             port=health_port,
             worker_name="claimx-event-ingester",
@@ -122,8 +123,10 @@ class ClaimXEventIngesterWorker:
         logger.info(
             "Initialized ClaimXEventIngesterWorker",
             extra={
-                "consumer_group": self.consumer_group,
-                "events_topic": config.events_topic,
+                "domain": domain,
+                "worker_name": "event_ingester",
+                "consumer_group": config.get_consumer_group(domain, "event_ingester"),
+                "events_topic": config.get_topic(domain, "events"),
                 "enrichment_topic": self.enrichment_topic,
                 "delta_writes_enabled": self.enable_delta_writes,
                 "separate_producer_config": producer_config is not None,
@@ -151,16 +154,20 @@ class ClaimXEventIngesterWorker:
         await self.health_server.start()
 
         # Start producer first (uses producer_config for local Kafka)
-        self.producer = BaseKafkaProducer(self.producer_config)
+        self.producer = BaseKafkaProducer(
+            config=self.producer_config,
+            domain=self.domain,
+            worker_name="event_ingester",
+        )
         await self.producer.start()
 
         # Create and start consumer with message handler (uses consumer_config)
         self.consumer = BaseKafkaConsumer(
             config=self.consumer_config,
-            topics=[self.consumer_config.events_topic],
-            group_id=self.consumer_group,
+            domain=self.domain,
+            worker_name="event_ingester",
+            topics=[self.consumer_config.get_topic(self.domain, "events")],
             message_handler=self._handle_event_message,
-            max_batches=self.consumer_config.consumer_max_batches,
         )
 
         # Update health check readiness (event ingester doesn't use API)

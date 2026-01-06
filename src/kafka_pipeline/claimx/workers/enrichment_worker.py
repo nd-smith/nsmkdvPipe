@@ -17,6 +17,7 @@ Delta tables: claimx_projects, claimx_contacts, claimx_attachment_metadata, clai
 
 import asyncio
 import json
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set
 
@@ -76,12 +77,11 @@ class ClaimXEnrichmentWorker:
         self,
         config: KafkaConfig,
         entity_writer: ClaimXEntityWriter,
+        domain: str = "claimx",
         enable_delta_writes: bool = True,
         enrichment_topic: str = "",
         download_topic: str = "",
         producer_config: Optional[KafkaConfig] = None,
-        batch_size: int = 100,
-        batch_timeout_seconds: float = 5.0,
     ):
         """
         Initialize ClaimX enrichment worker.
@@ -89,26 +89,24 @@ class ClaimXEnrichmentWorker:
         Args:
             config: Kafka configuration for consumer (topic names, connection settings)
             entity_writer: ClaimXEntityWriter for writing entity rows to Delta tables
+            domain: Domain identifier (default: "claimx")
             enable_delta_writes: Whether to enable Delta Lake writes (default: True)
             enrichment_topic: Topic name for enrichment tasks (e.g., "claimx.enrichment.pending")
             download_topic: Topic name for download tasks (e.g., "claimx.downloads.pending")
             producer_config: Optional separate Kafka config for producer
-            batch_size: Number of tasks to process in a batch (default: 100)
-            batch_timeout_seconds: Max seconds to wait for batch to fill (default: 5.0)
         """
         self.consumer_config = config
         self.producer_config = producer_config if producer_config else config
-        self.enrichment_topic = enrichment_topic or "claimx.enrichment.pending"
-        self.download_topic = download_topic or "claimx.downloads.pending"
+        self.domain = domain
+        self.enrichment_topic = enrichment_topic or config.get_topic(domain, "enrichment_pending")
+        self.download_topic = download_topic or config.get_topic(domain, "downloads_pending")
         self.entity_writer = entity_writer
         self.enable_delta_writes = enable_delta_writes
-        self.batch_size = batch_size
-        self.batch_timeout_seconds = batch_timeout_seconds
 
-        # Consumer group for ClaimX enrichment
-        self.consumer_group = (
-            f"{config.consumer_group_prefix}-claimx-enrichment-worker"
-        )
+        # Get worker-specific processing config
+        processing_config = config.get_worker_config(domain, "enrichment_worker", "processing")
+        self.batch_size = processing_config.get("batch_size", 100)
+        self.batch_timeout_seconds = processing_config.get("batch_timeout_seconds", 5.0)
 
         # Build list of topics to consume from (pending + retry topics)
         retry_topics = [
@@ -126,7 +124,7 @@ class ClaimXEnrichmentWorker:
         self.handler_registry: HandlerRegistry = get_handler_registry()
 
         # Health check server
-        health_port = config.claimx_enrichment_health_port if hasattr(config, 'claimx_enrichment_health_port') else 8081
+        health_port = processing_config.get("health_port", 8081)
         self.health_server = HealthCheckServer(
             port=health_port,
             worker_name="claimx-enricher",
@@ -144,7 +142,9 @@ class ClaimXEnrichmentWorker:
         logger.info(
             "Initialized ClaimXEnrichmentWorker",
             extra={
-                "consumer_group": self.consumer_group,
+                "domain": domain,
+                "worker_name": "enrichment_worker",
+                "consumer_group": config.get_consumer_group(domain, "enrichment_worker"),
                 "topics": self.topics,
                 "enrichment_topic": self.enrichment_topic,
                 "download_topic": self.download_topic,
@@ -194,7 +194,11 @@ class ClaimXEnrichmentWorker:
         )
 
         # Start producer first (uses producer_config for local Kafka)
-        self.producer = BaseKafkaProducer(self.producer_config)
+        self.producer = BaseKafkaProducer(
+            config=self.producer_config,
+            domain=self.domain,
+            worker_name="enrichment_worker",
+        )
         await self.producer.start()
 
         # Initialize retry handler (requires producer to be started)
@@ -214,10 +218,10 @@ class ClaimXEnrichmentWorker:
         # Consumes from pending topic + all retry topics
         self.consumer = BaseKafkaConsumer(
             config=self.consumer_config,
+            domain=self.domain,
+            worker_name="enrichment_worker",
             topics=self.topics,
-            group_id=self.consumer_group,
             message_handler=self._handle_enrichment_task,
-            max_batches=self.consumer_config.consumer_max_batches,
         )
 
         # Update readiness: Kafka will be connected when consumer starts
@@ -744,6 +748,7 @@ class ClaimXEnrichmentWorker:
                     extra={
                         "handler": handler_class.__name__,
                         "event_count": len(handler_events),
+                        "event_ids": [evt.event_id for evt in handler_events[:5]],  # Sample for correlation
                         "error_category": e.category.value,
                         "error": str(e)[:200],
                     },
@@ -765,7 +770,9 @@ class ClaimXEnrichmentWorker:
                     extra={
                         "handler": handler_class.__name__,
                         "event_count": len(handler_events),
+                        "event_ids": [evt.event_id for evt in handler_events[:5]],  # Sample for correlation
                         "error_type": type(e).__name__,
+                        "error_category": error_category.value,
                         "error": str(e)[:200],
                     },
                     exc_info=True,
@@ -890,6 +897,12 @@ class ClaimXEnrichmentWorker:
             entity_rows: EntityRowsMessage with rows for all tables
             tasks: Original enrichment tasks that produced these entity rows
         """
+        # Generate batch ID for correlation tracking (following xact pattern)
+        batch_id = uuid.uuid4().hex[:8]
+
+        # Collect event IDs from tasks for correlation
+        event_ids = [task.event_id for task in tasks[:5]]  # Sample for correlation
+
         try:
             counts = await self.entity_writer.write_all(entity_rows)
 
@@ -904,6 +917,8 @@ class ClaimXEnrichmentWorker:
             logger.info(
                 "Entity tables write complete",
                 extra={
+                    "batch_id": batch_id,
+                    "event_ids": event_ids,
                     "tables_written": counts,
                     "total_rows": sum(counts.values()),
                 },
@@ -913,8 +928,11 @@ class ClaimXEnrichmentWorker:
             logger.error(
                 "Error writing entities to Delta - routing batch to retry",
                 extra={
+                    "batch_id": batch_id,
+                    "event_ids": event_ids,
                     "row_count": entity_rows.row_count(),
                     "task_count": len(tasks),
+                    "error_category": ErrorCategory.TRANSIENT.value,
                     "error": str(e)[:200],
                 },
                 exc_info=True,

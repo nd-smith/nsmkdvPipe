@@ -76,6 +76,7 @@ class DeltaEventsWorker:
         config: KafkaConfig,
         producer: BaseKafkaProducer,
         events_table_path: str,
+        domain: str = "xact",
         dedupe_window_hours: int = 24,
     ):
         """
@@ -86,19 +87,19 @@ class DeltaEventsWorker:
                     Also provides delta_events_batch_size and delta_events_max_batches.
             producer: Kafka producer for retry topic routing (required).
             events_table_path: Full abfss:// path to xact_events Delta table
+            domain: Domain identifier (default: "xact")
             dedupe_window_hours: Hours to check for duplicate trace_ids (default: 24)
         """
         self.config = config
+        self.domain = domain
         self.events_table_path = events_table_path
         self.consumer: Optional[BaseKafkaConsumer] = None
         self.producer = producer
 
-        # Consumer group for delta events writing (separate from event ingester)
-        self.consumer_group = f"{config.consumer_group_prefix}-delta-events"
-
-        # Batch configuration
-        self.batch_size = config.delta_events_batch_size
-        self.max_batches = config.delta_events_max_batches  # None = unlimited
+        # Batch configuration - use worker-specific config
+        processing_config = config.get_worker_config(domain, "delta_events_worker", "processing")
+        self.batch_size = processing_config.get("batch_size", 100)
+        self.max_batches = processing_config.get("max_batches")  # None = unlimited
 
         # Batch state
         self._batch: List[Dict[str, Any]] = []
@@ -119,7 +120,7 @@ class DeltaEventsWorker:
             config=config,
             producer=producer,
             table_path=events_table_path,
-            retry_delays=config.delta_events_retry_delays,
+            retry_delays=config.retry_delays,
             retry_topic_prefix=config.delta_events_retry_topic_prefix,
             dlq_topic=config.delta_events_dlq_topic,
         )
@@ -127,8 +128,10 @@ class DeltaEventsWorker:
         logger.info(
             "Initialized DeltaEventsWorker",
             extra={
-                "consumer_group": self.consumer_group,
-                "events_topic": config.events_topic,
+                "domain": domain,
+                "worker_name": "delta_events_worker",
+                "consumer_group": config.get_consumer_group(domain, "delta_events_worker"),
+                "events_topic": config.get_topic(domain, "events"),
                 "events_table_path": events_table_path,
                 "dedupe_window_hours": dedupe_window_hours,
                 "batch_size": self.batch_size,
@@ -159,8 +162,9 @@ class DeltaEventsWorker:
         # offsets are only committed after data is durably written to Delta Lake
         self.consumer = BaseKafkaConsumer(
             config=self.config,
-            topics=[self.config.events_topic],
-            group_id=self.consumer_group,
+            domain=self.domain,
+            worker_name="delta_events_worker",
+            topics=[self.config.get_topic(self.domain, "events")],
             message_handler=self._handle_event_message,
             enable_message_commit=False,
         )
