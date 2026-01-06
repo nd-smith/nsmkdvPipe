@@ -119,7 +119,7 @@ async def test_upload_single_cached_file(
         result_msg = json.loads(result_messages[0]["value"])
         assert result_msg["media_id"] == media_id
         assert result_msg["project_id"] == project_id
-        assert result_msg["status"] == "success"
+        assert result_msg["status"] == "completed"
         assert "onelake_path" in result_msg
 
     finally:

@@ -187,9 +187,9 @@ async def test_e2e_single_event_single_attachment(
             # Validate result message
             result_msg = DownloadResultMessage.model_validate_json(result_messages[0]["value"])
             assert result_msg.trace_id == test_event.trace_id
-            assert result_msg.status == "success"
+            assert result_msg.status == "completed"
             assert result_msg.bytes_downloaded == len(test_file_content)
-            assert result_msg.destination_path is not None
+            assert result_msg.blob_path is not None
 
             # Wait for Delta inventory write (result processor has batch timeout)
             success = await wait_for_condition(
@@ -205,7 +205,7 @@ async def test_e2e_single_event_single_attachment(
             inventory_record = inventory_records[0]
             assert inventory_record["trace_id"] == test_event.trace_id
             assert inventory_record["attachment_url"] == test_event.attachments[0]
-            assert inventory_record["status"] == "success"
+            assert inventory_record["bytes_downloaded"] > 0  # Completed records have bytes
             assert inventory_record["bytes_downloaded"] == len(test_file_content)
 
             # Calculate end-to-end latency
@@ -367,7 +367,7 @@ async def test_e2e_multiple_events_multiple_attachments(
 
                 # Validate all attachments succeeded
                 for record in inventory_records:
-                    assert record["status"] == "success", f"Attachment failed: {record}"
+                    assert record["bytes_downloaded"] > 0, f"Attachment failed: {record}"
 
             # Calculate end-to-end latency
             end_time = datetime.now(timezone.utc)

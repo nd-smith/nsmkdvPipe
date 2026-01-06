@@ -178,7 +178,7 @@ class TestResultProcessor:
         # Verify result added to batch
         assert len(processor._batch) == 1
         assert processor._batch[0].trace_id == "evt-123"
-        assert processor._batch[0].status == "success"
+        assert processor._batch[0].status == "completed"
 
     async def test_filter_failed_transient_result(
         self, kafka_config, inventory_table_path, mock_inventory_writer, sample_failed_transient_result
