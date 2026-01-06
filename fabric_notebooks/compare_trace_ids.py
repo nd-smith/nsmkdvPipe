@@ -4,8 +4,9 @@ Compare trace_ids between Eventhouse source and Delta xact_events.
 Identifies records that exist in Eventhouse but are missing from Delta.
 
 Usage in Fabric notebook:
-    1. Run all cells
-    2. Check missing_traces DataFrame for gaps
+    1. Update configuration in Cell 1
+    2. Run Cell 2 (KQL magic) to get Eventhouse data
+    3. Run remaining cells to compare
 """
 
 # Cell 1: Configuration
@@ -13,51 +14,58 @@ Usage in Fabric notebook:
 
 from datetime import datetime, timezone
 from pyspark.sql import functions as F
+import pandas as pd
 
 # Time range to compare (adjust as needed)
 START_TIME = "2026-01-06 16:15:00"
 END_TIME = None  # None = now
 
-# Eventhouse connection
-EVENTHOUSE_CLUSTER = "https://<your-cluster>.kusto.fabric.microsoft.com"
-EVENTHOUSE_DATABASE = "<your-database>"
+# Eventhouse settings (for KQL magic cell)
+EVENTHOUSE_DATABASE = "your-database-name"  # Used in %%kql connection
 EVENTHOUSE_TABLE = "tbl_VERISK_XACTANALYSIS_STATUS_EXPORT"
 
 # Delta table path
 XACT_EVENTS_PATH = "abfss://<workspace>@onelake.dfs.fabric.microsoft.com/<lakehouse>/Tables/xact_events"
 
 print(f"Comparing trace_ids from {START_TIME} to {END_TIME or 'now'}")
+print(f"\nNext: Run the KQL magic cell below to query Eventhouse")
 
 
-# Cell 2: Query Eventhouse for source trace_ids
-# =============================================
+# Cell 2: Query Eventhouse using KQL magic
+# ========================================
+# NOTE: This cell must be a separate cell with %%kql magic
+# Copy this to a new cell and run it:
 
-# Build KQL query
-end_filter = f"and ingestion_time() < datetime('{END_TIME}')" if END_TIME else ""
-kql_query = f"""
-{EVENTHOUSE_TABLE}
-| where ingestion_time() > datetime('{START_TIME}')
-{end_filter}
+"""
+%%kql
+// Connect to your Eventhouse database first via the notebook UI
+// Or use: %%kql your-eventhouse-uri://databases/your-database
+
+tbl_VERISK_XACTANALYSIS_STATUS_EXPORT
+| where ingestion_time() > datetime('2026-01-06 16:15:00')
 | project traceId, ingestion_time = ingestion_time(), utcDateTime
-| distinct traceId, ingestion_time, utcDateTime
+| summarize
+    eh_ingestion_time = min(ingestion_time),
+    eh_utcDateTime = min(utcDateTime)
+    by traceId
 """
 
-print("KQL Query:")
-print(kql_query)
+# Cell 3: Convert KQL result to Spark DataFrame
+# =============================================
+# After running the %%kql cell above, the result is in _kql_raw_result_
 
-# Execute via Kusto connector
-eventhouse_df = spark.read \
-    .format("com.microsoft.kusto.spark.synapse.datasource") \
-    .option("kustoCluster", EVENTHOUSE_CLUSTER) \
-    .option("kustoDatabase", EVENTHOUSE_DATABASE) \
-    .option("kustoQuery", kql_query) \
-    .load()
+# Convert KQL result to pandas then Spark
+try:
+    eventhouse_pdf = _kql_raw_result_.to_dataframe()
+    eventhouse_df = spark.createDataFrame(eventhouse_pdf)
+    eventhouse_count = eventhouse_df.count()
+    print(f"Eventhouse source records: {eventhouse_count:,}")
+except NameError:
+    print("ERROR: Run the %%kql cell first to populate _kql_raw_result_")
+    print("Create a new cell with the KQL magic command from Cell 2")
 
-eventhouse_count = eventhouse_df.count()
-print(f"\nEventhouse source records: {eventhouse_count:,}")
 
-
-# Cell 3: Query Delta for destination trace_ids
+# Cell 4: Query Delta for destination trace_ids
 # =============================================
 
 # Read Delta table
@@ -81,14 +89,14 @@ print(f"Delta xact_events records: {delta_count:,}")
 print(f"Gap: {eventhouse_count - delta_count:,} records")
 
 
-# Cell 4: Find missing trace_ids (in Eventhouse but not in Delta)
+# Cell 5: Find missing trace_ids (in Eventhouse but not in Delta)
 # ===============================================================
 
-# Rename columns for join
+# Rename Eventhouse columns for join (KQL result has traceId)
 eventhouse_traces = eventhouse_df.select(
     F.col("traceId").alias("trace_id"),
-    F.col("ingestion_time").alias("eh_ingestion_time"),
-    F.col("utcDateTime").alias("eh_utcDateTime")
+    F.col("eh_ingestion_time"),
+    F.col("eh_utcDateTime")
 )
 
 delta_traces_renamed = delta_traces.select(
@@ -108,7 +116,7 @@ missing_count = missing_traces.count()
 print(f"\nMissing from Delta: {missing_count:,} trace_ids")
 
 
-# Cell 5: Analyze missing records
+# Cell 6: Analyze missing records
 # ==============================
 
 if missing_count > 0:
@@ -137,7 +145,7 @@ else:
     print("\nNo missing records found!")
 
 
-# Cell 6: Export missing trace_ids (optional)
+# Cell 7: Export missing trace_ids (optional)
 # ==========================================
 
 # Uncomment to save missing trace_ids to a file
@@ -149,7 +157,7 @@ else:
 # missing_traces.toPandas().to_csv("/tmp/missing_traces.csv", index=False)
 
 
-# Cell 7: Check for duplicates in Delta (bonus)
+# Cell 8: Check for duplicates in Delta (bonus)
 # ============================================
 
 print("\n" + "=" * 60)
