@@ -111,12 +111,13 @@ class PollerCheckpoint:
             # Update timestamp
             self.updated_at = datetime.now(timezone.utc).isoformat()
 
-            # Write atomically (write to temp, then rename)
+            # Write atomically (write to temp, then replace)
+            # Use os.replace() for cross-platform atomic replace (works on Windows)
             temp_path = path.with_suffix(".tmp")
             with open(temp_path, "w") as f:
                 json.dump(asdict(self), f, indent=2)
 
-            temp_path.rename(path)
+            os.replace(temp_path, path)
 
             logger.debug(
                 "Saved checkpoint",
