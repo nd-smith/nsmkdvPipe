@@ -110,9 +110,14 @@ class ClaimXUploadWorker:
                 "  - ONELAKE_BASE_PATH env var (fallback for all domains)"
             )
 
-        # Topic to consume from - use environment variable or default
-        self.topic = os.getenv("KAFKA_CLAIMX_DOWNLOADS_CACHED_TOPIC", "claimx.downloads.cached")
-        self.results_topic = os.getenv("KAFKA_CLAIMX_DOWNLOADS_RESULTS_TOPIC", "claimx.downloads.results")
+        # Get processing config for concurrency settings
+        processing_config = config.get_worker_config("claimx", "upload_worker", "processing")
+        self._upload_concurrency = processing_config.get("concurrency", 15)
+        self._upload_batch_size = processing_config.get("batch_size", 30)
+
+        # Topic to consume from - use hierarchical config
+        self.topic = config.get_topic("claimx", "downloads_cached")
+        self.results_topic = config.get_topic("claimx", "downloads_results")
 
         # Consumer will be created in start()
         self._consumer: Optional[AIOKafkaConsumer] = None
@@ -148,8 +153,8 @@ class ClaimXUploadWorker:
                 "topic": self.topic,
                 "results_topic": self.results_topic,
                 "domain": self.DOMAIN,
-                "upload_concurrency": config.upload_concurrency,
-                "upload_batch_size": config.upload_batch_size,
+                "upload_concurrency": self._upload_concurrency,
+                "upload_batch_size": self._upload_batch_size,
             },
         )
 
@@ -171,8 +176,8 @@ class ClaimXUploadWorker:
         logger.info(
             "Starting ClaimX upload worker",
             extra={
-                "upload_concurrency": self.config.upload_concurrency,
-                "upload_batch_size": self.config.upload_batch_size,
+                "upload_concurrency": self._upload_concurrency,
+                "upload_batch_size": self._upload_batch_size,
             },
         )
 
@@ -180,7 +185,7 @@ class ClaimXUploadWorker:
         await self.health_server.start()
 
         # Initialize concurrency control
-        self._semaphore = asyncio.Semaphore(self.config.upload_concurrency)
+        self._semaphore = asyncio.Semaphore(self._upload_concurrency)
         self._shutdown_event = asyncio.Event()
         self._in_flight_tasks = set()
 
