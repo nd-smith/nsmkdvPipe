@@ -1012,6 +1012,7 @@ class DownloadWorker:
                     "error_category": error_category.value,
                     "retry_count": task_message.retry_count,
                     "error_message": error_message,
+                    "status_code": outcome.status_code,
                 },
             )
 
