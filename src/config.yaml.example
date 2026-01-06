@@ -312,6 +312,10 @@ kafka:
         # Optional limit for testing (null = unlimited)
         max_batches: null
 
+        # Flush pending events after this many seconds without a write (seconds)
+        # Ensures events are written even during low-traffic periods
+        flush_timeout_seconds: 120  # 2 minutes
+
         # Retry delays for failed Delta writes (seconds)
         retry_delays: [300, 600, 1200, 2400]  # 5m, 10m, 20m, 40m
 
@@ -457,8 +461,19 @@ kafka:
 
       processing:
         batch_size: 1000
+
+        # Flush pending events after this many seconds without a write (seconds)
+        # Ensures events are written even during low-traffic periods
+        flush_timeout_seconds: 120  # 2 minutes
+
         retry_delays: [300, 600, 1200, 2400]
         max_retries: 4
+
+        # Topic prefix for retry topics
+        retry_topic_prefix: "claimx-delta-events.retry"
+
+        # Dead letter queue topic
+        dlq_topic: "claimx-delta-events.dlq"
 
   # ===========================================================================
   # SHARED STORAGE CONFIGURATION

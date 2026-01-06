@@ -448,6 +448,13 @@ class KafkaConfig:
                     f"{context}: timeout_seconds must be > 0, got {settings['timeout_seconds']}"
                 )
 
+        # Validate flush_timeout_seconds (for delta writers)
+        if "flush_timeout_seconds" in settings:
+            if settings["flush_timeout_seconds"] <= 0:
+                raise ValueError(
+                    f"{context}: flush_timeout_seconds must be > 0, got {settings['flush_timeout_seconds']}"
+                )
+
 
 def _deep_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]:
     """Deep merge overlay into base dict.
