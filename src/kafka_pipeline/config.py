@@ -555,8 +555,12 @@ def load_config(
     xact_config = kafka_config.get("xact", {})
     claimx_config = kafka_config.get("claimx", {})
 
-    # Extract storage settings (support both flat and nested structure)
+    # Extract storage settings (support multiple locations for flexibility)
+    # Priority: kafka.storage > root storage > flat kafka structure
     storage = kafka_config.get("storage", {})
+    if not storage:
+        # Try root-level storage section (common user configuration pattern)
+        storage = yaml_data.get("storage", {})
     if not storage:
         # Fallback: storage settings directly under kafka (flat structure)
         storage = kafka_config

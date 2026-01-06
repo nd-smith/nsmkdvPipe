@@ -173,11 +173,20 @@ class LocalKafkaConfig:
         config_path = config_path or DEFAULT_CONFIG_PATH
 
         # Load from config.yaml
+        yaml_data: Dict[str, Any] = {}
         kafka_data: Dict[str, Any] = {}
         if config_path.exists():
             with open(config_path, "r") as f:
                 yaml_data = yaml.safe_load(f) or {}
             kafka_data = yaml_data.get("kafka", {})
+
+        # Extract storage settings (support multiple locations for flexibility)
+        # Priority: kafka.storage > root storage > flat kafka structure
+        storage_data = kafka_data.get("storage", {})
+        if not storage_data:
+            storage_data = yaml_data.get("storage", {})
+        if not storage_data:
+            storage_data = kafka_data
 
         # Parse retry delays
         retry_delays_str = os.getenv(
@@ -187,7 +196,7 @@ class LocalKafkaConfig:
         retry_delays = [int(d.strip()) for d in retry_delays_str.split(",")]
 
         # Build domain paths from config.yaml and environment variables
-        onelake_domain_paths: Dict[str, str] = kafka_data.get("onelake_domain_paths", {}).copy()
+        onelake_domain_paths: Dict[str, str] = storage_data.get("onelake_domain_paths", {}).copy()
         if os.getenv("ONELAKE_XACT_PATH"):
             onelake_domain_paths["xact"] = os.getenv("ONELAKE_XACT_PATH", "")
         if os.getenv("ONELAKE_CLAIMX_PATH"):
@@ -233,12 +242,12 @@ class LocalKafkaConfig:
             )),
             onelake_base_path=os.getenv(
                 "ONELAKE_BASE_PATH",
-                kafka_data.get("onelake_base_path", "")
+                storage_data.get("onelake_base_path", "")
             ),
             onelake_domain_paths=onelake_domain_paths,
             cache_dir=os.getenv(
                 "CACHE_DIR",
-                kafka_data.get("cache_dir", "/tmp/kafka_pipeline_cache")
+                storage_data.get("cache_dir", "/tmp/kafka_pipeline_cache")
             ),
             delta_events_batch_size=int(os.getenv(
                 "DELTA_EVENTS_BATCH_SIZE",
