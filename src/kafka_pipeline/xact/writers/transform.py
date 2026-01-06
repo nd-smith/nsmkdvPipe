@@ -140,6 +140,11 @@ def flatten_events(df: pl.DataFrame) -> pl.DataFrame:
     Returns:
         Flattened DataFrame with all extracted fields
     """
+    # Normalize known typos in type field (e.g., "qaAproved" -> "qaApproved")
+    df = df.with_columns(
+        pl.col("type").str.replace("qaAproved", "qaApproved").alias("type")
+    )
+
     # Build base columns
     base_df = df.select(
         [
