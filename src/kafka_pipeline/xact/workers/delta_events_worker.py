@@ -21,7 +21,9 @@ Retry topics: delta-events.retry.{delay}m
 DLQ topic: delta-events.dlq
 """
 
+import asyncio
 import json
+import time
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -71,6 +73,9 @@ class DeltaEventsWorker:
         >>> await worker.start()
     """
 
+    # Cycle output configuration
+    CYCLE_LOG_INTERVAL_SECONDS = 30
+
     def __init__(
         self,
         config: KafkaConfig,
@@ -110,6 +115,13 @@ class DeltaEventsWorker:
         self._batch: List[Dict[str, Any]] = []
         self._batches_written = 0
         self._total_events_written = 0
+
+        # Cycle output tracking
+        self._events_received = 0
+        self._last_cycle_log = time.monotonic()
+        self._cycle_count = 0
+        self._cycle_task: Optional[asyncio.Task] = None
+        self._running = False
 
         # Initialize Delta writer
         if not events_table_path:
@@ -164,6 +176,10 @@ class DeltaEventsWorker:
                 "max_batches": self.max_batches,
             },
         )
+        self._running = True
+
+        # Start cycle output background task
+        self._cycle_task = asyncio.create_task(self._periodic_cycle_output())
 
         # Create and start consumer with message handler
         # Disable per-message commits - we commit after batch writes to ensure
@@ -177,8 +193,11 @@ class DeltaEventsWorker:
             enable_message_commit=False,
         )
 
-        # Start consumer (this blocks until stopped)
-        await self.consumer.start()
+        try:
+            # Start consumer (this blocks until stopped)
+            await self.consumer.start()
+        finally:
+            self._running = False
 
     async def stop(self) -> None:
         """
@@ -188,6 +207,15 @@ class DeltaEventsWorker:
         committing any pending offsets.
         """
         logger.info("Stopping DeltaEventsWorker")
+        self._running = False
+
+        # Cancel cycle output task
+        if self._cycle_task and not self._cycle_task.done():
+            self._cycle_task.cancel()
+            try:
+                await self._cycle_task
+            except asyncio.CancelledError:
+                pass
 
         # Flush any remaining events in the batch
         if self._batch:
@@ -218,6 +246,9 @@ class DeltaEventsWorker:
         Args:
             record: ConsumerRecord containing EventMessage JSON
         """
+        # Track events received for cycle output
+        self._events_received += 1
+
         # Check if we've reached max batches limit
         if self.max_batches is not None and self._batches_written >= self.max_batches:
             logger.info(
@@ -389,6 +420,45 @@ class DeltaEventsWorker:
                 success=False,
             )
             return False
+
+    async def _periodic_cycle_output(self) -> None:
+        """
+        Background task for periodic cycle logging.
+
+        Logs processing statistics at regular intervals for operational visibility.
+        """
+        logger.info(
+            "Cycle 0: events=0, batches_written=0, pending=0 [cycle output every %ds]",
+            self.CYCLE_LOG_INTERVAL_SECONDS,
+        )
+        self._last_cycle_log = time.monotonic()
+
+        try:
+            while self._running:
+                await asyncio.sleep(1)
+
+                # Log cycle output at regular intervals
+                cycle_elapsed = time.monotonic() - self._last_cycle_log
+                if cycle_elapsed >= self.CYCLE_LOG_INTERVAL_SECONDS:
+                    self._cycle_count += 1
+                    self._last_cycle_log = time.monotonic()
+
+                    logger.info(
+                        f"Cycle {self._cycle_count}: events={self._events_received}, "
+                        f"batches_written={self._batches_written}, pending={len(self._batch)}",
+                        extra={
+                            "cycle": self._cycle_count,
+                            "events_received": self._events_received,
+                            "batches_written": self._batches_written,
+                            "total_events_written": self._total_events_written,
+                            "pending_batch_size": len(self._batch),
+                            "cycle_interval_seconds": self.CYCLE_LOG_INTERVAL_SECONDS,
+                        },
+                    )
+
+        except asyncio.CancelledError:
+            logger.debug("Periodic cycle output task cancelled")
+            raise
 
 
 __all__ = ["DeltaEventsWorker"]

@@ -111,6 +111,9 @@ class DownloadWorker:
     CONSUMER_GROUP = "xact-download-worker"
     WORKER_NAME = "download_worker"
 
+    # Cycle output configuration
+    CYCLE_LOG_INTERVAL_SECONDS = 30
+
     def __init__(self, config: KafkaConfig, domain: str = "xact", temp_dir: Optional[Path] = None):
         """
         Initialize download worker.
@@ -169,6 +172,14 @@ class DownloadWorker:
 
         # Create retry handler for error routing (lazy initialized in start())
         self.retry_handler: Optional[RetryHandler] = None
+
+        # Cycle output tracking
+        self._messages_received = 0
+        self._downloads_success = 0
+        self._downloads_failed = 0
+        self._bytes_downloaded = 0
+        self._last_cycle_log = time.monotonic()
+        self._cycle_count = 0
 
         logger.info(
             "Initialized download worker with concurrent processing",
@@ -433,6 +444,14 @@ class DownloadWorker:
         _logged_waiting_for_assignment = False
         _logged_assignment_received = False
 
+        # Log initial cycle 0
+        logger.info(
+            "Cycle 0: received=0 (success=0, failed=0), bytes=0, in_flight=0 "
+            "[cycle output every %ds]",
+            self.CYCLE_LOG_INTERVAL_SECONDS,
+        )
+        self._last_cycle_log = time.monotonic()
+
         while self._running and self._consumer:
             try:
                 # Check partition assignment before fetching
@@ -476,6 +495,27 @@ class DownloadWorker:
                     timeout_ms=1000,
                     max_records=self.batch_size,
                 )
+
+                # Log cycle output at regular intervals
+                cycle_elapsed = time.monotonic() - self._last_cycle_log
+                if cycle_elapsed >= self.CYCLE_LOG_INTERVAL_SECONDS:
+                    self._cycle_count += 1
+                    self._last_cycle_log = time.monotonic()
+                    in_flight = len(self._in_flight_tasks)
+                    logger.info(
+                        f"Cycle {self._cycle_count}: received={self._messages_received} "
+                        f"(success={self._downloads_success}, failed={self._downloads_failed}), "
+                        f"bytes={self._bytes_downloaded}, in_flight={in_flight}",
+                        extra={
+                            "cycle": self._cycle_count,
+                            "messages_received": self._messages_received,
+                            "downloads_success": self._downloads_success,
+                            "downloads_failed": self._downloads_failed,
+                            "bytes_downloaded": self._bytes_downloaded,
+                            "in_flight": in_flight,
+                            "cycle_interval_seconds": self.CYCLE_LOG_INTERVAL_SECONDS,
+                        },
+                    )
 
                 if not data:
                     continue
@@ -633,6 +673,9 @@ class DownloadWorker:
                 error=e,
             )
 
+        # Track messages received for cycle output
+        self._messages_received += 1
+
         # Track in-flight task
         async with self._in_flight_lock:
             self._in_flight_tasks.add(task_message.trace_id)
@@ -670,6 +713,11 @@ class DownloadWorker:
                 record_message_consumed(
                     message.topic, self.CONSUMER_GROUP, len(message.value), success=True
                 )
+
+                # Track successful download for cycle output
+                self._downloads_success += 1
+                self._bytes_downloaded += outcome.bytes_downloaded or 0
+
                 return TaskResult(
                     message=message,
                     task_message=task_message,
@@ -682,6 +730,9 @@ class DownloadWorker:
                 record_message_consumed(
                     message.topic, self.CONSUMER_GROUP, len(message.value), success=False
                 )
+
+                # Track failed download for cycle output
+                self._downloads_failed += 1
                 # Check if this is a circuit breaker error that should prevent commit
                 is_circuit_error = outcome.error_category == ErrorCategory.CIRCUIT_OPEN
                 return TaskResult(
