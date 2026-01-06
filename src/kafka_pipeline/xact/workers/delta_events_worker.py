@@ -147,7 +147,6 @@ class DeltaEventsWorker:
                 "consumer_group": config.get_consumer_group(domain, "delta_events_writer"),
                 "events_topic": config.get_topic(domain, "events"),
                 "events_table_path": events_table_path,
-                "dedupe_window_hours": dedupe_window_hours,
                 "batch_size": self.batch_size,
                 "max_batches": self.max_batches,
                 "retry_delays": self._retry_delays,
