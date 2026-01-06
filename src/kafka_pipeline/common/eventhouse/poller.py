@@ -141,7 +141,8 @@ class PollerCheckpoint:
         return datetime.fromisoformat(self.last_ingestion_time.replace("Z", "+00:00"))
 
 # Default backfill window (hours) when no start time is configured
-DEFAULT_BACKFILL_WINDOW_HOURS = 24
+# Keep small to avoid memory issues on first startup - use explicit backfill for historical data
+DEFAULT_BACKFILL_WINDOW_HOURS = 1
 
 
 @dataclass
