@@ -349,13 +349,18 @@ async def run_delta_events_worker(kafka_config, events_table_path: str):
     logger.info("Starting xact Delta Events worker...")
 
     # Create producer for retry topic routing
-    producer = BaseKafkaProducer(config=kafka_config)
+    producer = BaseKafkaProducer(
+        config=kafka_config,
+        domain="xact",
+        worker_name="delta_events_worker",
+    )
     await producer.start()
 
     worker = DeltaEventsWorker(
         config=kafka_config,
         producer=producer,
         events_table_path=events_table_path,
+        domain="xact",
     )
     shutdown_event = get_shutdown_event()
 
@@ -449,7 +454,7 @@ async def run_download_worker(kafka_config):
     set_log_context(stage="xact-download")
     logger.info("Starting xact Download worker...")
 
-    worker = DownloadWorker(config=kafka_config)
+    worker = DownloadWorker(config=kafka_config, domain="xact")
     shutdown_event = get_shutdown_event()
 
     async def shutdown_watcher():
@@ -489,7 +494,7 @@ async def run_upload_worker(kafka_config):
     set_log_context(stage="xact-upload")
     logger.info("Starting xact Upload worker...")
 
-    worker = UploadWorker(config=kafka_config)
+    worker = UploadWorker(config=kafka_config, domain="xact")
     shutdown_event = get_shutdown_event()
 
     async def shutdown_watcher():
@@ -728,6 +733,7 @@ async def run_claimx_event_ingester(
 
     worker = ClaimXEventIngesterWorker(
         config=kafka_config,
+        domain="claimx",
         enable_delta_writes=enable_delta_writes,
         events_table_path=events_table_path,
     )
@@ -770,7 +776,7 @@ async def run_claimx_enrichment_worker(kafka_config):
     set_log_context(stage="claimx-enricher")
     logger.info("Starting ClaimX Enrichment worker...")
 
-    worker = ClaimXEnrichmentWorker(config=kafka_config)
+    worker = ClaimXEnrichmentWorker(config=kafka_config, domain="claimx")
     shutdown_event = get_shutdown_event()
 
     async def shutdown_watcher():
@@ -810,7 +816,7 @@ async def run_claimx_download_worker(kafka_config):
     set_log_context(stage="claimx-downloader")
     logger.info("Starting ClaimX Download worker...")
 
-    worker = ClaimXDownloadWorker(config=kafka_config)
+    worker = ClaimXDownloadWorker(config=kafka_config, domain="claimx")
     shutdown_event = get_shutdown_event()
 
     async def shutdown_watcher():
@@ -850,7 +856,7 @@ async def run_claimx_upload_worker(kafka_config):
     set_log_context(stage="claimx-uploader")
     logger.info("Starting ClaimX Upload worker...")
 
-    worker = ClaimXUploadWorker(config=kafka_config)
+    worker = ClaimXUploadWorker(config=kafka_config, domain="claimx")
     shutdown_event = get_shutdown_event()
 
     async def shutdown_watcher():
