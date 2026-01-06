@@ -67,11 +67,15 @@ class ClaimXResultProcessor:
             results_topic: Topic name for upload results (e.g., "claimx.downloads.results")
         """
         self.config = config
-        self.results_topic = results_topic or "claimx.downloads.results"
+        self.domain = "claimx"
+        self.worker_name = "result_processor"
+
+        # Get topic from hierarchical config or use provided/default
+        self.results_topic = results_topic or config.get_topic(self.domain, "downloads_results")
         self.consumer: Optional[BaseKafkaConsumer] = None
 
-        # Consumer group for ClaimX result processing
-        self.consumer_group = f"{config.consumer_group_prefix}-claimx-result-processor"
+        # Consumer group from hierarchical config
+        self.consumer_group = config.get_consumer_group(self.domain, self.worker_name)
 
         # Running statistics (reset periodically for monitoring windows)
         self._stats_lock = asyncio.Lock()
@@ -107,10 +111,10 @@ class ClaimXResultProcessor:
         # Create and start consumer with message handler
         self.consumer = BaseKafkaConsumer(
             config=self.config,
+            domain=self.domain,
+            worker_name=self.worker_name,
             topics=[self.results_topic],
-            group_id=self.consumer_group,
             message_handler=self._handle_result_message,
-            max_batches=self.config.consumer_max_batches,
         )
 
         # Start consumer (this blocks until stopped)

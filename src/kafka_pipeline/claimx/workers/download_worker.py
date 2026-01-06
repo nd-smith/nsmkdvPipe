@@ -139,6 +139,11 @@ class ClaimXDownloadWorker:
         ]
         self.topics = [self.DOWNLOADS_PENDING_TOPIC] + retry_topics
 
+        # Get processing config for concurrency settings
+        processing_config = config.get_worker_config("claimx", "download_worker", "processing")
+        self._download_concurrency = processing_config.get("concurrency", 15)
+        self._download_batch_size = processing_config.get("batch_size", 30)
+
         # Consumer will be created in start()
         self._consumer: Optional[AIOKafkaConsumer] = None
         self._running = False
@@ -182,8 +187,8 @@ class ClaimXDownloadWorker:
                 "topics": self.topics,
                 "temp_dir": str(self.temp_dir),
                 "cache_dir": str(self.cache_dir),
-                "download_concurrency": config.download_concurrency,
-                "download_batch_size": config.download_batch_size,
+                "download_concurrency": self._download_concurrency,
+                "download_batch_size": self._download_batch_size,
             },
         )
 
@@ -218,8 +223,8 @@ class ClaimXDownloadWorker:
         logger.info(
             "Starting ClaimX download worker with concurrent processing",
             extra={
-                "download_concurrency": self.config.download_concurrency,
-                "download_batch_size": self.config.download_batch_size,
+                "download_concurrency": self.self._download_concurrency,
+                "download_batch_size": self.self._download_batch_size,
             },
         )
 
@@ -227,14 +232,14 @@ class ClaimXDownloadWorker:
         await self.health_server.start()
 
         # Initialize concurrency control
-        self._semaphore = asyncio.Semaphore(self.config.download_concurrency)
+        self._semaphore = asyncio.Semaphore(self.self._download_concurrency)
         self._shutdown_event = asyncio.Event()
         self._in_flight_tasks = set()
 
         # Create shared HTTP session with connection pooling
         connector = aiohttp.TCPConnector(
-            limit=self.config.download_concurrency,
-            limit_per_host=self.config.download_concurrency,
+            limit=self.self._download_concurrency,
+            limit_per_host=self.self._download_concurrency,
         )
         self._http_session = aiohttp.ClientSession(connector=connector)
 
@@ -315,7 +320,7 @@ class ClaimXDownloadWorker:
             "group_id": self.CONSUMER_GROUP,
             "enable_auto_commit": False,  # Manual commit after batch processing
             "auto_offset_reset": self.config.auto_offset_reset,
-            "max_poll_records": self.config.download_batch_size,
+            "max_poll_records": self.self._download_batch_size,
             "max_poll_interval_ms": self.config.max_poll_interval_ms,
             "session_timeout_ms": self.config.session_timeout_ms,
             # Connection timeout settings
@@ -474,7 +479,7 @@ class ClaimXDownloadWorker:
                 # Fetch batch of messages
                 data = await self._consumer.getmany(
                     timeout_ms=1000,
-                    max_records=self.config.download_batch_size,
+                    max_records=self.self._download_batch_size,
                 )
 
                 if not data:
@@ -495,7 +500,7 @@ class ClaimXDownloadWorker:
                     "Processing message batch",
                     extra={
                         "batch_size": len(messages),
-                        "download_concurrency": self.config.download_concurrency,
+                        "download_concurrency": self.self._download_concurrency,
                     },
                 )
 
