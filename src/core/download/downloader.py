@@ -129,16 +129,36 @@ class AttachmentDownloader:
             # S3 presigned URLs are used by Xact - no refresh capability
             if url_info.url_type == "s3" and url_info.is_expired:
                 expires_at = url_info.expires_at.isoformat() if url_info.expires_at else "unknown"
+                signed_at = url_info.signed_at.isoformat() if url_info.signed_at else "unknown"
+
+                # Sanity check: expiration should always be after signing
+                # If not, there's a parsing bug we need to investigate
+                if url_info.signed_at and url_info.expires_at and url_info.expires_at < url_info.signed_at:
+                    logger.error(
+                        "CRITICAL: Impossible expiration date detected - expires_at before signed_at. "
+                        "This indicates a parsing bug.",
+                        extra={
+                            "url_type": url_info.url_type,
+                            "signed_at": signed_at,
+                            "expires_at": expires_at,
+                            "ttl_seconds": url_info.ttl_seconds,
+                            "parse_error": url_info.parse_error,
+                            "url_length": len(task.url),
+                        },
+                    )
+
                 logger.warning(
                     "Presigned URL expired, sending to DLQ",
                     extra={
                         "url_type": url_info.url_type,
+                        "signed_at": signed_at,
                         "expires_at": expires_at,
+                        "ttl_seconds": url_info.ttl_seconds,
                         "seconds_expired": abs(url_info.seconds_remaining or 0),
                     },
                 )
                 return DownloadOutcome.validation_failure(
-                    validation_error=f"Presigned URL expired at {expires_at}",
+                    validation_error=f"Presigned URL expired at {expires_at} (signed at {signed_at})",
                     error_category=ErrorCategory.PERMANENT,
                 )
 

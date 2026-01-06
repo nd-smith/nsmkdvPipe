@@ -283,7 +283,8 @@ class TestAttachmentDownloaderExpiration:
         outcome = await downloader.download(task)
 
         assert outcome.success is False
-        assert "Presigned URL expired" in outcome.validation_error
+        assert "Presigned URL expired at" in outcome.validation_error
+        assert "(signed at" in outcome.validation_error
         assert outcome.error_category == ErrorCategory.PERMANENT
 
     @pytest.mark.asyncio
