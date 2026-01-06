@@ -620,6 +620,7 @@ async def run_claimx_eventhouse_poller(pipeline_config):
     claimx_kafka_config.claimx["topics"]["events"] = claimx_eventhouse.events_topic
 
     # Build poller config with ClaimXEventMessage schema
+    # Column mapping overridden for claimx: uses event_id instead of trace_id
     poller_config = PollerConfig(
         eventhouse=eventhouse_config,
         kafka=claimx_kafka_config,
@@ -628,6 +629,15 @@ async def run_claimx_eventhouse_poller(pipeline_config):
         poll_interval_seconds=claimx_eventhouse.poll_interval_seconds,
         batch_size=claimx_eventhouse.batch_size,
         source_table=claimx_eventhouse.source_table,
+        column_mapping={
+            "trace_id": "event_id",  # claimx uses event_id instead of trace_id
+            "event_type": "event_type",
+            "event_subtype": "event_subtype",
+            "timestamp": "timestamp",
+            "source_system": "source_system",
+            "payload": "payload",
+            "attachments": "attachments",
+        },
         events_table_path=claimx_eventhouse.claimx_events_table_path,
         backfill_start_stamp=claimx_eventhouse.backfill_start_stamp,
         backfill_stop_stamp=claimx_eventhouse.backfill_stop_stamp,

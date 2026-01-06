@@ -28,6 +28,9 @@ from kafka_pipeline.common.producer import BaseKafkaProducer
 
 logger = get_logger(__name__)
 
+# Default backfill window (hours) when no start time is configured
+DEFAULT_BACKFILL_WINDOW_HOURS = 24
+
 
 @dataclass
 class PollerConfig:
@@ -666,10 +669,10 @@ class KQLEventPoller:
         """
         now = datetime.now(timezone.utc)
 
-        # Use configured start time or fall back to window-based calculation
+        # Use configured start time or fall back to default window
         if self._backfill_start_time is None:
             self._backfill_start_time = now - timedelta(
-                hours=self.config.dedup.eventhouse_query_window_hours
+                hours=DEFAULT_BACKFILL_WINDOW_HOURS
             )
 
         # Use configured stop time or current time
@@ -700,7 +703,7 @@ class KQLEventPoller:
 
             # Build paginated query with limit
             # Use anti-join on last batch's trace_ids to handle events with same ingestion_time
-            trace_id_column = self.config.dedup.eventhouse_trace_id_column
+            trace_id_column = self.config.column_mapping["trace_id"]
             if last_batch_trace_ids:
                 escaped_ids = [tid.replace("'", "\\'") for tid in last_batch_trace_ids]
                 id_list = ", ".join(f"'{tid}'" for tid in escaped_ids)
@@ -846,15 +849,15 @@ class KQLEventPoller:
         if self._backfill_mode:
             # During backfill, paginate by ingestion_time for efficiency
             if self._backfill_start_time is None:
-                # First poll - calculate backfill start time from window config
+                # First poll - calculate backfill start time from default window
                 self._backfill_start_time = now - timedelta(
-                    hours=self.config.dedup.eventhouse_query_window_hours
+                    hours=DEFAULT_BACKFILL_WINDOW_HOURS
                 )
                 logger.info(
                     "Starting backfill mode (calculated from window)",
                     extra={
                         "backfill_start": self._backfill_start_time.isoformat(),
-                        "window_hours": self.config.dedup.eventhouse_query_window_hours,
+                        "window_hours": DEFAULT_BACKFILL_WINDOW_HOURS,
                     },
                 )
 
