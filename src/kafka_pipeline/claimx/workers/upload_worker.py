@@ -326,7 +326,7 @@ class ClaimXUploadWorker:
             "group_id": self.CONSUMER_GROUP,
             "auto_offset_reset": self.config.auto_offset_reset,
             "enable_auto_commit": False,
-            "max_poll_records": self.config.upload_batch_size,
+            "max_poll_records": self._upload_batch_size,
             "session_timeout_ms": self.config.session_timeout_ms,
             "max_poll_interval_ms": self.config.max_poll_interval_ms,
             # Connection timeout settings
@@ -366,7 +366,7 @@ class ClaimXUploadWorker:
                 # Fetch batch of messages
                 batch: Dict[str, List[ConsumerRecord]] = await self._consumer.getmany(
                     timeout_ms=1000,
-                    max_records=self.config.upload_batch_size,
+                    max_records=self._upload_batch_size,
                 )
 
                 if not batch:
