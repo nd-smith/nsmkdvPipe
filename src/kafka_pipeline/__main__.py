@@ -262,12 +262,12 @@ async def run_eventhouse_poller(pipeline_config):
     """Run the Eventhouse Poller.
 
     Polls Microsoft Fabric Eventhouse for events and produces download tasks to local Kafka.
-    Uses KQL queries with deduplication against xact_events Delta table.
 
     Supports graceful shutdown: when shutdown event is set, the poller
     finishes its current poll cycle before exiting.
+
+    Note: Deduplication handled by daily Fabric maintenance job.
     """
-    from kafka_pipeline.common.eventhouse.dedup import DedupConfig
     from kafka_pipeline.common.eventhouse.kql_client import EventhouseConfig
     from kafka_pipeline.common.eventhouse.poller import KQLEventPoller, PollerConfig
 
@@ -285,20 +285,10 @@ async def run_eventhouse_poller(pipeline_config):
         query_timeout_seconds=eventhouse_source.query_timeout_seconds,
     )
 
-    # Build deduplication config
-    dedup_config = DedupConfig(
-        xact_events_table_path=eventhouse_source.xact_events_table_path,
-        xact_events_window_hours=eventhouse_source.xact_events_window_hours,
-        eventhouse_query_window_hours=eventhouse_source.eventhouse_query_window_hours,
-        overlap_minutes=eventhouse_source.overlap_minutes,
-        kql_start_stamp=eventhouse_source.kql_start_stamp,
-    )
-
     # Build poller config
     poller_config = PollerConfig(
         eventhouse=eventhouse_config,
         kafka=pipeline_config.local_kafka.to_kafka_config(),
-        dedup=dedup_config,
         poll_interval_seconds=eventhouse_source.poll_interval_seconds,
         batch_size=eventhouse_source.batch_size,
         source_table=eventhouse_source.source_table,
@@ -592,13 +582,13 @@ async def run_claimx_eventhouse_poller(pipeline_config):
     """Run the Eventhouse Poller for claimx domain.
 
     Polls Microsoft Fabric Eventhouse for claimx events and produces to claimx.events.raw topic.
-    Uses KQL queries with deduplication against claimx_events Delta table.
 
     Supports graceful shutdown: when shutdown event is set, the poller
     finishes its current poll cycle before exiting.
+
+    Note: Deduplication handled by daily Fabric maintenance job.
     """
     from kafka_pipeline.claimx.schemas.events import ClaimXEventMessage
-    from kafka_pipeline.common.eventhouse.dedup import DedupConfig
     from kafka_pipeline.common.eventhouse.kql_client import EventhouseConfig
     from kafka_pipeline.common.eventhouse.poller import KQLEventPoller, PollerConfig
 
@@ -619,16 +609,6 @@ async def run_claimx_eventhouse_poller(pipeline_config):
         query_timeout_seconds=claimx_eventhouse.query_timeout_seconds,
     )
 
-    # Build deduplication config for claimx
-    dedup_config = DedupConfig(
-        xact_events_table_path=claimx_eventhouse.claimx_events_table_path,  # Reusing param name for compatibility
-        xact_events_window_hours=claimx_eventhouse.claimx_events_window_hours,
-        eventhouse_query_window_hours=claimx_eventhouse.eventhouse_query_window_hours,
-        overlap_minutes=claimx_eventhouse.overlap_minutes,
-        kql_start_stamp=claimx_eventhouse.kql_start_stamp,
-        eventhouse_trace_id_column="event_id",  # claimx uses event_id instead of trace_id
-    )
-
     # Create a modified kafka config with claimx events topic
     local_kafka_config = pipeline_config.local_kafka.to_kafka_config()
     claimx_kafka_config = local_kafka_config
@@ -643,7 +623,6 @@ async def run_claimx_eventhouse_poller(pipeline_config):
     poller_config = PollerConfig(
         eventhouse=eventhouse_config,
         kafka=claimx_kafka_config,
-        dedup=dedup_config,
         event_schema_class=ClaimXEventMessage,
         domain="claimx",
         poll_interval_seconds=claimx_eventhouse.poll_interval_seconds,
