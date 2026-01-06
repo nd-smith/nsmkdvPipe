@@ -108,8 +108,8 @@ class PollerCheckpoint:
             # Ensure directory exists
             path.parent.mkdir(parents=True, exist_ok=True)
 
-            # Update timestamp
-            self.updated_at = datetime.now(timezone.utc).isoformat()
+            # Update timestamp (UTC 24hr format for readability)
+            self.updated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
             # Write atomically (write to temp, then replace)
             # Use os.replace() for cross-platform atomic replace (works on Windows)
@@ -138,8 +138,16 @@ class PollerCheckpoint:
             return False
 
     def to_datetime(self) -> datetime:
-        """Parse last_ingestion_time to datetime."""
-        return datetime.fromisoformat(self.last_ingestion_time.replace("Z", "+00:00"))
+        """Parse last_ingestion_time to datetime (UTC)."""
+        # Handle both new format "%Y-%m-%d %H:%M:%S.%f" and legacy ISO format
+        ts = self.last_ingestion_time
+        try:
+            # New format: "2026-01-06 12:28:56.123456"
+            dt = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S.%f")
+            return dt.replace(tzinfo=timezone.utc)
+        except ValueError:
+            # Legacy ISO format fallback
+            return datetime.fromisoformat(ts.replace("Z", "+00:00"))
 
 # Default backfill window (hours) when no start time is configured
 # Keep small to avoid memory issues on first startup - use explicit backfill for historical data
@@ -557,7 +565,7 @@ class KQLEventPoller:
             trace_id: Trace ID of the last processed record
         """
         checkpoint = PollerCheckpoint(
-            last_ingestion_time=ingestion_time.isoformat(),
+            last_ingestion_time=ingestion_time.strftime("%Y-%m-%d %H:%M:%S.%f"),
             last_trace_id=trace_id,
             updated_at="",  # Will be set by save()
         )
