@@ -48,6 +48,7 @@ class RetryHandler:
         self,
         config: KafkaConfig,
         producer: BaseKafkaProducer,
+        domain: str = "xact",
     ):
         """
         Initialize retry handler.
@@ -55,16 +56,24 @@ class RetryHandler:
         Args:
             config: Kafka configuration with retry settings
             producer: Kafka producer for sending retry/DLQ messages
+            domain: Domain identifier (default: "xact")
         """
         self.config = config
         self.producer = producer
+        self.domain = domain
+
+        # Retry configuration
+        self._retry_delays = config.get_retry_delays(domain)
+        self._max_retries = config.get_max_retries(domain)
+        self._dlq_topic = config.get_topic(domain, "dlq")
 
         logger.info(
             "Initialized RetryHandler",
             extra={
-                "retry_delays": config.retry_delays,
-                "max_retries": config.max_retries,
-                "dlq_topic": config.dlq_topic,
+                "domain": domain,
+                "retry_delays": self._retry_delays,
+                "max_retries": self._max_retries,
+                "dlq_topic": self._dlq_topic,
             },
         )
 
@@ -118,13 +127,13 @@ class RetryHandler:
             return
 
         # Check if retries exhausted
-        if retry_count >= self.config.max_retries:
+        if retry_count >= self._max_retries:
             logger.warning(
                 "Retries exhausted, sending to DLQ",
                 extra={
                     "trace_id": task.trace_id,
                     "retry_count": retry_count,
-                    "max_retries": self.config.max_retries,
+                    "max_retries": self._max_retries,
                 },
             )
             await self._send_to_dlq(task, error, error_category)
@@ -155,8 +164,8 @@ class RetryHandler:
             Exception: If send to retry topic fails
         """
         retry_count = task.retry_count
-        retry_topic = self.config.get_retry_topic(retry_count)
-        delay_seconds = self.config.retry_delays[retry_count]
+        retry_topic = self.config.get_retry_topic(self.domain, retry_count)
+        delay_seconds = self._retry_delays[retry_count]
 
         # Create updated task with incremented retry count
         updated_task = task.model_copy(deep=True)
@@ -248,7 +257,7 @@ class RetryHandler:
         )
 
         await self.producer.send(
-            topic=self.config.dlq_topic,
+            topic=self._dlq_topic,
             key=task.trace_id,
             value=dlq_message,
             headers={
@@ -262,7 +271,7 @@ class RetryHandler:
             "Task sent to DLQ successfully",
             extra={
                 "trace_id": task.trace_id,
-                "dlq_topic": self.config.dlq_topic,
+                "dlq_topic": self._dlq_topic,
             },
         )
 

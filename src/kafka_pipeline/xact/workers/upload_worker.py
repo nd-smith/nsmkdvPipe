@@ -122,7 +122,11 @@ class UploadWorker:
         self._shutdown_event: Optional[asyncio.Event] = None
 
         # Create producer for result messages
-        self.producer = BaseKafkaProducer(config=config)
+        self.producer = BaseKafkaProducer(
+            config=config,
+            domain="xact",
+            worker_name=self.WORKER_NAME,
+        )
 
         # OneLake clients by domain (lazy initialized in start())
         self.onelake_clients: Dict[str, OneLakeClient] = {}

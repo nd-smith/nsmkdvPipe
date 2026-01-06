@@ -133,8 +133,9 @@ class ClaimXDownloadWorker:
 
         # Build list of topics to consume from (pending + retry topics)
         # Note: ClaimX will use same retry topic structure as xact
+        self._retry_delays = config.get_retry_delays("claimx")
         retry_topics = [
-            self._get_retry_topic(i) for i in range(len(config.retry_delays))
+            self._get_retry_topic(i) for i in range(len(self._retry_delays))
         ]
         self.topics = [self.DOWNLOADS_PENDING_TOPIC] + retry_topics
 
@@ -152,7 +153,11 @@ class ClaimXDownloadWorker:
         self._http_session: Optional[aiohttp.ClientSession] = None
 
         # Create producer for cached messages
-        self.producer = BaseKafkaProducer(config=config)
+        self.producer = BaseKafkaProducer(
+            config=config,
+            domain="claimx",
+            worker_name=self.WORKER_NAME,
+        )
 
         # Create downloader instance (reused across tasks)
         self.downloader = AttachmentDownloader()
@@ -192,7 +197,7 @@ class ClaimXDownloadWorker:
         Returns:
             Topic name (e.g., "claimx.downloads.retry.300s")
         """
-        delay_seconds = self.config.retry_delays[retry_level]
+        delay_seconds = self._retry_delays[retry_level]
         return f"claimx.downloads.retry.{delay_seconds}s"
 
     async def start(self) -> None:
