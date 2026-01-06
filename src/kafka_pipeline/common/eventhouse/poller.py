@@ -9,7 +9,7 @@ import asyncio
 import json
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Set, Type
@@ -27,6 +27,118 @@ from kafka_pipeline.common.eventhouse.kql_client import (
 from kafka_pipeline.common.producer import BaseKafkaProducer
 
 logger = get_logger(__name__)
+
+
+# Default checkpoint directory
+DEFAULT_CHECKPOINT_DIR = Path(".checkpoints")
+
+
+@dataclass
+class PollerCheckpoint:
+    """
+    Checkpoint state for resuming the poller after restart.
+
+    Stores the composite key (ingestion_time, trace_id) of the last processed
+    record to enable exact resume without duplicates or gaps.
+
+    The checkpoint uses deterministic ordering (ingestion_time asc, traceId asc)
+    to ensure consistent resume behavior.
+    """
+
+    last_ingestion_time: str  # ISO format UTC timestamp
+    last_trace_id: str  # trace_id of the last processed record
+    updated_at: str  # When checkpoint was written (for debugging)
+
+    @classmethod
+    def from_file(cls, path: Path) -> Optional["PollerCheckpoint"]:
+        """
+        Load checkpoint from JSON file.
+
+        Args:
+            path: Path to checkpoint file
+
+        Returns:
+            PollerCheckpoint if file exists and is valid, None otherwise
+        """
+        if not path.exists():
+            logger.info("No checkpoint file found", extra={"path": str(path)})
+            return None
+
+        try:
+            with open(path, "r") as f:
+                data = json.load(f)
+
+            checkpoint = cls(
+                last_ingestion_time=data["last_ingestion_time"],
+                last_trace_id=data["last_trace_id"],
+                updated_at=data.get("updated_at", ""),
+            )
+            logger.info(
+                "Loaded checkpoint",
+                extra={
+                    "last_ingestion_time": checkpoint.last_ingestion_time,
+                    "last_trace_id": checkpoint.last_trace_id[:20] + "..."
+                    if len(checkpoint.last_trace_id) > 20
+                    else checkpoint.last_trace_id,
+                    "updated_at": checkpoint.updated_at,
+                },
+            )
+            return checkpoint
+
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            logger.warning(
+                "Failed to load checkpoint, starting fresh",
+                extra={"path": str(path), "error": str(e)},
+            )
+            return None
+
+    def save(self, path: Path) -> bool:
+        """
+        Save checkpoint to JSON file.
+
+        Creates parent directories if they don't exist.
+
+        Args:
+            path: Path to checkpoint file
+
+        Returns:
+            True if save succeeded, False otherwise
+        """
+        try:
+            # Ensure directory exists
+            path.parent.mkdir(parents=True, exist_ok=True)
+
+            # Update timestamp
+            self.updated_at = datetime.now(timezone.utc).isoformat()
+
+            # Write atomically (write to temp, then rename)
+            temp_path = path.with_suffix(".tmp")
+            with open(temp_path, "w") as f:
+                json.dump(asdict(self), f, indent=2)
+
+            temp_path.rename(path)
+
+            logger.debug(
+                "Saved checkpoint",
+                extra={
+                    "last_ingestion_time": self.last_ingestion_time,
+                    "last_trace_id": self.last_trace_id[:20] + "..."
+                    if len(self.last_trace_id) > 20
+                    else self.last_trace_id,
+                },
+            )
+            return True
+
+        except (OSError, IOError) as e:
+            logger.error(
+                "Failed to save checkpoint",
+                extra={"path": str(path), "error": str(e)},
+            )
+            return False
+
+    def to_datetime(self) -> datetime:
+        """Parse last_ingestion_time to datetime."""
+        return datetime.fromisoformat(self.last_ingestion_time.replace("Z", "+00:00"))
 
 # Default backfill window (hours) when no start time is configured
 DEFAULT_BACKFILL_WINDOW_HOURS = 24
@@ -83,6 +195,10 @@ class PollerConfig:
     backfill_stop_stamp: Optional[str] = None
     # If True, fetches all backfill data in one query instead of paginating
     bulk_backfill: bool = False
+
+    # Checkpoint settings for resuming after restart
+    # Path to checkpoint file (default: .checkpoints/poller_{domain}.json)
+    checkpoint_path: Optional[Path] = None
 
     @classmethod
     def load_config(
@@ -154,10 +270,20 @@ class PollerConfig:
             "attachments": "attachments",
         })
 
+        # Checkpoint path - env var overrides config
+        domain = poller_data.get("domain", "xact")
+        checkpoint_path_env = os.getenv("POLLER_CHECKPOINT_PATH")
+        if checkpoint_path_env:
+            checkpoint_path = Path(checkpoint_path_env)
+        elif poller_data.get("checkpoint_path"):
+            checkpoint_path = Path(poller_data["checkpoint_path"])
+        else:
+            checkpoint_path = DEFAULT_CHECKPOINT_DIR / f"poller_{domain}.json"
+
         return cls(
             eventhouse=eventhouse_config,
             kafka=kafka_config,
-            domain=poller_data.get("domain", "xact"),
+            domain=domain,
             poll_interval_seconds=int(poller_data.get("poll_interval_seconds", 30)),
             batch_size=int(poller_data.get("batch_size", 1000)),
             source_table=poller_data.get("source_table", "Events"),
@@ -170,6 +296,7 @@ class PollerConfig:
             backfill_start_stamp=poller_data.get("backfill_start_stamp"),
             backfill_stop_stamp=poller_data.get("backfill_stop_stamp"),
             bulk_backfill=bool(poller_data.get("bulk_backfill", False)),
+            checkpoint_path=checkpoint_path,
         )
 
     @classmethod
@@ -200,10 +327,19 @@ class PollerConfig:
         bulk_backfill_env = os.getenv("BULK_BACKFILL", "").lower()
         bulk_backfill = bulk_backfill_env in ("true", "1", "yes")
 
+        # Checkpoint path - default to .checkpoints/poller_{domain}.json
+        domain = os.getenv("PIPELINE_DOMAIN", "xact")
+        checkpoint_path_env = os.getenv("POLLER_CHECKPOINT_PATH")
+        checkpoint_path = (
+            Path(checkpoint_path_env)
+            if checkpoint_path_env
+            else DEFAULT_CHECKPOINT_DIR / f"poller_{domain}.json"
+        )
+
         return cls(
             eventhouse=eventhouse_config,
             kafka=kafka_config,
-            domain=os.getenv("PIPELINE_DOMAIN", "xact"),
+            domain=domain,
             poll_interval_seconds=int(os.getenv("POLL_INTERVAL_SECONDS", "30")),
             batch_size=int(os.getenv("POLL_BATCH_SIZE", "1000")),
             source_table=os.getenv("EVENTHOUSE_SOURCE_TABLE", "Events"),
@@ -212,6 +348,7 @@ class PollerConfig:
             backfill_start_stamp=os.getenv("BACKFILL_START_TIMESTAMP"),
             backfill_stop_stamp=os.getenv("BACKFILL_STOP_TIMESTAMP"),
             bulk_backfill=bulk_backfill,
+            checkpoint_path=checkpoint_path,
         )
 
 
@@ -292,7 +429,14 @@ class KQLEventPoller:
 
         # Pagination state - track last batch for efficient queries
         self._last_ingestion_time: Optional[datetime] = None
-        self._last_batch_trace_ids: list[str] = []
+        self._last_trace_id: Optional[str] = None  # For checkpoint resume
+
+        # Checkpoint for persisting state across restarts
+        self._checkpoint_path = config.checkpoint_path or (
+            DEFAULT_CHECKPOINT_DIR / f"poller_{config.domain}.json"
+        )
+        self._checkpoint: Optional[PollerCheckpoint] = None
+        self._load_checkpoint()
 
         # Background task tracking for graceful shutdown
         self._pending_tasks: Set[asyncio.Task] = set()
@@ -306,6 +450,7 @@ class KQLEventPoller:
                 "batch_size": config.batch_size,
                 "pipeline_domain": config.domain,
                 "event_schema": self._event_schema_class.__name__,
+                "checkpoint_path": str(self._checkpoint_path),
             },
         )
 
@@ -361,6 +506,65 @@ class KQLEventPoller:
             return dt
         except ValueError:
             raise ValueError(f"Could not parse timestamp: {timestamp_str}")
+
+    def _load_checkpoint(self) -> None:
+        """Load checkpoint from file and initialize state.
+
+        If checkpoint exists and is valid, sets:
+        - _last_ingestion_time: Starting point for queries
+        - _last_trace_id: For skipping already-processed records
+        - _backfill_start_time: Overridden by checkpoint if present
+
+        If no checkpoint or backfill_start_stamp is configured, falls back to:
+        - Configured backfill_start_stamp, or
+        - Default window (24 hours ago)
+        """
+        self._checkpoint = PollerCheckpoint.from_file(self._checkpoint_path)
+
+        if self._checkpoint is not None:
+            # Checkpoint exists - use it as starting point
+            self._last_ingestion_time = self._checkpoint.to_datetime()
+            self._last_trace_id = self._checkpoint.last_trace_id
+
+            # Override backfill start time with checkpoint
+            # (checkpoint takes precedence over configured backfill_start_stamp)
+            if self._backfill_start_time is None:
+                self._backfill_start_time = self._last_ingestion_time
+
+            logger.info(
+                "Resuming from checkpoint",
+                extra={
+                    "last_ingestion_time": self._last_ingestion_time.isoformat(),
+                    "last_trace_id": self._last_trace_id[:20] + "..."
+                    if len(self._last_trace_id) > 20
+                    else self._last_trace_id,
+                },
+            )
+        else:
+            logger.info(
+                "No checkpoint found, will use configured start or default window"
+            )
+
+    def _save_checkpoint(
+        self, ingestion_time: datetime, trace_id: str
+    ) -> None:
+        """Save checkpoint after successful processing.
+
+        Args:
+            ingestion_time: Ingestion time of the last processed record
+            trace_id: Trace ID of the last processed record
+        """
+        checkpoint = PollerCheckpoint(
+            last_ingestion_time=ingestion_time.isoformat(),
+            last_trace_id=trace_id,
+            updated_at="",  # Will be set by save()
+        )
+        checkpoint.save(self._checkpoint_path)
+
+        # Update in-memory state
+        self._last_ingestion_time = ingestion_time
+        self._last_trace_id = trace_id
+        self._checkpoint = checkpoint
 
     async def start(self) -> None:
         """Initialize all components."""
@@ -678,20 +882,39 @@ class KQLEventPoller:
         # Use configured stop time or current time
         poll_to = self._backfill_stop_time or now
 
+        # Get trace_id column name from mapping
+        trace_id_column = self.config.column_mapping.get("trace_id", "traceId")
+
         logger.info(
             "Starting bulk backfill",
             extra={
                 "backfill_start": self._backfill_start_time.isoformat(),
                 "backfill_stop": poll_to.isoformat(),
+                "has_checkpoint": self._checkpoint is not None,
             },
         )
 
-        # Paginate using ingestion_time to avoid KQL 64 MB result limit
+        # Paginate using checkpoint (ingestion_time, trace_id) for deterministic resume
         total_processed = 0
         batch_num = 0
         batch_size = self.config.batch_size
         current_start = self._backfill_start_time
-        last_batch_trace_ids: list[str] = []
+        current_trace_id: Optional[str] = None
+
+        # If we have a checkpoint, use it as starting point
+        if self._checkpoint:
+            current_start = self._checkpoint.to_datetime()
+            current_trace_id = self._checkpoint.last_trace_id
+            logger.info(
+                "Resuming bulk backfill from checkpoint",
+                extra={
+                    "checkpoint_time": current_start.isoformat(),
+                    "checkpoint_trace_id": current_trace_id[:20] + "..."
+                    if len(current_trace_id) > 20
+                    else current_trace_id,
+                },
+            )
+
         backfill_start_time = time.perf_counter()
 
         while True:
@@ -701,21 +924,24 @@ class KQLEventPoller:
             start_str = current_start.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
             stop_str = poll_to.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
-            # Build paginated query with limit
-            # Use anti-join on last batch's trace_ids to handle events with same ingestion_time
-            trace_id_column = self.config.column_mapping["trace_id"]
-            if last_batch_trace_ids:
-                escaped_ids = [tid.replace("'", "\\'") for tid in last_batch_trace_ids]
-                id_list = ", ".join(f"'{tid}'" for tid in escaped_ids)
-                anti_join_clause = f"\n| where {trace_id_column} !in (dynamic([{id_list}]))"
+            # Build paginated query with deterministic ordering
+            # Use composite key comparison for exact resume:
+            # (ingestion_time > start) OR (ingestion_time == start AND traceId > last_trace_id)
+            if current_trace_id:
+                # Resume from checkpoint - skip records at/before checkpoint
+                escaped_trace_id = current_trace_id.replace("'", "\\'")
+                where_clause = f"""| where ingestion_time() > datetime({start_str})
+    or (ingestion_time() == datetime({start_str}) and {trace_id_column} > '{escaped_trace_id}')
+| where ingestion_time() < datetime({stop_str})"""
             else:
-                anti_join_clause = ""
+                # No checkpoint - start from beginning of window
+                where_clause = f"""| where ingestion_time() >= datetime({start_str})
+| where ingestion_time() < datetime({stop_str})"""
 
             query = f"""{self.config.source_table}
-| where ingestion_time() >= datetime({start_str})
-| where ingestion_time() < datetime({stop_str}){anti_join_clause}
+{where_clause}
 | extend ingestion_time = ingestion_time()
-| order by ingestion_time asc
+| order by ingestion_time asc, {trace_id_column} asc
 | take {batch_size}"""
 
             logger.debug(
@@ -725,7 +951,7 @@ class KQLEventPoller:
                     "start": start_str,
                     "stop": stop_str,
                     "limit": batch_size,
-                    "anti_join_count": len(last_batch_trace_ids),
+                    "has_trace_id_filter": current_trace_id is not None,
                 },
             )
 
@@ -746,16 +972,20 @@ class KQLEventPoller:
                 )
                 break
 
-            # Extract pagination info for next query
+            # Process this batch
+            events_count = await self._process_results(result)
+
+            # Extract last row info for checkpoint and next query
             last_row = result.rows[-1]
+            last_trace_id = last_row.get("traceId", last_row.get(trace_id_column, ""))
             ingestion_time_val = last_row.get("ingestion_time", last_row.get("$IngestionTime"))
 
-            if ingestion_time_val:
+            if ingestion_time_val and last_trace_id:
                 if isinstance(ingestion_time_val, datetime):
-                    next_start = ingestion_time_val
+                    last_ingestion_time = ingestion_time_val
                 else:
                     try:
-                        next_start = datetime.fromisoformat(
+                        last_ingestion_time = datetime.fromisoformat(
                             str(ingestion_time_val).replace("Z", "+00:00")
                         )
                     except (ValueError, AttributeError):
@@ -763,21 +993,17 @@ class KQLEventPoller:
                             "Could not parse ingestion_time for pagination",
                             extra={"raw_value": str(ingestion_time_val)[:100]},
                         )
-                        next_start = current_start
+                        last_ingestion_time = current_start
+
+                # Save checkpoint after each batch
+                self._save_checkpoint(last_ingestion_time, last_trace_id)
+
+                # Update pagination state for next query
+                current_start = last_ingestion_time
+                current_trace_id = last_trace_id
             else:
-                logger.warning("No ingestion_time in last row, cannot paginate further")
-                next_start = current_start
-
-            # Collect trace_ids from rows at the boundary (same ingestion_time as last row)
-            # These are used for anti-join in next query to prevent duplicates
-            last_batch_trace_ids = [
-                row.get("traceId", row.get("trace_id", ""))
-                for row in result.rows
-                if row.get("ingestion_time", row.get("$IngestionTime")) == ingestion_time_val
-            ]
-
-            # Process this batch
-            events_count = await self._process_results(result)
+                logger.warning("No ingestion_time or trace_id in last row, cannot paginate further")
+                break
             total_processed += events_count
 
             logger.info(
@@ -893,34 +1119,32 @@ class KQLEventPoller:
         result = await self._kql_client.execute_query(query)
         query_duration_ms = (time.perf_counter() - query_start) * 1000
 
-        # Extract pagination info from result before processing
-        if self._backfill_mode and result.rows:
-            # Get trace_ids from this batch for next query's anti-join
-            self._last_batch_trace_ids = [
-                row.get("traceId", row.get("trace_id", ""))
-                for row in result.rows
-            ]
+        # Filter rows to skip those at/before checkpoint (deterministic resume)
+        rows_to_process = self._filter_checkpoint_rows(result.rows) if result.rows else []
 
-            # Get max ingestion_time for pagination (last row since ordered asc)
+        # Process results (only rows after checkpoint)
+        events_count = await self._process_filtered_results(rows_to_process)
+
+        # Save checkpoint after successful processing (use last row from original result)
+        if result.rows:
             last_row = result.rows[-1]
+            trace_id_col = self.config.column_mapping.get("trace_id", "traceId")
+            last_trace_id = last_row.get("traceId", last_row.get(trace_id_col, ""))
             ingestion_time_str = last_row.get("ingestion_time", last_row.get("$IngestionTime"))
-            if ingestion_time_str:
+
+            if ingestion_time_str and last_trace_id:
                 if isinstance(ingestion_time_str, datetime):
-                    self._last_ingestion_time = ingestion_time_str
+                    last_ingestion_time = ingestion_time_str
                 else:
-                    # Parse string timestamp
                     try:
-                        self._last_ingestion_time = datetime.fromisoformat(
-                            ingestion_time_str.replace("Z", "+00:00")
+                        last_ingestion_time = datetime.fromisoformat(
+                            str(ingestion_time_str).replace("Z", "+00:00")
                         )
                     except (ValueError, AttributeError):
-                        logger.warning(
-                            "Could not parse ingestion_time for pagination",
-                            extra={"ingestion_time": str(ingestion_time_str)[:50]},
-                        )
+                        last_ingestion_time = None
 
-        # Process results
-        events_count = await self._process_results(result)
+                if last_ingestion_time:
+                    self._save_checkpoint(last_ingestion_time, last_trace_id)
 
         # Update state
         self._last_poll_time = poll_to
@@ -968,28 +1192,101 @@ class KQLEventPoller:
 
         return events_count
 
-    async def _process_results(self, result: KQLQueryResult) -> int:
+    def _filter_checkpoint_rows(self, rows: list[dict]) -> list[dict]:
         """
-        Process query results into events and publish to events.raw topic.
+        Filter rows to skip those at/before the checkpoint.
+
+        Uses deterministic ordering (ingestion_time asc, traceId asc) to determine
+        which rows to skip. A row is skipped if:
+        - Its ingestion_time < checkpoint.last_ingestion_time, OR
+        - Its ingestion_time == checkpoint.last_ingestion_time AND
+          its trace_id <= checkpoint.last_trace_id
+
+        Args:
+            rows: List of row dicts from KQL query result
+
+        Returns:
+            List of rows that should be processed (after checkpoint)
+        """
+        if not self._checkpoint or not rows:
+            return rows
+
+        checkpoint_time = self._checkpoint.to_datetime()
+        checkpoint_trace_id = self._checkpoint.last_trace_id
+        trace_id_col = self.config.column_mapping.get("trace_id", "traceId")
+
+        filtered_rows = []
+        skipped_count = 0
+
+        for row in rows:
+            # Get row's ingestion_time
+            ingestion_time_str = row.get("ingestion_time", row.get("$IngestionTime"))
+            if isinstance(ingestion_time_str, datetime):
+                row_time = ingestion_time_str
+            elif ingestion_time_str:
+                try:
+                    row_time = datetime.fromisoformat(
+                        str(ingestion_time_str).replace("Z", "+00:00")
+                    )
+                except (ValueError, AttributeError):
+                    # Can't parse time - include row to be safe
+                    filtered_rows.append(row)
+                    continue
+            else:
+                # No time - include row to be safe
+                filtered_rows.append(row)
+                continue
+
+            # Get row's trace_id
+            row_trace_id = row.get("traceId", row.get(trace_id_col, ""))
+
+            # Deterministic comparison: skip if (time, trace_id) <= checkpoint
+            if row_time < checkpoint_time:
+                skipped_count += 1
+                continue
+            elif row_time == checkpoint_time and row_trace_id <= checkpoint_trace_id:
+                skipped_count += 1
+                continue
+
+            # Row is after checkpoint - include it
+            filtered_rows.append(row)
+
+        if skipped_count > 0:
+            logger.debug(
+                "Skipped rows at/before checkpoint",
+                extra={
+                    "skipped_count": skipped_count,
+                    "remaining_count": len(filtered_rows),
+                    "checkpoint_time": checkpoint_time.isoformat(),
+                    "checkpoint_trace_id": checkpoint_trace_id[:20] + "..."
+                    if len(checkpoint_trace_id) > 20
+                    else checkpoint_trace_id,
+                },
+            )
+
+        return filtered_rows
+
+    async def _process_filtered_results(self, rows: list[dict]) -> int:
+        """
+        Process filtered rows into events and publish to events.raw topic.
 
         Events are published to the events_topic (xact.events.raw) for consumption
         by the EventIngester, which handles attachment processing and produces
-        download tasks. This ensures consistent behavior between EventHub and
-        Eventhouse modes.
+        download tasks.
 
         Args:
-            result: KQL query result
+            rows: List of row dicts to process (already filtered by checkpoint)
 
         Returns:
             Number of events processed
         """
-        if result.is_empty:
+        if not rows:
             return 0
 
         events_processed = 0
         events_for_delta = []
 
-        for row in result.rows:
+        for row in rows:
             try:
                 # Convert row to EventMessage
                 event = self._row_to_event(row)
@@ -1031,6 +1328,24 @@ class KQLEventPoller:
 
         return events_processed
 
+    async def _process_results(self, result: KQLQueryResult) -> int:
+        """
+        Process query results into events and publish to events.raw topic.
+
+        DEPRECATED: Use _process_filtered_results instead.
+        Kept for backwards compatibility with bulk backfill.
+
+        Args:
+            result: KQL query result
+
+        Returns:
+            Number of events processed
+        """
+        if result.is_empty:
+            return 0
+
+        return await self._process_filtered_results(result.rows)
+
     def _build_query(
         self,
         base_table: str,
@@ -1039,10 +1354,10 @@ class KQLEventPoller:
         limit: int = 1000,
     ) -> str:
         """
-        Build simple KQL query with time filter.
+        Build KQL query with time filter and deterministic ordering.
 
-        No deduplication at polling level - duplicates are handled by
-        download worker's in-memory cache.
+        Uses deterministic ordering (ingestion_time asc, traceId asc) to enable
+        exact resume from checkpoint without duplicates or gaps.
 
         Args:
             base_table: Source table name in Eventhouse
@@ -1057,12 +1372,16 @@ class KQLEventPoller:
         from_str = poll_from.strftime("%Y-%m-%dT%H:%M:%SZ")
         to_str = poll_to.strftime("%Y-%m-%dT%H:%M:%SZ")
 
+        # Get trace_id column name from mapping
+        trace_id_column = self.config.column_mapping.get("trace_id", "traceId")
+
+        # Deterministic ordering enables exact checkpoint resume
         query = f"""
 {base_table}
 | where ingestion_time() >= datetime({from_str})
 | where ingestion_time() < datetime({to_str})
 | extend ingestion_time = ingestion_time()
-| order by ingestion_time() asc
+| order by ingestion_time asc, {trace_id_column} asc
 | take {limit}
 """
 
