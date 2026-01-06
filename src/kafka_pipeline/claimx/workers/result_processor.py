@@ -174,6 +174,7 @@ class ClaimXResultProcessor:
                 logger.info(
                     "Upload completed successfully",
                     extra={
+                        "correlation_id": result.source_event_id,
                         "media_id": result.media_id,
                         "project_id": result.project_id,
                         "file_name": result.file_name,
@@ -190,10 +191,12 @@ class ClaimXResultProcessor:
                 logger.error(
                     "Upload failed permanently",
                     extra={
+                        "correlation_id": result.source_event_id,
                         "media_id": result.media_id,
                         "project_id": result.project_id,
                         "file_name": result.file_name,
                         "error_message": result.error_message,
+                        "error_category": "permanent",
                         "source_event_id": result.source_event_id,
                     },
                 )
@@ -204,10 +207,12 @@ class ClaimXResultProcessor:
                 logger.warning(
                     "Upload failed (transient)",
                     extra={
+                        "correlation_id": result.source_event_id,
                         "media_id": result.media_id,
                         "project_id": result.project_id,
                         "file_name": result.file_name,
                         "error_message": result.error_message,
+                        "error_category": "transient",
                         "source_event_id": result.source_event_id,
                     },
                 )

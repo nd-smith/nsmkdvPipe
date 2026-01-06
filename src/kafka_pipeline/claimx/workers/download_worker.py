@@ -634,6 +634,7 @@ class ClaimXDownloadWorker:
             logger.info(
                 "Processing ClaimX download task",
                 extra={
+                    "correlation_id": task_message.source_event_id,
                     "media_id": task_message.media_id,
                     "project_id": task_message.project_id,
                     "download_url": task_message.download_url,
@@ -772,6 +773,7 @@ class ClaimXDownloadWorker:
         logger.info(
             "ClaimX download completed successfully",
             extra={
+                "correlation_id": task_message.source_event_id,
                 "media_id": task_message.media_id,
                 "project_id": task_message.project_id,
                 "download_url": task_message.download_url,
@@ -867,6 +869,7 @@ class ClaimXDownloadWorker:
         logger.warning(
             "ClaimX download failed",
             extra={
+                "correlation_id": task_message.source_event_id,
                 "media_id": task_message.media_id,
                 "project_id": task_message.project_id,
                 "download_url": task_message.download_url,

@@ -443,20 +443,22 @@ class ClaimXUploadWorker:
                 overwrite=True,
             )
 
+            # Calculate processing time
+            processing_time_ms = int((time.time() - start_time) * 1000)
+
             logger.info(
                 "Uploaded file to OneLake",
                 extra={
+                    "correlation_id": cached_message.source_event_id,
                     "media_id": media_id,
                     "project_id": cached_message.project_id,
                     "domain": self.DOMAIN,
                     "destination_path": cached_message.destination_path,
                     "blob_path": blob_path,
-                    "bytes": cached_message.bytes_downloaded,
+                    "bytes_uploaded": cached_message.bytes_downloaded,
+                    "processing_time_ms": processing_time_ms,
                 },
             )
-
-            # Calculate processing time
-            processing_time_ms = int((time.time() - start_time) * 1000)
 
             # Produce success result
             result_message = ClaimXUploadResultMessage(
@@ -490,9 +492,22 @@ class ClaimXUploadWorker:
 
         except Exception as e:
             processing_time_ms = int((time.time() - start_time) * 1000)
+
+            # Build error log extra fields
+            error_extra = {
+                "media_id": media_id,
+                "processing_time_ms": processing_time_ms,
+                "error_category": "permanent",  # Upload failures are typically permanent
+            }
+
+            # Add correlation_id and project_id if cached_message was parsed
+            if 'cached_message' in locals() and cached_message is not None:
+                error_extra["correlation_id"] = cached_message.source_event_id
+                error_extra["project_id"] = cached_message.project_id
+
             logger.error(
                 f"Upload failed: {e}",
-                extra={"media_id": media_id},
+                extra=error_extra,
                 exc_info=True,
             )
             record_processing_error(self.topic, self.CONSUMER_GROUP, "upload_error")
