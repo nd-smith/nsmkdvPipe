@@ -111,6 +111,11 @@ class UploadWorker:
         # Domain configuration
         self.domain = "xact"
 
+        # Get processing config for concurrency settings
+        processing_config = config.get_worker_config(self.domain, "upload_worker", "processing")
+        self._upload_concurrency = processing_config.get("concurrency", 10)
+        self._upload_batch_size = processing_config.get("batch_size", 20)
+
         # Topic to consume from
         self.topic = config.get_topic(self.domain, "downloads_cached")
 
@@ -146,8 +151,8 @@ class UploadWorker:
                 "topic": self.topic,
                 "configured_domains": configured_domains,
                 "fallback_path": config.onelake_base_path or "(none)",
-                "upload_concurrency": config.upload_concurrency,
-                "upload_batch_size": config.upload_batch_size,
+                "upload_concurrency": self._upload_concurrency,
+                "upload_batch_size": self._upload_batch_size,
             },
         )
 
@@ -169,13 +174,13 @@ class UploadWorker:
         logger.info(
             "Starting upload worker",
             extra={
-                "upload_concurrency": self.config.upload_concurrency,
-                "upload_batch_size": self.config.upload_batch_size,
+                "upload_concurrency": self._upload_concurrency,
+                "upload_batch_size": self._upload_batch_size,
             },
         )
 
         # Initialize concurrency control
-        self._semaphore = asyncio.Semaphore(self.config.upload_concurrency)
+        self._semaphore = asyncio.Semaphore(self._upload_concurrency)
         self._shutdown_event = asyncio.Event()
         self._in_flight_tasks = set()
 
