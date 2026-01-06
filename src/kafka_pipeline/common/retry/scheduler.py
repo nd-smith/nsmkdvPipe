@@ -38,13 +38,14 @@ class DelayedRedeliveryScheduler:
     5. Monitors pending topic lag and pauses if threshold exceeded
 
     Usage:
-        >>> config = KafkaConfig.from_env()
-        >>> producer = BaseKafkaProducer(config)
+        >>> config = load_config()
+        >>> producer = BaseKafkaProducer(config, domain="xact", worker_name="retry_scheduler")
         >>> await producer.start()
         >>>
         >>> scheduler = DelayedRedeliveryScheduler(
         ...     config=config,
         ...     producer=producer,
+        ...     domain="xact",
         ...     lag_threshold=1000
         ... )
         >>> await scheduler.start()
@@ -56,6 +57,7 @@ class DelayedRedeliveryScheduler:
         self,
         config: KafkaConfig,
         producer: BaseKafkaProducer,
+        domain: str = "xact",
         lag_threshold: int = 1000,
         check_interval_seconds: int = 60,
     ):
@@ -65,17 +67,23 @@ class DelayedRedeliveryScheduler:
         Args:
             config: Kafka configuration with retry topic settings
             producer: Kafka producer for sending messages to pending topic
+            domain: Domain name ("xact" or "claimx")
             lag_threshold: Pause redelivery if pending topic lag exceeds this
             check_interval_seconds: How often to check pending topic lag
         """
         self.config = config
         self.producer = producer
+        self.domain = domain
         self.lag_threshold = lag_threshold
         self.check_interval_seconds = check_interval_seconds
 
+        # Get topic configuration from domain
+        self._pending_topic = config.get_topic(domain, "downloads_pending")
+        self._max_retries = config.get_max_retries(domain)
+
         # Build list of retry topics to consume
         self.retry_topics = [
-            config.get_retry_topic(i) for i in range(config.max_retries)
+            config.get_retry_topic(domain, i) for i in range(self._max_retries)
         ]
 
         self._consumer: Optional[BaseKafkaConsumer] = None
@@ -86,8 +94,9 @@ class DelayedRedeliveryScheduler:
         logger.info(
             "Initialized DelayedRedeliveryScheduler",
             extra={
+                "domain": domain,
                 "retry_topics": self.retry_topics,
-                "pending_topic": config.downloads_pending_topic,
+                "pending_topic": self._pending_topic,
                 "lag_threshold": lag_threshold,
                 "check_interval": check_interval_seconds,
             },
@@ -114,12 +123,11 @@ class DelayedRedeliveryScheduler:
         logger.info("Starting DelayedRedeliveryScheduler")
 
         # Create consumer for all retry topics
-        consumer_group = self.config.get_consumer_group("retry-scheduler")
-
         self._consumer = BaseKafkaConsumer(
             config=self.config,
+            domain=self.domain,
+            worker_name="retry_scheduler",
             topics=self.retry_topics,
-            group_id=consumer_group,
             message_handler=self._handle_retry_message,
         )
 
@@ -284,7 +292,7 @@ class DelayedRedeliveryScheduler:
 
         try:
             await self.producer.send(
-                topic=self.config.downloads_pending_topic,
+                topic=self._pending_topic,
                 key=task.trace_id,
                 value=task,
                 headers={
@@ -297,7 +305,7 @@ class DelayedRedeliveryScheduler:
                 "Message redelivered successfully",
                 extra={
                     "trace_id": task.trace_id,
-                    "pending_topic": self.config.downloads_pending_topic,
+                    "pending_topic": self._pending_topic,
                 },
             )
 

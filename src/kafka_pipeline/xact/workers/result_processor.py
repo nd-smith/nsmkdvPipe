@@ -135,13 +135,20 @@ class ResultProcessor:
         self._failed_batches_written = 0
         self._total_records_written = 0
 
+        # Domain and worker configuration
+        self.domain = "xact"
+        self.worker_name = "result_processor"
+
+        # Store topics for logging
+        self._results_topic = config.get_topic(self.domain, "downloads_results")
+
         # Kafka consumer - disable auto-commit for manual control after Delta writes
         self._consumer = BaseKafkaConsumer(
             config=config,
-            topics=[config.downloads_results_topic],
-            group_id="xact-result-processor",
+            domain=self.domain,
+            worker_name=self.worker_name,
+            topics=[self._results_topic],
             message_handler=self._handle_result,
-            max_batches=config.consumer_max_batches,
             enable_message_commit=False,
         )
 
@@ -155,7 +162,7 @@ class ResultProcessor:
                 "batch_size": self.batch_size,
                 "batch_timeout_seconds": self.batch_timeout_seconds,
                 "max_batches": self.max_batches,
-                "results_topic": config.downloads_results_topic,
+                "results_topic": self._results_topic,
                 "inventory_table_path": inventory_table_path,
                 "failed_table_path": failed_table_path,
                 "failed_tracking_enabled": failed_table_path is not None,

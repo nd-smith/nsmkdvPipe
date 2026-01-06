@@ -108,8 +108,14 @@ class UploadWorker:
                 "  - ONELAKE_BASE_PATH env var (fallback for all domains)"
             )
 
+        # Domain configuration
+        self.domain = "xact"
+
         # Topic to consume from
-        self.topic = config.downloads_cached_topic
+        self.topic = config.get_topic(self.domain, "downloads_cached")
+
+        # Results topic for producing results
+        self._results_topic = config.get_topic(self.domain, "downloads_results")
 
         # Consumer will be created in start()
         self._consumer: Optional[AIOKafkaConsumer] = None
@@ -496,7 +502,7 @@ class UploadWorker:
             )
 
             await self.producer.send(
-                topic=self.config.downloads_results_topic,
+                topic=self._results_topic,
                 key=trace_id,
                 value=result_message,
             )
@@ -541,7 +547,7 @@ class UploadWorker:
                 )
 
                 await self.producer.send(
-                    topic=self.config.downloads_results_topic,
+                    topic=self._results_topic,
                     key=cached_message.trace_id,
                     value=result_message,
                 )

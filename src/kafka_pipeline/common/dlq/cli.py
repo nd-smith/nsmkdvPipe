@@ -258,7 +258,9 @@ class DLQCLIManager:
 
 async def main_list(args):
     """Execute list command."""
-    config = KafkaConfig.from_env()
+    from kafka_pipeline.config import load_config
+    config = load_config()
+    domain = "xact"
     manager = DLQCLIManager(config)
 
     # Override default message handler to prevent auto-processing
@@ -274,8 +276,9 @@ async def main_list(args):
         from kafka_pipeline.common.consumer import BaseKafkaConsumer
         manager.handler._consumer = BaseKafkaConsumer(
             config=config,
-            topics=[config.dlq_topic],
-            group_id=config.get_consumer_group("dlq-cli"),
+            domain=domain,
+            worker_name="dlq_cli",
+            topics=[config.get_topic(domain, "dlq")],
             message_handler=lambda r: asyncio.sleep(0),  # No-op handler
         )
 
@@ -307,7 +310,9 @@ async def main_list(args):
 
 async def main_view(args):
     """Execute view command."""
-    config = KafkaConfig.from_env()
+    from kafka_pipeline.config import load_config
+    config = load_config()
+    domain = "xact"
     manager = DLQCLIManager(config)
 
     try:
@@ -318,8 +323,9 @@ async def main_view(args):
         from kafka_pipeline.common.consumer import BaseKafkaConsumer
         manager.handler._consumer = BaseKafkaConsumer(
             config=config,
-            topics=[config.dlq_topic],
-            group_id=config.get_consumer_group("dlq-cli"),
+            domain=domain,
+            worker_name="dlq_cli",
+            topics=[config.get_topic(domain, "dlq")],
             message_handler=lambda r: asyncio.sleep(0),
         )
 
@@ -348,7 +354,9 @@ async def main_view(args):
 
 async def main_replay(args):
     """Execute replay command."""
-    config = KafkaConfig.from_env()
+    from kafka_pipeline.config import load_config
+    config = load_config()
+    domain = "xact"
     manager = DLQCLIManager(config)
 
     try:
@@ -357,15 +365,20 @@ async def main_replay(args):
 
         # Start producer for replay
         from kafka_pipeline.common.producer import BaseKafkaProducer
-        manager.handler._producer = BaseKafkaProducer(config)
+        manager.handler._producer = BaseKafkaProducer(
+            config=config,
+            domain=domain,
+            worker_name="dlq_cli",
+        )
         await manager.handler._producer.start()
 
         # Start consumer to fetch messages
         from kafka_pipeline.common.consumer import BaseKafkaConsumer
         manager.handler._consumer = BaseKafkaConsumer(
             config=config,
-            topics=[config.dlq_topic],
-            group_id=config.get_consumer_group("dlq-cli"),
+            domain=domain,
+            worker_name="dlq_cli",
+            topics=[config.get_topic(domain, "dlq")],
             message_handler=lambda r: asyncio.sleep(0),
         )
 
@@ -395,7 +408,9 @@ async def main_replay(args):
 
 async def main_resolve(args):
     """Execute resolve command."""
-    config = KafkaConfig.from_env()
+    from kafka_pipeline.config import load_config
+    config = load_config()
+    domain = "xact"
     manager = DLQCLIManager(config)
 
     try:
@@ -404,15 +419,20 @@ async def main_resolve(args):
 
         # Start producer (needed by handler)
         from kafka_pipeline.common.producer import BaseKafkaProducer
-        manager.handler._producer = BaseKafkaProducer(config)
+        manager.handler._producer = BaseKafkaProducer(
+            config=config,
+            domain=domain,
+            worker_name="dlq_cli",
+        )
         await manager.handler._producer.start()
 
         # Start consumer
         from kafka_pipeline.common.consumer import BaseKafkaConsumer
         manager.handler._consumer = BaseKafkaConsumer(
             config=config,
-            topics=[config.dlq_topic],
-            group_id=config.get_consumer_group("dlq-cli"),
+            domain=domain,
+            worker_name="dlq_cli",
+            topics=[config.get_topic(domain, "dlq")],
             message_handler=lambda r: asyncio.sleep(0),
         )
 
