@@ -4,7 +4,7 @@ Delta Lake writer for attachment inventory table.
 Writes download results to the xact_attachments Delta table with:
 - Append-only writes for completed downloads
 - Async/non-blocking writes
-- Partitioned by created_date for efficient querying
+- Partitioned by event_date for efficient querying
 
 This is an inventory table - it tracks where files are stored in OneLake.
 """
@@ -31,7 +31,7 @@ INVENTORY_SCHEMA = {
     "bytes_downloaded": pl.Int64,
     "downloaded_at": pl.Datetime(time_zone="UTC"),
     "created_at": pl.Datetime(time_zone="UTC"),
-    "created_date": pl.Date,
+    "event_date": pl.Date,
 }
 
 
@@ -52,7 +52,7 @@ class DeltaInventoryWriter(BaseDeltaWriter):
     - bytes_downloaded: Size of downloaded file
     - downloaded_at: When the file was downloaded
     - created_at: When the record was created
-    - created_date: Date partition column
+    - event_date: Date partition column (from original event)
 
     Usage:
         >>> writer = DeltaInventoryWriter(table_path="abfss://.../xact_attachments")
@@ -68,7 +68,7 @@ class DeltaInventoryWriter(BaseDeltaWriter):
         """
         super().__init__(
             table_path=table_path,
-            partition_column="created_date",
+            partition_column="event_date",
         )
 
     async def write_result(self, result: DownloadResultMessage) -> bool:
@@ -155,7 +155,7 @@ class DeltaInventoryWriter(BaseDeltaWriter):
         - bytes_downloaded: int
         - downloaded_at: datetime
         - created_at: datetime
-        - created_date: date (partition column)
+        - event_date: date (partition column from original event)
 
         Args:
             results: List of DownloadResultMessage objects
@@ -164,7 +164,6 @@ class DeltaInventoryWriter(BaseDeltaWriter):
             Polars DataFrame with xact_attachments schema
         """
         now = datetime.now(timezone.utc)
-        today = now.date()
 
         rows = []
         for result in results:
@@ -178,7 +177,7 @@ class DeltaInventoryWriter(BaseDeltaWriter):
                 "bytes_downloaded": result.bytes_downloaded,
                 "downloaded_at": result.created_at,
                 "created_at": now,
-                "created_date": today,
+                "event_date": result.event_date,
             })
 
         # Create DataFrame with explicit schema

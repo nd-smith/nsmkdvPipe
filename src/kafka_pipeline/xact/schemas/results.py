@@ -7,7 +7,7 @@ and failure messages sent to dead-letter queue (DLQ).
 Schema aligned with verisk_pipeline Task.to_tracking_row() for compatibility.
 """
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, field_serializer, field_validator
@@ -34,6 +34,7 @@ class DownloadResultMessage(BaseModel):
         retry_count: Number of retry attempts made
         error_message: Error description if failed (truncated to 500 chars)
         created_at: Timestamp when result was created
+        event_date: Date of original event (partition column for xact_attachments)
         expires_at: URL expiration timestamp (optional)
         expired_at_ingest: Whether URL was expired at ingest time (optional)
 
@@ -96,6 +97,10 @@ class DownloadResultMessage(BaseModel):
         ...,
         description="Timestamp when result was created"
     )
+    event_date: date = Field(
+        ...,
+        description="Date of original event (partition column for xact_attachments)"
+    )
     expires_at: Optional[datetime] = Field(
         default=None,
         description="URL expiration timestamp (optional)"
@@ -148,6 +153,7 @@ class DownloadResultMessage(BaseModel):
             "retry_count": self.retry_count,
             "error_message": self.error_message,
             "created_at": self.created_at.isoformat() if self.created_at else None,
+            "event_date": self.event_date.isoformat() if self.event_date else None,
             "expires_at": self.expires_at,
             "expired_at_ingest": self.expired_at_ingest,
         }
@@ -168,6 +174,7 @@ class DownloadResultMessage(BaseModel):
                     'retry_count': 0,
                     'error_message': None,
                     'created_at': '2024-12-25T10:31:15Z',
+                    'event_date': '2024-12-25',
                     'expires_at': None,
                     'expired_at_ingest': False
                 },
@@ -184,6 +191,7 @@ class DownloadResultMessage(BaseModel):
                     'retry_count': 2,
                     'error_message': 'Service temporarily unavailable',
                     'created_at': '2024-12-25T10:31:45Z',
+                    'event_date': '2024-12-25',
                     'expires_at': None,
                     'expired_at_ingest': False
                 }
