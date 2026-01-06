@@ -101,7 +101,6 @@ class DeltaBatchRetryScheduler:
             extra={
                 "retry_topics": self.retry_topics,
                 "table_path": table_path,
-                "dedupe_window_hours": dedupe_window_hours,
             },
         )
 
