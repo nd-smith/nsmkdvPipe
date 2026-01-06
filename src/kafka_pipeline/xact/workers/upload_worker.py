@@ -86,6 +86,9 @@ class UploadWorker:
 
     WORKER_NAME = "upload_worker"
 
+    # Cycle output configuration
+    CYCLE_LOG_INTERVAL_SECONDS = 30
+
     def __init__(self, config: KafkaConfig, domain: str = "xact"):
         """
         Initialize upload worker.
@@ -136,6 +139,14 @@ class UploadWorker:
 
         # OneLake clients by domain (lazy initialized in start())
         self.onelake_clients: Dict[str, OneLakeClient] = {}
+
+        # Cycle output tracking
+        self._messages_received = 0
+        self._uploads_success = 0
+        self._uploads_failed = 0
+        self._bytes_uploaded = 0
+        self._last_cycle_log = time.monotonic()
+        self._cycle_count = 0
 
         # Log configured domains
         configured_domains = list(config.onelake_domain_paths.keys())
@@ -364,6 +375,14 @@ class UploadWorker:
         _logged_waiting_for_assignment = False
         _logged_assignment_received = False
 
+        # Log initial cycle 0
+        logger.info(
+            "Cycle 0: received=0 (success=0, failed=0), bytes=0, in_flight=0 "
+            "[cycle output every %ds]",
+            self.CYCLE_LOG_INTERVAL_SECONDS,
+        )
+        self._last_cycle_log = time.monotonic()
+
         while self._running:
             try:
                 # Check partition assignment before fetching
@@ -407,6 +426,27 @@ class UploadWorker:
                     timeout_ms=1000,
                     max_records=self.batch_size,
                 )
+
+                # Log cycle output at regular intervals
+                cycle_elapsed = time.monotonic() - self._last_cycle_log
+                if cycle_elapsed >= self.CYCLE_LOG_INTERVAL_SECONDS:
+                    self._cycle_count += 1
+                    self._last_cycle_log = time.monotonic()
+                    in_flight = len(self._in_flight_tasks)
+                    logger.info(
+                        f"Cycle {self._cycle_count}: received={self._messages_received} "
+                        f"(success={self._uploads_success}, failed={self._uploads_failed}), "
+                        f"bytes={self._bytes_uploaded}, in_flight={in_flight}",
+                        extra={
+                            "cycle": self._cycle_count,
+                            "messages_received": self._messages_received,
+                            "uploads_success": self._uploads_success,
+                            "uploads_failed": self._uploads_failed,
+                            "bytes_uploaded": self._bytes_uploaded,
+                            "in_flight": in_flight,
+                            "cycle_interval_seconds": self.CYCLE_LOG_INTERVAL_SECONDS,
+                        },
+                    )
 
                 if not batch:
                     continue
@@ -472,6 +512,9 @@ class UploadWorker:
             # Parse message
             cached_message = CachedDownloadMessage.model_validate_json(message.value)
             trace_id = cached_message.trace_id
+
+            # Track messages received for cycle output
+            self._messages_received += 1
 
             # Track in-flight
             async with self._in_flight_lock:
@@ -569,6 +612,10 @@ class UploadWorker:
             # Clean up cached file
             await self._cleanup_cache_file(cache_path)
 
+            # Track successful upload for cycle output
+            self._uploads_success += 1
+            self._bytes_uploaded += cached_message.bytes_downloaded
+
             return UploadResult(
                 message=message,
                 cached_message=cached_message,
@@ -578,6 +625,10 @@ class UploadWorker:
 
         except Exception as e:
             processing_time_ms = int((time.time() - start_time) * 1000)
+
+            # Track failed upload for cycle output
+            self._uploads_failed += 1
+
             logger.error(
                 f"Upload failed: {e}",
                 extra={"trace_id": trace_id},
