@@ -140,6 +140,9 @@ class ResultProcessor:
 
         # Cycle output tracking
         self._messages_received = 0
+        self._messages_success = 0
+        self._messages_failed_permanent = 0
+        self._messages_skipped = 0
         self._last_cycle_log = time.monotonic()
         self._cycle_count = 0
 
@@ -310,6 +313,7 @@ class ResultProcessor:
         # Route by status
         if result.status == "success":
             # Add to success batch
+            self._messages_success += 1
             async with self._batch_lock:
                 self._batch.append(result)
 
@@ -323,6 +327,7 @@ class ResultProcessor:
 
         elif result.status == "failed_permanent" and self._failed_writer:
             # Add to failed batch (only if tracking enabled)
+            self._messages_failed_permanent += 1
             async with self._batch_lock:
                 self._failed_batch.append(result)
 
@@ -336,6 +341,7 @@ class ResultProcessor:
 
         else:
             # Skip transient failures (still retrying) or permanent without writer
+            self._messages_skipped += 1
             logger.debug(
                 "Skipping result",
                 extra={
@@ -400,12 +406,16 @@ class ResultProcessor:
                         pending_failed = len(self._failed_batch)
 
                     logger.info(
-                        f"Cycle {self._cycle_count}: messages_received={self._messages_received}, "
-                        f"batches_written={self._batches_written}, "
-                        f"records_written={self._total_records_written}",
+                        f"Cycle {self._cycle_count}: received={self._messages_received} "
+                        f"(success={self._messages_success}, failed={self._messages_failed_permanent}, "
+                        f"skipped={self._messages_skipped}), "
+                        f"written={self._total_records_written}, pending={pending_success}",
                         extra={
                             "cycle": self._cycle_count,
                             "messages_received": self._messages_received,
+                            "messages_success": self._messages_success,
+                            "messages_failed_permanent": self._messages_failed_permanent,
+                            "messages_skipped": self._messages_skipped,
                             "batches_written": self._batches_written,
                             "failed_batches_written": self._failed_batches_written,
                             "total_records_written": self._total_records_written,
