@@ -631,7 +631,12 @@ async def run_claimx_eventhouse_poller(pipeline_config):
     # Create a modified kafka config with claimx events topic
     local_kafka_config = pipeline_config.local_kafka.to_kafka_config()
     claimx_kafka_config = local_kafka_config
-    claimx_kafka_config.events_topic = claimx_eventhouse.events_topic
+    # Update the claimx domain's events topic from eventhouse config
+    if "claimx" not in claimx_kafka_config.claimx or not claimx_kafka_config.claimx:
+        claimx_kafka_config.claimx = {"topics": {}}
+    if "topics" not in claimx_kafka_config.claimx:
+        claimx_kafka_config.claimx["topics"] = {}
+    claimx_kafka_config.claimx["topics"]["events"] = claimx_eventhouse.events_topic
 
     # Build poller config with ClaimXEventMessage schema
     poller_config = PollerConfig(

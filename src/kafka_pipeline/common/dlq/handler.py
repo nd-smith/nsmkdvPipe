@@ -52,7 +52,7 @@ class DLQHandler:
 
     Usage:
         >>> config = KafkaConfig.from_env()
-        >>> handler = DLQHandler(config)
+        >>> handler = DLQHandler(config, domain="xact")
         >>> await handler.start()
         >>>
         >>> # In message handler
@@ -65,22 +65,29 @@ class DLQHandler:
         >>> await handler.stop()
     """
 
-    def __init__(self, config: KafkaConfig):
+    def __init__(self, config: KafkaConfig, domain: str = "xact"):
         """
         Initialize DLQ handler with Kafka configuration.
 
         Args:
             config: Kafka configuration with DLQ topic settings
+            domain: Domain name ("xact" or "claimx")
         """
         self.config = config
+        self.domain = domain
         self._consumer: Optional[BaseKafkaConsumer] = None
         self._producer: Optional[BaseKafkaProducer] = None
+
+        # Get topic names from config
+        self._dlq_topic = config.get_topic(domain, "dlq")
+        self._pending_topic = config.get_topic(domain, "downloads_pending")
 
         logger.info(
             "Initialized DLQ handler",
             extra={
-                "dlq_topic": config.dlq_topic,
-                "pending_topic": config.downloads_pending_topic,
+                "domain": domain,
+                "dlq_topic": self._dlq_topic,
+                "pending_topic": self._pending_topic,
             },
         )
 
@@ -97,23 +104,28 @@ class DLQHandler:
         logger.info("Starting DLQ handler")
 
         # Create producer for replay operations
-        self._producer = BaseKafkaProducer(self.config)
+        self._producer = BaseKafkaProducer(
+            config=self.config,
+            domain=self.domain,
+            worker_name="dlq_handler",
+        )
         await self._producer.start()
 
         # Create consumer for DLQ topic with manual commit
         # The message handler is set to _handle_dlq_message
         self._consumer = BaseKafkaConsumer(
             config=self.config,
-            topics=[self.config.dlq_topic],
-            group_id=self.config.get_consumer_group("dlq-handler"),
+            domain=self.domain,
+            worker_name="dlq_handler",
+            topics=[self._dlq_topic],
             message_handler=self._handle_dlq_message,
         )
 
         logger.info(
             "DLQ handler started successfully",
             extra={
-                "dlq_topic": self.config.dlq_topic,
-                "consumer_group": self.config.get_consumer_group("dlq-handler"),
+                "dlq_topic": self._dlq_topic,
+                "consumer_group": self.config.get_consumer_group(self.domain, "dlq_handler"),
             },
         )
 
@@ -274,7 +286,7 @@ class DLQHandler:
                 "trace_id": dlq_msg.trace_id,
                 "attachment_url": dlq_msg.attachment_url,
                 "original_retry_count": dlq_msg.retry_count,
-                "pending_topic": self.config.downloads_pending_topic,
+                "pending_topic": self._pending_topic,
                 "dlq_offset": record.offset,
                 "dlq_partition": record.partition,
             },
@@ -282,7 +294,7 @@ class DLQHandler:
 
         # Send to pending topic
         await self._producer.send(
-            topic=self.config.downloads_pending_topic,
+            topic=self._pending_topic,
             key=replayed_task.trace_id,
             value=replayed_task,
             headers={
@@ -296,7 +308,7 @@ class DLQHandler:
             extra={
                 "trace_id": dlq_msg.trace_id,
                 "attachment_url": dlq_msg.attachment_url,
-                "pending_topic": self.config.downloads_pending_topic,
+                "pending_topic": self._pending_topic,
             },
         )
 
@@ -308,7 +320,7 @@ class DLQHandler:
                 "trace_id": dlq_msg.trace_id,
                 "attachment_url": dlq_msg.attachment_url,
                 "original_retry_count": dlq_msg.retry_count,
-                "destination_topic": self.config.downloads_pending_topic,
+                "destination_topic": self._pending_topic,
                 "dlq_offset": record.offset,
                 "dlq_partition": record.partition,
                 "new_retry_count": 0,
