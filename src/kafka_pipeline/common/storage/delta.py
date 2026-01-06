@@ -271,7 +271,9 @@ class DeltaTableReader(LoggedClass):
 
 class DeltaTableWriter(LoggedClass):
     """
-    Writer for Delta tables with auth retry and deduplication support.
+    Writer for Delta tables with auth retry support.
+
+    Deduplication handled by daily Fabric maintenance job.
 
     Usage:
         writer = DeltaTableWriter("abfss://workspace@onelake/lakehouse/Tables/events")
@@ -532,124 +534,6 @@ class DeltaTableWriter(LoggedClass):
         rows_written: int = self.append(df)  # type: ignore[assignment]
         return rows_written
 
-    @logged_operation(level=logging.INFO)
-    @with_retry(config=DELTA_RETRY_CONFIG, on_auth_error=_on_auth_error)
-    def deduplicate_with_merge(
-        self,
-        new_df: pl.DataFrame,
-        dedupe_column: str = "trace_id",
-        when_matched: str = "do_nothing",
-    ) -> int:
-        """
-        Use Delta Lake native MERGE for memory-efficient deduplication (P2.1).
-
-        Eliminates need to load existing IDs into memory by using Delta Lake's
-        native MERGE operation to handle deduplication at the storage layer.
-
-        Args:
-            new_df: New data to deduplicate and write
-            dedupe_column: Column to use for deduplication matching
-            when_matched: Action when key exists ('do_nothing' or 'update')
-
-        Returns:
-            Number of new rows inserted
-        """
-        if new_df.is_empty():
-            self._log(logging.DEBUG, "No data to deduplicate")
-            return 0
-
-        import tempfile
-        import shutil
-
-        initial_count = len(new_df)
-
-        # Dedupe within batch first
-        new_df = new_df.unique(subset=[dedupe_column])
-        if len(new_df) < initial_count:
-            self._log(
-                logging.DEBUG,
-                "Removed duplicates within batch",
-                records_processed=initial_count - len(new_df),
-            )
-
-        # Write new data to temporary table
-        temp_dir = tempfile.mkdtemp(prefix="delta_merge_")
-        temp_table = f"{temp_dir}/temp_merge"
-
-        try:
-            opts = get_storage_options()
-
-            # Check if target table exists
-            if not self._table_exists(opts):
-                # Table doesn't exist, just write directly
-                write_deltalake(
-                    self.table_path,
-                    new_df.to_arrow(),
-                    mode="overwrite",
-                    schema_mode="overwrite",
-                    storage_options=opts,
-                    partition_by=[self.partition_column] if self.partition_column else None,
-                )
-                self._log(
-                    logging.INFO,
-                    "Created table (no existing data to deduplicate against)",
-                    rows_written=len(new_df),
-                )
-                return len(new_df)
-
-            # Write temp table
-            write_deltalake(
-                temp_table,
-                new_df.to_arrow(),
-                mode="overwrite",
-                storage_options={},  # Local temp table, no auth needed
-            )
-
-            # Perform MERGE operation
-            dt = DeltaTable(self.table_path, storage_options=opts)
-
-            predicate = f"target.{dedupe_column} = source.{dedupe_column}"
-
-            merge_builder = dt.merge(
-                source=temp_table,
-                predicate=predicate,
-                source_alias="source",
-                target_alias="target",
-            )
-
-            if when_matched == "do_nothing":
-                # Skip existing records (deduplication)
-                merge_builder = merge_builder.when_not_matched_insert_all()
-            elif when_matched == "update":
-                # Update existing records
-                merge_builder = (
-                    merge_builder.when_matched_update_all().when_not_matched_insert_all()
-                )
-            else:
-                raise ValueError(f"Invalid when_matched value: {when_matched}")
-
-            result = merge_builder.execute()
-
-            # Cleanup temp table
-            shutil.rmtree(temp_dir, ignore_errors=True)
-
-            rows_inserted = result.get("num_target_rows_inserted", 0) or 0
-            rows_updated = result.get("num_target_rows_updated", 0) or 0
-
-            self._log(
-                logging.INFO,
-                "Merge deduplication complete",
-                rows_inserted=rows_inserted,
-                rows_updated=rows_updated,
-                initial_batch_size=initial_count,
-            )
-
-            return rows_inserted + rows_updated
-
-        except Exception as e:
-            # Cleanup on error
-            shutil.rmtree(temp_dir, ignore_errors=True)
-            raise
 
     @logged_operation(level=logging.INFO)
     @with_retry(config=DELTA_RETRY_CONFIG, on_auth_error=_on_auth_error)
