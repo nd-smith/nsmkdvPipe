@@ -943,7 +943,8 @@ class KQLEventPoller:
             # Note: KQL doesn't support > comparison on guid types, so convert to string
             if current_trace_id:
                 # Resume from checkpoint - skip records at/before checkpoint
-                escaped_trace_id = current_trace_id.replace("'", "\\'")
+                # KQL uses '' (doubled single quotes) for escaping, not \'
+                escaped_trace_id = current_trace_id.replace("'", "''")
                 where_clause = f"""| where ingestion_time() > datetime({start_str})
     or (ingestion_time() == datetime({start_str}) and tostring({trace_id_column}) > '{escaped_trace_id}')
 | where ingestion_time() < datetime({stop_str})"""
@@ -1442,7 +1443,8 @@ class KQLEventPoller:
             # (ingestion_time == checkpoint_time AND traceId > checkpoint_trace_id)
             # Note: KQL doesn't support > comparison on guid types, so convert to string
             checkpoint_time_str = checkpoint.to_datetime().strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-            escaped_trace_id = checkpoint.last_trace_id.replace("'", "\\'")
+            # KQL uses '' (doubled single quotes) for escaping, not \'
+            escaped_trace_id = checkpoint.last_trace_id.replace("'", "''")
             where_clause = f"""| where ingestion_time() > datetime({checkpoint_time_str})
     or (ingestion_time() == datetime({checkpoint_time_str}) and tostring({trace_id_column}) > '{escaped_trace_id}')
 | where ingestion_time() < datetime({to_str})"""
