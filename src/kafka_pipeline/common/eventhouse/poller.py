@@ -1420,9 +1420,9 @@ class KQLEventPoller:
         Returns:
             Complete KQL query string
         """
-        # Format datetime for KQL
-        from_str = poll_from.strftime("%Y-%m-%dT%H:%M:%SZ")
-        to_str = poll_to.strftime("%Y-%m-%dT%H:%M:%SZ")
+        # Format datetime for KQL (with microseconds for precise checkpoint resume)
+        from_str = poll_from.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        to_str = poll_to.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
         # Get trace_id column name - Eventhouse uses camelCase 'traceId'
         trace_id_column = "traceId"
