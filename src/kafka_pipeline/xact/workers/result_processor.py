@@ -360,7 +360,12 @@ class ResultProcessor:
         Flushes batches when timeout threshold exceeded.
         Logs cycle output at regular intervals for operational visibility.
         """
-        logger.debug("Starting periodic flush task")
+        logger.info(
+            "Cycle 0: received=0 (success=0, failed=0, skipped=0), written=0, pending=0 "
+            "[cycle output every %ds]",
+            self.CYCLE_LOG_INTERVAL_SECONDS,
+        )
+        self._last_cycle_log = time.monotonic()
 
         try:
             while self._running:
