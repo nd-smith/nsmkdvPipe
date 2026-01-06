@@ -1043,6 +1043,7 @@ class DownloadWorker:
             error_message=outcome.error_message,
             retry_count=task_message.retry_count,
             created_at=datetime.now(timezone.utc),
+            event_date=task_message.original_timestamp.date(),
         )
 
         await self.producer.send(

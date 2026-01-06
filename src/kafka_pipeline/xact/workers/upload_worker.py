@@ -601,6 +601,7 @@ class UploadWorker:
                 status="completed",
                 bytes_downloaded=cached_message.bytes_downloaded,
                 created_at=datetime.now(timezone.utc),
+                event_date=cached_message.original_timestamp.date(),
             )
 
             await self.producer.send(
@@ -654,6 +655,7 @@ class UploadWorker:
                     bytes_downloaded=0,
                     error_message=str(e)[:500],
                     created_at=datetime.now(timezone.utc),
+                    event_date=cached_message.original_timestamp.date(),
                 )
 
                 await self.producer.send(
