@@ -324,7 +324,7 @@ class ClaimXUploadWorker:
         consumer_config = {
             "bootstrap_servers": self.config.bootstrap_servers,
             "group_id": self.CONSUMER_GROUP,
-            "auto_offset_reset": self.config.auto_offset_reset,
+            "auto_offset_reset": self.config.consumer_defaults.get("auto_offset_reset", "earliest"),
             "enable_auto_commit": False,
             "max_poll_records": self._upload_batch_size,
             "session_timeout_ms": self.config.session_timeout_ms,

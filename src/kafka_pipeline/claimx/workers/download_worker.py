@@ -319,7 +319,7 @@ class ClaimXDownloadWorker:
             "bootstrap_servers": self.config.bootstrap_servers,
             "group_id": self.CONSUMER_GROUP,
             "enable_auto_commit": False,  # Manual commit after batch processing
-            "auto_offset_reset": self.config.auto_offset_reset,
+            "auto_offset_reset": self.config.consumer_defaults.get("auto_offset_reset", "earliest"),
             "max_poll_records": self.self._download_batch_size,
             "max_poll_interval_ms": self.config.max_poll_interval_ms,
             "session_timeout_ms": self.config.session_timeout_ms,
