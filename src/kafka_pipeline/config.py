@@ -1,9 +1,10 @@
 """Kafka pipeline configuration from YAML file.
 
 Configuration loads ONLY from config.yaml.
-Environment variables are NOT supported.
+Environment variables are NOT supported (except for ClaimX API credentials).
 """
 
+import os
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -85,6 +86,15 @@ class KafkaConfig:
     onelake_base_path: str = ""  # Fallback path
     onelake_domain_paths: Dict[str, str] = field(default_factory=dict)
     cache_dir: str = field(default_factory=_get_default_cache_dir)
+
+    # =========================================================================
+    # CLAIMX API CONFIGURATION
+    # =========================================================================
+    claimx_api_url: str = ""
+    claimx_api_username: str = ""
+    claimx_api_password: str = ""
+    claimx_api_timeout_seconds: int = 30
+    claimx_api_concurrency: int = 20
 
     def get_worker_config(
         self,
@@ -524,8 +534,11 @@ def load_config(
     if overrides:
         kafka_config = _deep_merge(kafka_config, overrides)
 
-    # Extract connection settings
+    # Extract connection settings (support both flat and nested structure)
     connection = kafka_config.get("connection", {})
+    if not connection:
+        # Fallback: connection settings directly under kafka (flat structure)
+        connection = kafka_config
 
     # Extract defaults
     consumer_defaults = kafka_config.get("consumer_defaults", {})
@@ -535,8 +548,19 @@ def load_config(
     xact_config = kafka_config.get("xact", {})
     claimx_config = kafka_config.get("claimx", {})
 
-    # Extract storage settings
+    # Extract storage settings (support both flat and nested structure)
     storage = kafka_config.get("storage", {})
+    if not storage:
+        # Fallback: storage settings directly under kafka (flat structure)
+        storage = kafka_config
+
+    # Extract ClaimX API settings (from root-level claimx section, not kafka.claimx)
+    claimx_root = yaml_data.get("claimx", {})
+    claimx_api = claimx_root.get("api", {})
+
+    # Load ClaimX API credentials from environment variables
+    claimx_api_username = os.getenv("CLAIMX_API_USERNAME", "")
+    claimx_api_password = os.getenv("CLAIMX_API_PASSWORD", "")
 
     # Build KafkaConfig instance
     config = KafkaConfig(
@@ -559,6 +583,12 @@ def load_config(
         onelake_base_path=storage.get("onelake_base_path", ""),
         onelake_domain_paths=storage.get("onelake_domain_paths", {}),
         cache_dir=storage.get("cache_dir") or _get_default_cache_dir(),
+        # ClaimX API
+        claimx_api_url=claimx_api.get("base_url", ""),
+        claimx_api_username=claimx_api_username,
+        claimx_api_password=claimx_api_password,
+        claimx_api_timeout_seconds=claimx_api.get("timeout_seconds", 30),
+        claimx_api_concurrency=claimx_api.get("max_concurrent", 20),
     )
 
     # Validate configuration

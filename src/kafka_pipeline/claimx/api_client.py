@@ -150,7 +150,9 @@ class ClaimXApiClient(LoggedClass):
     def __init__(
         self,
         base_url: str,
-        auth_token: str,
+        auth_token: Optional[str] = None,
+        username: Optional[str] = None,
+        password: Optional[str] = None,
         timeout_seconds: int = 30,
         max_concurrent: int = 20,
         sender_username: str = "user@example.com",
@@ -160,13 +162,32 @@ class ClaimXApiClient(LoggedClass):
 
         Args:
             base_url: API base URL (e.g., https://www.claimxperience.com/service/cxedirest)
-            auth_token: Basic auth token
+            auth_token: Pre-encoded Basic auth token (base64). If not provided, username/password required.
+            username: ClaimX API username (alternative to auth_token)
+            password: ClaimX API password (alternative to auth_token)
             timeout_seconds: Request timeout in seconds
             max_concurrent: Max concurrent requests
             sender_username: Default sender username for video collaboration
+
+        Raises:
+            ValueError: If neither auth_token nor username/password provided
         """
+        import base64
+
         self.base_url = base_url.rstrip("/")
-        self.auth_token = auth_token
+
+        # Accept either auth_token OR username/password
+        if auth_token:
+            self.auth_token = auth_token
+        elif username and password:
+            # Encode username:password to Base64
+            credentials = f"{username}:{password}"
+            self.auth_token = base64.b64encode(credentials.encode()).decode()
+        else:
+            raise ValueError(
+                "ClaimXApiClient requires either 'auth_token' or both 'username' and 'password'"
+            )
+
         self.timeout_seconds = timeout_seconds
         self.max_concurrent = max_concurrent
         self.sender_username = sender_username
