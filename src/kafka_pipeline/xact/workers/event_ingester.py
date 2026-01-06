@@ -19,7 +19,9 @@ Input topic: events.raw
 Output topic: downloads.pending
 """
 
+import asyncio
 import json
+import time
 from datetime import datetime
 from typing import Optional
 
@@ -65,6 +67,9 @@ class EventIngesterWorker:
         >>> await worker.stop()
     """
 
+    # Cycle output configuration
+    CYCLE_LOG_INTERVAL_SECONDS = 30
+
     def __init__(
         self,
         config: KafkaConfig,
@@ -86,6 +91,15 @@ class EventIngesterWorker:
         self.domain = domain
         self.producer: Optional[BaseKafkaProducer] = None
         self.consumer: Optional[BaseKafkaConsumer] = None
+
+        # Cycle output tracking
+        self._events_received = 0
+        self._tasks_created = 0
+        self._events_skipped = 0
+        self._last_cycle_log = time.monotonic()
+        self._cycle_count = 0
+        self._cycle_task: Optional[asyncio.Task] = None
+        self._running = False
 
         logger.info(
             "Initialized EventIngesterWorker",
@@ -115,6 +129,7 @@ class EventIngesterWorker:
             Exception: If producer or consumer fails to start
         """
         logger.info("Starting EventIngesterWorker")
+        self._running = True
 
         # Start producer first (uses producer_config for local Kafka)
         self.producer = BaseKafkaProducer(
@@ -123,6 +138,9 @@ class EventIngesterWorker:
             worker_name="event_ingester",
         )
         await self.producer.start()
+
+        # Start cycle output background task
+        self._cycle_task = asyncio.create_task(self._periodic_cycle_output())
 
         # Create and start consumer with message handler (uses consumer_config)
         self.consumer = BaseKafkaConsumer(
@@ -133,8 +151,11 @@ class EventIngesterWorker:
             message_handler=self._handle_event_message,
         )
 
-        # Start consumer (this blocks until stopped)
-        await self.consumer.start()
+        try:
+            # Start consumer (this blocks until stopped)
+            await self.consumer.start()
+        finally:
+            self._running = False
 
     async def stop(self) -> None:
         """
@@ -144,6 +165,15 @@ class EventIngesterWorker:
         offsets and flushing pending messages.
         """
         logger.info("Stopping EventIngesterWorker")
+        self._running = False
+
+        # Cancel cycle output task
+        if self._cycle_task and not self._cycle_task.done():
+            self._cycle_task.cancel()
+            try:
+                await self._cycle_task
+            except asyncio.CancelledError:
+                pass
 
         # Stop consumer first (stops receiving new messages)
         if self.consumer:
@@ -169,6 +199,9 @@ class EventIngesterWorker:
         Raises:
             Exception: If message processing fails (will be handled by consumer error routing)
         """
+        # Track events received for cycle output
+        self._events_received += 1
+
         # Decode and parse EventMessage
         try:
             message_data = json.loads(record.value.decode("utf-8"))
@@ -198,6 +231,7 @@ class EventIngesterWorker:
 
         # Skip events without attachments (many events are just status updates)
         if not event.attachments:
+            self._events_skipped += 1
             logger.debug(
                 "Event has no attachments, skipping download task creation",
                 extra={"trace_id": event.trace_id},
@@ -207,6 +241,7 @@ class EventIngesterWorker:
         # Extract assignment_id from data (required for path generation)
         assignment_id = event.assignment_id
         if not assignment_id:
+            self._events_skipped += 1
             logger.warning(
                 "Event missing assignmentId in data, cannot generate paths",
                 extra={
@@ -306,6 +341,9 @@ class EventIngesterWorker:
                 headers={"trace_id": event.trace_id},
             )
 
+            # Track successful task creation for cycle output
+            self._tasks_created += 1
+
             logger.info(
                 "Created download task",
                 extra={
@@ -328,6 +366,44 @@ class EventIngesterWorker:
                 },
                 exc_info=True,
             )
+            raise
+
+    async def _periodic_cycle_output(self) -> None:
+        """
+        Background task for periodic cycle logging.
+
+        Logs processing statistics at regular intervals for operational visibility.
+        """
+        logger.info(
+            "Cycle 0: events=0 (tasks=0, skipped=0) [cycle output every %ds]",
+            self.CYCLE_LOG_INTERVAL_SECONDS,
+        )
+        self._last_cycle_log = time.monotonic()
+
+        try:
+            while self._running:
+                await asyncio.sleep(1)
+
+                # Log cycle output at regular intervals
+                cycle_elapsed = time.monotonic() - self._last_cycle_log
+                if cycle_elapsed >= self.CYCLE_LOG_INTERVAL_SECONDS:
+                    self._cycle_count += 1
+                    self._last_cycle_log = time.monotonic()
+
+                    logger.info(
+                        f"Cycle {self._cycle_count}: events={self._events_received} "
+                        f"(tasks={self._tasks_created}, skipped={self._events_skipped})",
+                        extra={
+                            "cycle": self._cycle_count,
+                            "events_received": self._events_received,
+                            "tasks_created": self._tasks_created,
+                            "events_skipped": self._events_skipped,
+                            "cycle_interval_seconds": self.CYCLE_LOG_INTERVAL_SECONDS,
+                        },
+                    )
+
+        except asyncio.CancelledError:
+            logger.debug("Periodic cycle output task cancelled")
             raise
 
 
