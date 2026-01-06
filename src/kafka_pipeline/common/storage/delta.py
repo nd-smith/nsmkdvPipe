@@ -281,34 +281,18 @@ class DeltaTableWriter(LoggedClass):
     def __init__(
         self,
         table_path: str,
-        dedupe_column: Optional[str] = None,
-        dedupe_window_hours: int = 24,
         timestamp_column: str = "ingested_at",
         partition_column: str = "event_date",
         z_order_columns: Optional[List[str]] = None,
-        dedupe_cache_refresh_batches: int = 10,
     ):
         self.table_path = table_path
-        self.dedupe_column = dedupe_column
-        self.dedupe_window_hours = dedupe_window_hours
         self.timestamp_column = timestamp_column
         self.partition_column = partition_column
         self.z_order_columns = z_order_columns or []
         self._reader = DeltaTableReader(table_path)
         self._optimization_scheduler: Optional[Any] = None
 
-        # Dedupe ID cache - avoids querying table on every batch
-        self._dedupe_cache_refresh_batches = dedupe_cache_refresh_batches
-        self._cached_dedupe_ids: Optional[Set[str]] = None
-        self._cache_batch_count: int = 0
-
         super().__init__()
-
-    def invalidate_dedupe_cache(self) -> None:
-        """Invalidate the dedupe ID cache, forcing a refresh on next write."""
-        self._cached_dedupe_ids = None
-        self._cache_batch_count = 0
-        self._log(logging.DEBUG, "Invalidated dedupe ID cache")
 
     def _table_exists(self, opts: Dict[str, str]) -> bool:
         """Check if Delta table exists."""
@@ -323,15 +307,17 @@ class DeltaTableWriter(LoggedClass):
     def append(
         self,
         df: pl.DataFrame,
-        dedupe: bool = True,
         batch_id: Optional[str] = None,
     ) -> int:
         """
         Append DataFrame to Delta table.
 
+        No deduplication at write time - duplicates are handled by:
+        1. Download worker's in-memory cache (for downloads)
+        2. Daily maintenance job (for events tables)
+
         Args:
             df: Data to append
-            dedupe: Whether to deduplicate against existing data
             batch_id: Optional short identifier for log correlation
 
         Returns:
@@ -340,31 +326,6 @@ class DeltaTableWriter(LoggedClass):
         if df.is_empty():
             self._log(logging.DEBUG, "No data to write", batch_id=batch_id)
             return 0
-
-        initial_count = len(df)
-
-        # Dedupe within batch
-        if self.dedupe_column and self.dedupe_column in df.columns:
-            df = df.unique(subset=[self.dedupe_column])
-            if len(df) < initial_count:
-                self._log(
-                    logging.DEBUG,
-                    "Removed duplicates within batch",
-                    batch_id=batch_id,
-                    records_processed=initial_count - len(df),
-                )
-
-        # Dedupe against existing data
-        if dedupe and self.dedupe_column:
-            df = self._filter_existing(df, batch_id=batch_id)
-            if df.is_empty():
-                self._log(logging.DEBUG, "No new records after deduplication", batch_id=batch_id)
-                return 0
-
-        # Capture IDs we're about to write (for cache update)
-        new_ids: Optional[Set[str]] = None
-        if dedupe and self.dedupe_column and self.dedupe_column in df.columns:
-            new_ids = set(df[self.dedupe_column].to_list())
 
         # Write to Delta - convert to Arrow for write_deltalake
         opts = get_storage_options()
@@ -376,20 +337,6 @@ class DeltaTableWriter(LoggedClass):
             storage_options=opts,
             partition_by=[self.partition_column] if self.partition_column else None,
         )  # type: ignore[call-overload]
-
-        # Update dedupe cache with newly written IDs
-        if new_ids and self._cached_dedupe_ids is not None:
-            self._cached_dedupe_ids.update(new_ids)
-            self._log(
-                logging.DEBUG,
-                "Added new IDs to dedupe cache",
-                batch_id=batch_id,
-                new_id_count=len(new_ids),
-                cache_size=len(self._cached_dedupe_ids),
-            )
-
-        # Increment batch counter for cache refresh tracking
-        self._cache_batch_count += 1
 
         return len(df)
 
@@ -581,126 +528,9 @@ class DeltaTableWriter(LoggedClass):
         if df.is_empty():
             return 0
 
-        # Write using append mode with dedup against existing data
-        rows_written: int = self.append(df, dedupe=True)  # type: ignore[assignment]
+        # Write using append mode (no dedup at write time)
+        rows_written: int = self.append(df)  # type: ignore[assignment]
         return rows_written
-
-    def _filter_existing(
-        self, df: pl.DataFrame, batch_id: Optional[str] = None
-    ) -> pl.DataFrame:
-        """Filter out records that already exist in table using cached IDs."""
-        if not self.dedupe_column:
-            return df
-
-        # Check if cache needs refresh
-        needs_refresh = (
-            self._cached_dedupe_ids is None
-            or self._cache_batch_count >= self._dedupe_cache_refresh_batches
-        )
-
-        if needs_refresh:
-            try:
-                self._cached_dedupe_ids = self._get_recent_ids()
-                self._cache_batch_count = 0
-                self._log(
-                    logging.DEBUG,
-                    "Refreshed dedupe ID cache",
-                    batch_id=batch_id,
-                    cache_size=len(self._cached_dedupe_ids),
-                    refresh_interval=self._dedupe_cache_refresh_batches,
-                )
-            except Exception as e:
-                self._log_exception(
-                    e,
-                    "Could not refresh dedupe ID cache",
-                    level=logging.WARNING,
-                )
-                # On error, clear cache to force retry next batch
-                self._cached_dedupe_ids = None
-                return df
-
-        existing_ids = self._cached_dedupe_ids
-        if not existing_ids:
-            return df
-
-        before_count = len(df)
-        df = df.filter(~pl.col(self.dedupe_column).is_in(existing_ids))
-
-        filtered_count = before_count - len(df)
-        if filtered_count > 0:
-            self._log(
-                logging.DEBUG,
-                "Filtered existing records",
-                batch_id=batch_id,
-                records_processed=filtered_count,
-            )
-
-        return df
-
-    @with_retry(config=DELTA_RETRY_CONFIG, on_auth_error=_on_auth_error)
-    def _get_recent_ids(self) -> Set[str]:
-        """Get dedupe column values from recent window using lazy scan with partition pruning."""
-        if not self.dedupe_column:
-            return set()
-
-        if not self._reader.exists():
-            return set()
-
-        cutoff = datetime.now(timezone.utc) - timedelta(
-            hours=self.dedupe_window_hours
-        )
-
-        # Calculate date range for partition pruning
-        # Delta Lake only prunes parquet files based on partition columns (event_date),
-        # not row-level columns (ingested_at). We must filter on the partition column
-        # first to enable file-level pruning, then apply the fine-grained timestamp filter.
-        cutoff_date = cutoff.date()
-        today = datetime.now(timezone.utc).date()
-
-        self._log(
-            logging.DEBUG,
-            "Getting recent IDs for deduplication",
-            dedupe_column=self.dedupe_column,
-            partition_column=self.partition_column,
-            cutoff_date=str(cutoff_date),
-            today=str(today),
-            dedupe_window_hours=self.dedupe_window_hours,
-        )
-
-        opts = get_storage_options()
-        lf = pl.scan_delta(self.table_path, storage_options=opts)
-
-        # Apply partition filter first for file-level pruning
-        partition_filter = (pl.col(self.partition_column) >= cutoff_date) & (
-            pl.col(self.partition_column) <= today
-        )
-
-        # Then apply row-level timestamp filter
-        timestamp_filter = pl.col(self.timestamp_column) > cutoff
-
-        # CRITICAL: Use .unique() on LazyFrame BEFORE collecting to deduplicate
-        # at the storage layer. Without this, we load all rows then convert to set,
-        # which is extremely slow for tables with millions of rows.
-        df = (
-            lf.filter(partition_filter)
-            .filter(timestamp_filter)
-            .select(self.dedupe_column)
-            .unique()
-            .collect(streaming=True)
-        )
-
-        if df is None or df.is_empty():
-            self._log(logging.DEBUG, "No recent IDs found for deduplication")
-            return set()
-
-        id_count = len(df)
-        self._log(
-            logging.DEBUG,
-            "Retrieved unique IDs for deduplication",
-            id_count=id_count,
-        )
-
-        return set(df[self.dedupe_column].to_list())
 
     @logged_operation(level=logging.INFO)
     @with_retry(config=DELTA_RETRY_CONFIG, on_auth_error=_on_auth_error)
@@ -938,7 +768,7 @@ class DeltaTableWriter(LoggedClass):
         else:
             df = pl.DataFrame(rows)
 
-        result: int = self.append(df, dedupe=False)  # type: ignore[assignment]
+        result: int = self.append(df)  # type: ignore[assignment]
         return result
 
     @logged_operation(level=logging.INFO)
@@ -984,7 +814,7 @@ class DeltaTableWriter(LoggedClass):
             )
 
         # Perform the write
-        rows_written = self.append(df, dedupe=True)
+        rows_written = self.append(df)
 
         # Record token to prevent future duplicates
         write_op = WriteOperation(

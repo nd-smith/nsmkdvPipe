@@ -18,7 +18,6 @@ import yaml
 
 from core.logging.setup import get_logger
 from kafka_pipeline.config import KafkaConfig, load_config as load_kafka_config
-from kafka_pipeline.common.eventhouse.dedup import DedupConfig, EventhouseDeduplicator
 from kafka_pipeline.common.eventhouse.kql_client import (
     DEFAULT_CONFIG_PATH,
     EventhouseConfig,
@@ -39,9 +38,6 @@ class PollerConfig:
 
     # Kafka configuration
     kafka: KafkaConfig
-
-    # Deduplication configuration
-    dedup: DedupConfig
 
     # Event schema class for row-to-event conversion
     # Must have a from_eventhouse_row(row: Dict[str, Any]) classmethod
@@ -117,7 +113,6 @@ class PollerConfig:
                 yaml_data = yaml.safe_load(f) or {}
             eventhouse_section = yaml_data.get("eventhouse", {})
             poller_data = eventhouse_section.get("poller", {})
-            dedup_data = eventhouse_section.get("dedup", {})
 
         # Apply environment variable overrides for poller
         if os.getenv("POLL_INTERVAL_SECONDS"):
@@ -133,56 +128,17 @@ class PollerConfig:
         if os.getenv("MAX_KAFKA_LAG"):
             poller_data["max_kafka_lag"] = os.getenv("MAX_KAFKA_LAG")
 
-        # Apply environment variable overrides for dedup
-        if os.getenv("XACT_EVENTS_TABLE_PATH"):
-            dedup_data["xact_events_table_path"] = os.getenv("XACT_EVENTS_TABLE_PATH")
-        if os.getenv("DEDUP_XACT_EVENTS_WINDOW_HOURS"):
-            dedup_data["xact_events_window_hours"] = os.getenv(
-                "DEDUP_XACT_EVENTS_WINDOW_HOURS"
-            )
-        if os.getenv("DEDUP_EVENTHOUSE_WINDOW_HOURS"):
-            dedup_data["eventhouse_query_window_hours"] = os.getenv(
-                "DEDUP_EVENTHOUSE_WINDOW_HOURS"
-            )
-        if os.getenv("DEDUP_OVERLAP_MINUTES"):
-            dedup_data["overlap_minutes"] = os.getenv("DEDUP_OVERLAP_MINUTES")
-
         # Apply environment variable overrides for backfill
-        if os.getenv("DEDUP_BACKFILL_START_TIMESTAMP"):
-            poller_data["backfill_start_stamp"] = os.getenv(
-                "DEDUP_BACKFILL_START_TIMESTAMP"
-            )
-        if os.getenv("DEDUP_BACKFILL_STOP_TIMESTAMP"):
-            poller_data["backfill_stop_stamp"] = os.getenv(
-                "DEDUP_BACKFILL_STOP_TIMESTAMP"
-            )
-        if os.getenv("DEDUP_BULK_BACKFILL"):
-            poller_data["bulk_backfill"] = os.getenv("DEDUP_BULK_BACKFILL").lower() in (
+        if os.getenv("BACKFILL_START_TIMESTAMP"):
+            poller_data["backfill_start_stamp"] = os.getenv("BACKFILL_START_TIMESTAMP")
+        if os.getenv("BACKFILL_STOP_TIMESTAMP"):
+            poller_data["backfill_stop_stamp"] = os.getenv("BACKFILL_STOP_TIMESTAMP")
+        if os.getenv("BULK_BACKFILL"):
+            poller_data["bulk_backfill"] = os.getenv("BULK_BACKFILL").lower() in (
                 "true", "1", "yes"
             )
 
-        # Apply environment variable overrides for dedup kql_start_stamp
-        if os.getenv("DEDUP_KQL_START_TIMESTAMP"):
-            dedup_data["kql_start_stamp"] = os.getenv("DEDUP_KQL_START_TIMESTAMP")
-
         xact_events_path = poller_data.get("events_table_path", "")
-
-        dedup_config = DedupConfig(
-            xact_events_table_path=dedup_data.get(
-                "xact_events_table_path", xact_events_path
-            ),
-            xact_events_window_hours=int(
-                dedup_data.get("xact_events_window_hours", 24)
-            ),
-            eventhouse_query_window_hours=int(
-                dedup_data.get("eventhouse_query_window_hours", 1)
-            ),
-            overlap_minutes=int(dedup_data.get("overlap_minutes", 5)),
-            max_trace_ids_per_query=int(
-                dedup_data.get("max_trace_ids_per_query", 50_000)
-            ),
-            kql_start_stamp=dedup_data.get("kql_start_stamp"),
-        )
 
         # Handle column_mapping from YAML
         column_mapping = poller_data.get("column_mapping", {
@@ -198,7 +154,6 @@ class PollerConfig:
         return cls(
             eventhouse=eventhouse_config,
             kafka=kafka_config,
-            dedup=dedup_config,
             domain=poller_data.get("domain", "xact"),
             poll_interval_seconds=int(poller_data.get("poll_interval_seconds", 30)),
             batch_size=int(poller_data.get("batch_size", 1000)),
@@ -238,34 +193,21 @@ class PollerConfig:
 
         xact_events_path = os.getenv("XACT_EVENTS_TABLE_PATH", "")
 
-        dedup_config = DedupConfig(
-            xact_events_table_path=xact_events_path,
-            xact_events_window_hours=int(
-                os.getenv("DEDUP_XACT_EVENTS_WINDOW_HOURS", "24")
-            ),
-            eventhouse_query_window_hours=int(
-                os.getenv("DEDUP_EVENTHOUSE_WINDOW_HOURS", "1")
-            ),
-            overlap_minutes=int(os.getenv("DEDUP_OVERLAP_MINUTES", "5")),
-            kql_start_stamp=os.getenv("DEDUP_KQL_START_TIMESTAMP"),
-        )
-
         # Parse bulk_backfill boolean
-        bulk_backfill_env = os.getenv("DEDUP_BULK_BACKFILL", "").lower()
+        bulk_backfill_env = os.getenv("BULK_BACKFILL", "").lower()
         bulk_backfill = bulk_backfill_env in ("true", "1", "yes")
 
         return cls(
             eventhouse=eventhouse_config,
             kafka=kafka_config,
-            dedup=dedup_config,
             domain=os.getenv("PIPELINE_DOMAIN", "xact"),
             poll_interval_seconds=int(os.getenv("POLL_INTERVAL_SECONDS", "30")),
             batch_size=int(os.getenv("POLL_BATCH_SIZE", "1000")),
             source_table=os.getenv("EVENTHOUSE_SOURCE_TABLE", "Events"),
             events_table_path=xact_events_path,
             max_kafka_lag=int(os.getenv("MAX_KAFKA_LAG", "10000")),
-            backfill_start_stamp=os.getenv("DEDUP_BACKFILL_START_TIMESTAMP"),
-            backfill_stop_stamp=os.getenv("DEDUP_BACKFILL_STOP_TIMESTAMP"),
+            backfill_start_stamp=os.getenv("BACKFILL_START_TIMESTAMP"),
+            backfill_stop_stamp=os.getenv("BACKFILL_STOP_TIMESTAMP"),
             bulk_backfill=bulk_backfill,
         )
 
@@ -313,7 +255,6 @@ class KQLEventPoller:
 
         # Components (initialized on start)
         self._kql_client: Optional[KQLClient] = None
-        self._deduplicator: Optional[EventhouseDeduplicator] = None
         self._producer: Optional[BaseKafkaProducer] = None
 
         # State
@@ -425,9 +366,6 @@ class KQLEventPoller:
         # Initialize KQL client
         self._kql_client = KQLClient(self.config.eventhouse)
         await self._kql_client.connect()
-
-        # Initialize deduplicator
-        self._deduplicator = EventhouseDeduplicator(self.config.dedup)
 
         # Initialize Kafka producer
         self._producer = BaseKafkaProducer(
@@ -930,17 +868,21 @@ class KQLEventPoller:
             poll_to = self._backfill_stop_time or now
         else:
             # Normal mode - use last poll time with overlap
-            poll_from, poll_to = self._deduplicator.get_poll_window(self._last_poll_time)
+            # Simple time window without deduplication (dedup happens in download worker)
+            poll_to = now
+            if self._last_poll_time is None:
+                # First poll - use default window (1 hour)
+                poll_from = now - timedelta(hours=1)
+            else:
+                # Subsequent poll - from last poll time with 5-minute overlap
+                poll_from = self._last_poll_time - timedelta(minutes=5)
 
-        # Build query with deduplication
-        # During backfill with pagination, use last batch's trace_ids for anti-join
-        # (only needed to handle events with same ingestion_time as last batch)
-        query = self._deduplicator.build_deduped_query(
+        # Build simple KQL query (no deduplication at polling level)
+        query = self._build_query(
             base_table=self.config.source_table,
             poll_from=poll_from,
             poll_to=poll_to,
             limit=self.config.batch_size,
-            boundary_trace_ids=self._last_batch_trace_ids if self._backfill_mode else None,
         )
 
         # Execute query
@@ -1085,6 +1027,53 @@ class KQLEventPoller:
                     self._seen_trace_ids.add(event_id)
 
         return events_processed
+
+    def _build_query(
+        self,
+        base_table: str,
+        poll_from: datetime,
+        poll_to: datetime,
+        limit: int = 1000,
+    ) -> str:
+        """
+        Build simple KQL query with time filter.
+
+        No deduplication at polling level - duplicates are handled by
+        download worker's in-memory cache.
+
+        Args:
+            base_table: Source table name in Eventhouse
+            poll_from: Start of time window
+            poll_to: End of time window
+            limit: Max rows to return (default: 1000)
+
+        Returns:
+            Complete KQL query string
+        """
+        # Format datetime for KQL
+        from_str = poll_from.strftime("%Y-%m-%dT%H:%M:%SZ")
+        to_str = poll_to.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        query = f"""
+{base_table}
+| where ingestion_time() >= datetime({from_str})
+| where ingestion_time() < datetime({to_str})
+| extend ingestion_time = ingestion_time()
+| order by ingestion_time() asc
+| take {limit}
+"""
+
+        logger.debug(
+            "Built KQL query",
+            extra={
+                "base_table": base_table,
+                "poll_from": from_str,
+                "poll_to": to_str,
+                "limit": limit,
+            },
+        )
+
+        return query.strip()
 
     async def _publish_event(self, event: Any) -> None:
         """

@@ -37,21 +37,17 @@ class BaseDeltaWriter:
         class MyDomainWriter(BaseDeltaWriter):
             def __init__(self, table_path: str):
                 super().__init__(
-                    table_path=table_path,
-                    dedupe_column="id",
-                    dedupe_window_hours=24
+                    table_path=table_path
                 )
 
             async def write_records(self, records: List[Dict]) -> bool:
                 df = self._records_to_dataframe(records)
-                return await self._async_append(df, dedupe=True)
+                return await self._async_append(df)
     """
 
     def __init__(
         self,
         table_path: str,
-        dedupe_column: Optional[str] = None,
-        dedupe_window_hours: int = 24,
         timestamp_column: str = "ingested_at",
         partition_column: str = "event_date",
         z_order_columns: Optional[List[str]] = None,
@@ -59,10 +55,12 @@ class BaseDeltaWriter:
         """
         Initialize base Delta writer.
 
+        No deduplication at write time - duplicates are handled by:
+        1. Download worker's in-memory cache (for downloads)
+        2. Daily maintenance job (for events tables)
+
         Args:
             table_path: Full abfss:// path to Delta table
-            dedupe_column: Column name for deduplication (optional)
-            dedupe_window_hours: Hours to check for duplicates (default: 24)
             timestamp_column: Column used for time-based operations (default: "ingested_at")
             partition_column: Column used for partitioning (default: "event_date")
             z_order_columns: Columns for Z-ordering optimization (optional)
@@ -73,8 +71,6 @@ class BaseDeltaWriter:
         # Initialize underlying Delta writer
         self._delta_writer = DeltaTableWriter(
             table_path=table_path,
-            dedupe_column=dedupe_column,
-            dedupe_window_hours=dedupe_window_hours,
             timestamp_column=timestamp_column,
             partition_column=partition_column,
             z_order_columns=z_order_columns or [],
@@ -84,7 +80,6 @@ class BaseDeltaWriter:
             f"Initialized {self.__class__.__name__}",
             extra={
                 "table_path": table_path,
-                "dedupe_column": dedupe_column,
                 "z_order_columns": z_order_columns,
             },
         )
@@ -92,7 +87,6 @@ class BaseDeltaWriter:
     async def _async_append(
         self,
         df: pl.DataFrame,
-        dedupe: bool = True,
         batch_id: Optional[str] = None,
     ) -> bool:
         """
@@ -102,7 +96,6 @@ class BaseDeltaWriter:
 
         Args:
             df: Polars DataFrame to append
-            dedupe: Whether to deduplicate against existing data
             batch_id: Optional short identifier for log correlation
 
         Returns:
@@ -115,7 +108,6 @@ class BaseDeltaWriter:
             rows_written = await asyncio.to_thread(
                 self._delta_writer.append,
                 df,
-                dedupe=dedupe,
                 batch_id=batch_id,
             )
 

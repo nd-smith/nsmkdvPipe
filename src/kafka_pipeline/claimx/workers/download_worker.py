@@ -233,16 +233,10 @@ class ClaimXDownloadWorker:
         await self.producer.start()
 
         # Initialize API client for URL refresh
-        # Create Basic auth token from username:password
-        if self.config.claimx_api_username and self.config.claimx_api_password:
-            credentials = f"{self.config.claimx_api_username}:{self.config.claimx_api_password}"
-            auth_token = base64.b64encode(credentials.encode()).decode('ascii')
-        else:
-            auth_token = ""  # Empty token for tests without real API
-
         self.api_client = ClaimXApiClient(
             base_url=self.config.claimx_api_url or "https://api.test.claimxperience.com",
-            auth_token=auth_token,
+            username=self.config.claimx_api_username or None,
+            password=self.config.claimx_api_password or None,
             timeout_seconds=self.config.claimx_api_timeout_seconds,
             max_concurrent=self.config.claimx_api_concurrency,
         )
