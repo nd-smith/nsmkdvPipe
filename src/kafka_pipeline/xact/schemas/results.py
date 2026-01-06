@@ -97,8 +97,8 @@ class DownloadResultMessage(BaseModel):
         ...,
         description="Timestamp when result was created"
     )
-    event_date: date = Field(
-        ...,
+    event_date: Optional[date] = Field(
+        default=None,
         description="Date of original event (partition column for xact_attachments)"
     )
     expires_at: Optional[datetime] = Field(
