@@ -1323,7 +1323,7 @@ class KQLEventPoller:
                 # Capture trace ID for debug logging
                 ingestion_time_raw = row.get("ingestion_time", row.get("$IngestionTime", ""))
                 debug_trace_lines.append(
-                    f"{event.trace_id},{ingestion_time_raw},{event.event_type},{event.status_subtype}"
+                    f"{event.trace_id},{ingestion_time_raw},{event.type},{event.status_subtype}"
                 )
 
                 # Publish EventMessage to events.raw topic
