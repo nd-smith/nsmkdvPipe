@@ -158,12 +158,12 @@ class DownloadWorker:
         self._in_flight_lock = asyncio.Lock()
         self._shutdown_event: Optional[asyncio.Event] = None
 
-        # Simple in-memory dedup cache (replaces complex Delta-based dedup)
-        # Maps trace_id -> timestamp for TTL-based eviction
-        # Prevents duplicate downloads when Eventhouse sends duplicates
+        # Simple in-memory dedup cache for Kafka redeliveries (consumer restarts, rebalances)
+        # Maps URL hash -> timestamp for TTL-based eviction
+        # Eventhouse dedup handled by poller checkpoint - this is just short-term Kafka dedup
         self._dedup_cache: dict[str, float] = {}
-        self._dedup_cache_ttl_seconds = 86400  # 24 hours
-        self._dedup_cache_max_size = 100_000  # ~1MB memory for 100k entries
+        self._dedup_cache_ttl_seconds = 3600  # 1 hour (checkpoint handles longer-term dedup)
+        self._dedup_cache_max_size = 100_000  # ~15MB memory at capacity
 
         # Shared HTTP session for connection pooling (WP-313)
         self._http_session: Optional[aiohttp.ClientSession] = None
