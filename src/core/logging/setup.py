@@ -4,11 +4,14 @@ import io
 import logging
 import os
 import secrets
+import shutil
 import sys
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import List, Optional
+
+import coolname
 
 from core.logging.context import set_log_context
 from core.logging.filters import StageContextFilter
@@ -31,6 +34,55 @@ NOISY_LOGGERS = [
 ]
 
 
+class ArchivingRotatingFileHandler(RotatingFileHandler):
+    """
+    Custom RotatingFileHandler that automatically moves rotated files to an archive folder.
+
+    When a log file is rotated (e.g., file.log -> file.log.1), the backup files
+    are automatically moved to an 'archive' subdirectory to keep the main log
+    directory clean.
+
+    Example:
+        Before rotation:
+            logs/xact/2026-01-05/xact_download_0105_1430_happy-tiger.log
+
+        After rotation:
+            logs/xact/2026-01-05/xact_download_0105_1430_happy-tiger.log (new file)
+            logs/xact/2026-01-05/archive/xact_download_0105_1430_happy-tiger.log.1
+            logs/xact/2026-01-05/archive/xact_download_0105_1430_happy-tiger.log.2
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Create archive directory next to log file
+        log_path = Path(self.baseFilename)
+        self.archive_dir = log_path.parent / "archive"
+        self.archive_dir.mkdir(parents=True, exist_ok=True)
+
+    def doRollover(self):
+        """
+        Override doRollover to move rotated files to archive directory.
+        """
+        # Perform standard rotation first
+        super().doRollover()
+
+        # Move rotated files (*.log.1, *.log.2, etc.) to archive
+        log_path = Path(self.baseFilename)
+        log_dir = log_path.parent
+        base_name = log_path.name
+
+        # Find all rotated backup files
+        for i in range(1, self.backupCount + 1):
+            rotated_file = log_dir / f"{base_name}.{i}"
+            if rotated_file.exists():
+                archive_file = self.archive_dir / f"{base_name}.{i}"
+                try:
+                    shutil.move(str(rotated_file), str(archive_file))
+                except Exception as e:
+                    # Log to stderr if we can't move the file (don't use logger to avoid recursion)
+                    print(f"Warning: Failed to archive {rotated_file}: {e}", file=sys.stderr)
+
+
 def get_log_file_path(
     log_dir: Path,
     domain: Optional[str] = None,
@@ -40,40 +92,50 @@ def get_log_file_path(
     """
     Build log file path with domain/date subfolder structure.
 
-    Structure: {log_dir}/{domain}/{YYYY-MM-DD}/{domain}_{stage}_{YYYYMMDD}[_instance].log
+    New Structure: {log_dir}/{domain}/{YYYY-MM-DD}/{domain}_{stage}_{MMDD}_{HHMM}_{phrase}.log
+
+    Examples:
+        logs/xact/2026-01-05/xact_download_0105_1430_happy-tiger.log
+        logs/claimx/2026-01-05/claimx_enricher_0105_0930_calm-ocean.log
 
     When instance_id is provided, it's appended to the filename to prevent
     file locking conflicts when multiple workers of the same type run
-    concurrently.
+    concurrently. If instance_id is not provided, a random coolname phrase
+    is generated.
 
     Args:
         log_dir: Base log directory
         domain: Pipeline domain (xact, claimx, kafka)
         stage: Stage name (ingest, download, etc.)
-        instance_id: Unique instance identifier (e.g., process ID) for
-            multi-worker scenarios
+        instance_id: Unique instance identifier (human-readable phrase or will be generated)
 
     Returns:
         Full path to log file
     """
-    date_folder = datetime.now().strftime("%Y-%m-%d")
-    date_str = datetime.now().strftime("%Y%m%d")
+    now = datetime.now()
+    date_folder = now.strftime("%Y-%m-%d")
+    date_str = now.strftime("%m%d")  # Simpler: MMDD instead of YYYYMMDD
+    time_str = now.strftime("%H%M")  # HHMM for time
 
     # Build base filename
     if domain and stage:
-        base_name = f"{domain}_{stage}_{date_str}"
+        base_name = f"{domain}_{stage}_{date_str}_{time_str}"
     elif domain:
-        base_name = f"{domain}_{date_str}"
+        base_name = f"{domain}_{date_str}_{time_str}"
     elif stage:
-        base_name = f"{stage}_{date_str}"
+        base_name = f"{stage}_{date_str}_{time_str}"
     else:
-        base_name = f"pipeline_{date_str}"
+        base_name = f"pipeline_{date_str}_{time_str}"
 
-    # Append instance ID if provided (for multi-worker isolation)
+    # Generate or use instance ID (coolname phrase)
     if instance_id:
-        filename = f"{base_name}_{instance_id}.log"
+        phrase = instance_id
     else:
-        filename = f"{base_name}.log"
+        # Generate a random 2-word coolname phrase (e.g., "happy-tiger")
+        phrase = coolname.generate_slug(2)
+
+    # Append phrase to filename
+    filename = f"{base_name}_{phrase}.log"
 
     # Build path with subfolders
     if domain:
@@ -99,16 +161,19 @@ def setup_logging(
     use_instance_id: bool = True,
 ) -> logging.Logger:
     """
-    Configure logging with console and rotating file handlers.
+    Configure logging with console and auto-archiving rotating file handlers.
 
-    Log files are organized by domain and date:
-        logs/xact/2025-01-15/xact_download_20250115.log
-        logs/kafka/2025-01-15/kafka_consumer_20250115.log
+    Log files are organized by domain and date with human-readable names:
+        logs/xact/2026-01-05/xact_download_0105_1430_happy-tiger.log
+        logs/claimx/2026-01-05/claimx_enricher_0105_0930_calm-ocean.log
 
-    When use_instance_id is True (default), the process ID is appended to
-    the log filename to prevent file locking conflicts when multiple
-    workers of the same type run concurrently:
-        logs/kafka/2025-01-15/kafka_consumer_20250115_p12345.log
+    When use_instance_id is True (default), a human-readable phrase is added to
+    the log filename to prevent file locking conflicts when multiple workers of
+    the same type run concurrently.
+
+    Rotated backup files (*.log.1, *.log.2, etc.) are automatically moved to
+    an 'archive' subdirectory to keep the main log directory clean:
+        logs/xact/2026-01-05/archive/xact_download_0105_1430_happy-tiger.log.1
 
     Args:
         name: Logger name and log file prefix
@@ -118,13 +183,12 @@ def setup_logging(
         json_format: Use JSON format for file logs (default: True)
         console_level: Console handler level (default: INFO)
         file_level: File handler level (default: DEBUG)
-        max_bytes: Max size per log file before rotation
-        backup_count: Number of backup files to keep
+        max_bytes: Max size per log file before rotation (default: 10MB)
+        backup_count: Number of backup files to keep (default: 5)
         suppress_noisy: Quiet down Azure SDK and HTTP client loggers
         worker_id: Worker identifier for context
-        use_instance_id: Append process ID to log filename for multi-worker
-            isolation (default: True). Set to False for single-worker
-            deployments or when log aggregation is preferred.
+        use_instance_id: Generate unique phrase for log filename (default: True).
+            Set to False for single-worker deployments or when log aggregation is preferred.
 
     Returns:
         Configured logger instance
@@ -139,8 +203,9 @@ def setup_logging(
     if domain:
         set_log_context(domain=domain)
 
-    # Generate instance ID from process ID for multi-worker isolation
-    instance_id = f"p{os.getpid()}" if use_instance_id else None
+    # Generate human-readable instance ID for multi-worker isolation
+    # Uses coolname to generate phrases like "happy-tiger" or "calm-ocean"
+    instance_id = coolname.generate_slug(2) if use_instance_id else None
 
     # Build log file path with subfolders
     log_file = get_log_file_path(
@@ -159,8 +224,8 @@ def setup_logging(
         )
     console_formatter = ConsoleFormatter()
 
-    # File handler with rotation
-    file_handler = RotatingFileHandler(
+    # File handler with rotation and auto-archiving
+    file_handler = ArchivingRotatingFileHandler(
         log_file,
         maxBytes=max_bytes,
         backupCount=backup_count,
@@ -216,20 +281,22 @@ def setup_multi_worker_logging(
     use_instance_id: bool = True,
 ) -> logging.Logger:
     """
-    Configure logging with per-worker file handlers.
+    Configure logging with per-worker auto-archiving file handlers.
 
-    Creates one RotatingFileHandler per worker type, each filtered
+    Creates one ArchivingRotatingFileHandler per worker type, each filtered
     to only receive logs from that worker's context. Also creates
     a combined log file that receives all logs.
 
-    Log files are organized by domain and date:
-        logs/kafka/2025-01-15/kafka_download_20250115.log
-        logs/kafka/2025-01-15/kafka_upload_20250115.log
-        logs/kafka/2025-01-15/kafka_pipeline_20250115.log  (combined)
+    Log files are organized by domain and date with human-readable names:
+        logs/kafka/2026-01-05/kafka_download_0105_1430_happy-tiger.log
+        logs/kafka/2026-01-05/kafka_upload_0105_1430_happy-tiger.log
+        logs/kafka/2026-01-05/kafka_pipeline_0105_1430_happy-tiger.log  (combined)
 
-    When use_instance_id is True (default), the process ID is appended to
+    When use_instance_id is True (default), a human-readable phrase is appended to
     log filenames to prevent file locking conflicts when multiple instances
     of the same worker configuration run concurrently.
+
+    Rotated backup files are automatically moved to archive subdirectories.
 
     Args:
         workers: List of worker stage names (e.g., ["download", "upload"])
@@ -238,19 +305,18 @@ def setup_multi_worker_logging(
         json_format: Use JSON format for file logs (default: True)
         console_level: Console handler level (default: INFO)
         file_level: File handler level (default: DEBUG)
-        max_bytes: Max size per log file before rotation
-        backup_count: Number of backup files to keep
+        max_bytes: Max size per log file before rotation (default: 10MB)
+        backup_count: Number of backup files to keep (default: 5)
         suppress_noisy: Quiet down Azure SDK and HTTP client loggers
-        use_instance_id: Append process ID to log filenames for multi-instance
-            isolation (default: True)
+        use_instance_id: Generate unique phrase for log filenames (default: True)
 
     Returns:
         Configured logger instance
     """
     log_dir = log_dir or DEFAULT_LOG_DIR
 
-    # Generate instance ID from process ID for multi-instance isolation
-    instance_id = f"p{os.getpid()}" if use_instance_id else None
+    # Generate human-readable instance ID for multi-instance isolation
+    instance_id = coolname.generate_slug(2) if use_instance_id else None
 
     # Create formatters
     if json_format:
@@ -278,14 +344,14 @@ def setup_multi_worker_logging(
     console_handler.setFormatter(console_formatter)
     root_logger.addHandler(console_handler)
 
-    # Add per-worker file handlers
+    # Add per-worker file handlers with auto-archiving
     for worker in workers:
         log_file = get_log_file_path(
             log_dir, domain=domain, stage=worker, instance_id=instance_id
         )
         log_file.parent.mkdir(parents=True, exist_ok=True)
 
-        handler = RotatingFileHandler(
+        handler = ArchivingRotatingFileHandler(
             log_file,
             maxBytes=max_bytes,
             backupCount=backup_count,
@@ -296,12 +362,12 @@ def setup_multi_worker_logging(
         handler.addFilter(StageContextFilter(worker))
         root_logger.addHandler(handler)
 
-    # Add combined file handler (no filter - receives all logs)
+    # Add combined file handler with auto-archiving (no filter - receives all logs)
     combined_file = get_log_file_path(
         log_dir, domain=domain, stage="pipeline", instance_id=instance_id
     )
     combined_file.parent.mkdir(parents=True, exist_ok=True)
-    combined_handler = RotatingFileHandler(
+    combined_handler = ArchivingRotatingFileHandler(
         combined_file,
         maxBytes=max_bytes,
         backupCount=backup_count,

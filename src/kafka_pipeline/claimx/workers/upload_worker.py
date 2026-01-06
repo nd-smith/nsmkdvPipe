@@ -85,21 +85,21 @@ class ClaimXUploadWorker:
         await worker.stop()
     """
 
-    CONSUMER_GROUP = "claimx-upload-worker"
-    WORKER_NAME = "claimx_upload_worker"
-    DOMAIN = "claimx"
+    WORKER_NAME = "upload_worker"
 
-    def __init__(self, config: KafkaConfig):
+    def __init__(self, config: KafkaConfig, domain: str = "claimx"):
         """
         Initialize ClaimX upload worker.
 
         Args:
             config: Kafka configuration
+            domain: Domain identifier (default: "claimx")
 
         Raises:
             ValueError: If no OneLake path is configured for claimx domain
         """
         self.config = config
+        self.domain = domain
 
         # Validate OneLake configuration for claimx domain
         if not config.onelake_domain_paths and not config.onelake_base_path:
@@ -110,14 +110,14 @@ class ClaimXUploadWorker:
                 "  - ONELAKE_BASE_PATH env var (fallback for all domains)"
             )
 
-        # Get processing config for concurrency settings
-        processing_config = config.get_worker_config("claimx", "upload_worker", "processing")
-        self._upload_concurrency = processing_config.get("concurrency", 15)
-        self._upload_batch_size = processing_config.get("batch_size", 30)
+        # Get worker-specific processing config
+        processing_config = config.get_worker_config(domain, self.WORKER_NAME, "processing")
+        self.concurrency = processing_config.get("concurrency", 10)
+        self.batch_size = processing_config.get("batch_size", 20)
 
-        # Topic to consume from - use hierarchical config
-        self.topic = config.get_topic("claimx", "downloads_cached")
-        self.results_topic = config.get_topic("claimx", "downloads_results")
+        # Topic to consume from
+        self.topic = config.get_topic(domain, "downloads_cached")
+        self.results_topic = config.get_topic(domain, "downloads_results")
 
         # Consumer will be created in start()
         self._consumer: Optional[AIOKafkaConsumer] = None
@@ -132,15 +132,15 @@ class ClaimXUploadWorker:
         # Create producer for result messages
         self.producer = BaseKafkaProducer(
             config=config,
-            domain="claimx",
+            domain=domain,
             worker_name=self.WORKER_NAME,
         )
 
         # OneLake client (lazy initialized in start())
         self.onelake_client: Optional[OneLakeClient] = None
 
-        # Health check server
-        health_port = getattr(config, 'claimx_upload_health_port', 8083)
+        # Health check server - use worker-specific port from config
+        health_port = processing_config.get("health_port", 8083)
         self.health_server = HealthCheckServer(
             port=health_port,
             worker_name="claimx-uploader",
@@ -149,12 +149,13 @@ class ClaimXUploadWorker:
         logger.info(
             "Initialized ClaimX upload worker",
             extra={
-                "consumer_group": self.CONSUMER_GROUP,
+                "domain": domain,
+                "worker_name": self.WORKER_NAME,
+                "consumer_group": config.get_consumer_group(domain, self.WORKER_NAME),
                 "topic": self.topic,
                 "results_topic": self.results_topic,
-                "domain": self.DOMAIN,
-                "upload_concurrency": self._upload_concurrency,
-                "upload_batch_size": self._upload_batch_size,
+                "upload_concurrency": self.concurrency,
+                "upload_batch_size": self.batch_size,
             },
         )
 
@@ -176,8 +177,8 @@ class ClaimXUploadWorker:
         logger.info(
             "Starting ClaimX upload worker",
             extra={
-                "upload_concurrency": self._upload_concurrency,
-                "upload_batch_size": self._upload_batch_size,
+                "upload_concurrency": self.concurrency,
+                "upload_batch_size": self.batch_size,
             },
         )
 
@@ -185,7 +186,7 @@ class ClaimXUploadWorker:
         await self.health_server.start()
 
         # Initialize concurrency control
-        self._semaphore = asyncio.Semaphore(self._upload_concurrency)
+        self._semaphore = asyncio.Semaphore(self.concurrency)
         self._shutdown_event = asyncio.Event()
         self._in_flight_tasks = set()
 
@@ -193,13 +194,13 @@ class ClaimXUploadWorker:
         await self.producer.start()
 
         # Initialize OneLake client for claimx domain
-        onelake_path = self.config.onelake_domain_paths.get(self.DOMAIN)
+        onelake_path = self.config.onelake_domain_paths.get(self.domain)
         if not onelake_path:
             # Fall back to base path
             onelake_path = self.config.onelake_base_path
             if not onelake_path:
                 raise ValueError(
-                    f"No OneLake path configured for domain '{self.DOMAIN}' and no fallback base path configured"
+                    f"No OneLake path configured for domain '{self.domain}' and no fallback base path configured"
                 )
             logger.warning(
                 "Using fallback OneLake base path for claimx domain",
@@ -211,7 +212,7 @@ class ClaimXUploadWorker:
         logger.info(
             "Initialized OneLake client for claimx domain",
             extra={
-                "domain": self.DOMAIN,
+                "domain": self.domain,
                 "onelake_path": onelake_path,
             },
         )
@@ -308,32 +309,45 @@ class ClaimXUploadWorker:
         if self.onelake_client is not None:
             try:
                 await self.onelake_client.close()
-                logger.debug("Closed OneLake client for claimx domain")
+                logger.debug("Closed OneLake client")
             except Exception as e:
                 logger.warning(f"Error closing OneLake client: {e}")
-            self.onelake_client = None
+            finally:
+                self.onelake_client = None
 
         # Update metrics
+        consumer_group = self.config.get_consumer_group(self.domain, self.WORKER_NAME)
         update_connection_status("consumer", connected=False)
-        update_assigned_partitions(self.CONSUMER_GROUP, 0)
+        update_assigned_partitions(consumer_group, 0)
 
         logger.info("ClaimX upload worker stopped")
 
     async def _create_consumer(self) -> None:
         """Create and start Kafka consumer."""
+        # Get worker-specific consumer config (merged with defaults)
+        consumer_config_dict = self.config.get_worker_config(self.domain, self.WORKER_NAME, "consumer")
+        
         consumer_config = {
             "bootstrap_servers": self.config.bootstrap_servers,
-            "group_id": self.CONSUMER_GROUP,
-            "auto_offset_reset": self.config.consumer_defaults.get("auto_offset_reset", "earliest"),
+            "group_id": self.config.get_consumer_group(self.domain, self.WORKER_NAME),
+            "auto_offset_reset": consumer_config_dict.get("auto_offset_reset", "earliest"),
             "enable_auto_commit": False,
-            "max_poll_records": self._upload_batch_size,
-            "session_timeout_ms": self.config.session_timeout_ms,
-            "max_poll_interval_ms": self.config.max_poll_interval_ms,
+            "max_poll_records": self.batch_size,
+            "session_timeout_ms": consumer_config_dict.get("session_timeout_ms", 60000),
+            "max_poll_interval_ms": consumer_config_dict.get("max_poll_interval_ms", 300000),
             # Connection timeout settings
             "request_timeout_ms": self.config.request_timeout_ms,
             "metadata_max_age_ms": self.config.metadata_max_age_ms,
             "connections_max_idle_ms": self.config.connections_max_idle_ms,
         }
+
+        # Add optional consumer settings if present in worker config
+        if "heartbeat_interval_ms" in consumer_config_dict:
+            consumer_config["heartbeat_interval_ms"] = consumer_config_dict["heartbeat_interval_ms"]
+        if "fetch_min_bytes" in consumer_config_dict:
+            consumer_config["fetch_min_bytes"] = consumer_config_dict["fetch_min_bytes"]
+        if "fetch_max_wait_ms" in consumer_config_dict:
+            consumer_config["fetch_max_wait_ms"] = consumer_config_dict["fetch_max_wait_ms"]
 
         # Add security configuration
         if self.config.security_protocol != "PLAINTEXT":
@@ -353,7 +367,7 @@ class ClaimXUploadWorker:
             "Consumer started",
             extra={
                 "topic": self.topic,
-                "consumer_group": self.CONSUMER_GROUP,
+                "consumer_group": self.config.get_consumer_group(self.domain, self.WORKER_NAME),
             },
         )
 
@@ -361,12 +375,14 @@ class ClaimXUploadWorker:
         """Main consumption loop with batch processing."""
         assert self._consumer is not None
 
+        consumer_group = self.config.get_consumer_group(self.domain, self.WORKER_NAME)
+
         while self._running:
             try:
                 # Fetch batch of messages
                 batch: Dict[str, List[ConsumerRecord]] = await self._consumer.getmany(
                     timeout_ms=1000,
-                    max_records=self._upload_batch_size,
+                    max_records=self.batch_size,
                 )
 
                 if not batch:
@@ -384,13 +400,15 @@ class ClaimXUploadWorker:
                 break
             except Exception as e:
                 logger.error(f"Error in consume loop: {e}", exc_info=True)
-                record_processing_error(self.topic, self.CONSUMER_GROUP, "consume_error")
-                await asyncio.sleep(1)  # Brief pause before retry
+                record_processing_error(self.topic, consumer_group, "consume_error")
+                await asyncio.sleep(1)  # Brief pause before retry  # Brief pause before retry
 
     async def _process_batch(self, messages: List[ConsumerRecord]) -> None:
         """Process a batch of messages concurrently."""
         assert self._consumer is not None
         assert self._semaphore is not None
+
+        consumer_group = self.config.get_consumer_group(self.domain, self.WORKER_NAME)
 
         logger.debug(f"Processing batch of {len(messages)} messages")
 
@@ -406,7 +424,7 @@ class ClaimXUploadWorker:
         for result in results:
             if isinstance(result, Exception):
                 logger.error(f"Unexpected error in upload: {result}", exc_info=True)
-                record_processing_error(self.topic, self.CONSUMER_GROUP, "unexpected_error")
+                record_processing_error(self.topic, consumer_group, "unexpected_error")
 
         # Commit offsets after batch
         try:
@@ -435,8 +453,9 @@ class ClaimXUploadWorker:
             async with self._in_flight_lock:
                 self._in_flight_tasks.add(media_id)
 
+            consumer_group = self.config.get_consumer_group(self.domain, self.WORKER_NAME)
             record_message_consumed(
-                self.topic, self.CONSUMER_GROUP, len(message.value), success=True
+                self.topic, consumer_group, len(message.value), success=True
             )
 
             # Verify cached file exists
@@ -452,20 +471,22 @@ class ClaimXUploadWorker:
                 overwrite=True,
             )
 
+            # Calculate processing time
+            processing_time_ms = int((time.time() - start_time) * 1000)
+
             logger.info(
                 "Uploaded file to OneLake",
                 extra={
+                    "correlation_id": cached_message.source_event_id,
                     "media_id": media_id,
                     "project_id": cached_message.project_id,
-                    "domain": self.DOMAIN,
+                    "domain": self.domain,
                     "destination_path": cached_message.destination_path,
                     "blob_path": blob_path,
-                    "bytes": cached_message.bytes_downloaded,
+                    "bytes_uploaded": cached_message.bytes_downloaded,
+                    "processing_time_ms": processing_time_ms,
                 },
             )
-
-            # Calculate processing time
-            processing_time_ms = int((time.time() - start_time) * 1000)
 
             # Produce success result
             result_message = ClaimXUploadResultMessage(
@@ -499,12 +520,26 @@ class ClaimXUploadWorker:
 
         except Exception as e:
             processing_time_ms = int((time.time() - start_time) * 1000)
+
+            # Build error log extra fields
+            error_extra = {
+                "media_id": media_id,
+                "processing_time_ms": processing_time_ms,
+                "error_category": "permanent",  # Upload failures are typically permanent
+            }
+
+            # Add correlation_id and project_id if cached_message was parsed
+            if 'cached_message' in locals() and cached_message is not None:
+                error_extra["correlation_id"] = cached_message.source_event_id
+                error_extra["project_id"] = cached_message.project_id
+
             logger.error(
                 f"Upload failed: {e}",
-                extra={"media_id": media_id},
+                extra=error_extra,
                 exc_info=True,
             )
-            record_processing_error(self.topic, self.CONSUMER_GROUP, "upload_error")
+            consumer_group = self.config.get_consumer_group(self.domain, self.WORKER_NAME)
+            record_processing_error(self.topic, consumer_group, "upload_error")
 
             # For upload failures, we produce a failure result
             # The file stays in cache for manual review/retry
