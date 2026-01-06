@@ -882,8 +882,8 @@ class KQLEventPoller:
         # Use configured stop time or current time
         poll_to = self._backfill_stop_time or now
 
-        # Get trace_id column name from mapping
-        trace_id_column = self.config.column_mapping.get("trace_id", "traceId")
+        # Get trace_id column name - Eventhouse uses camelCase 'traceId'
+        trace_id_column = "traceId"
 
         logger.info(
             "Starting bulk backfill",
@@ -1128,7 +1128,7 @@ class KQLEventPoller:
         # Save checkpoint after successful processing (use last row from original result)
         if result.rows:
             last_row = result.rows[-1]
-            trace_id_col = self.config.column_mapping.get("trace_id", "traceId")
+            trace_id_col = "traceId"
             last_trace_id = last_row.get("traceId", last_row.get(trace_id_col, ""))
             ingestion_time_str = last_row.get("ingestion_time", last_row.get("$IngestionTime"))
 
@@ -1213,7 +1213,7 @@ class KQLEventPoller:
 
         checkpoint_time = self._checkpoint.to_datetime()
         checkpoint_trace_id = self._checkpoint.last_trace_id
-        trace_id_col = self.config.column_mapping.get("trace_id", "traceId")
+        trace_id_col = "traceId"
 
         filtered_rows = []
         skipped_count = 0
@@ -1372,8 +1372,8 @@ class KQLEventPoller:
         from_str = poll_from.strftime("%Y-%m-%dT%H:%M:%SZ")
         to_str = poll_to.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-        # Get trace_id column name from mapping
-        trace_id_column = self.config.column_mapping.get("trace_id", "traceId")
+        # Get trace_id column name - Eventhouse uses camelCase 'traceId'
+        trace_id_column = "traceId"
 
         # Deterministic ordering enables exact checkpoint resume
         query = f"""
