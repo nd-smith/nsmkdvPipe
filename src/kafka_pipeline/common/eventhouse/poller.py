@@ -32,6 +32,9 @@ logger = get_logger(__name__)
 # Default checkpoint directory
 DEFAULT_CHECKPOINT_DIR = Path(".checkpoints")
 
+# Debug directory for trace ID logging
+DEBUG_DIR = Path("debug")
+
 
 @dataclass
 class PollerCheckpoint:
@@ -1296,6 +1299,7 @@ class KQLEventPoller:
         events_processed = 0
         events_for_delta = []
         events_skipped = 0
+        debug_trace_lines = []  # For CSV debug logging
 
         for row in rows:
             try:
@@ -1310,6 +1314,12 @@ class KQLEventPoller:
 
                 # Write to Delta (batch for efficiency)
                 events_for_delta.append(event)
+
+                # Capture trace ID for debug logging
+                ingestion_time_raw = row.get("ingestion_time", row.get("$IngestionTime", ""))
+                debug_trace_lines.append(
+                    f"{event.trace_id},{ingestion_time_raw},{event.event_type},{event.status_subtype}"
+                )
 
                 # Publish EventMessage to events.raw topic
                 # EventIngester will consume and create download tasks
@@ -1348,6 +1358,25 @@ class KQLEventPoller:
                 "Skipped events with known typo types",
                 extra={"skipped_count": events_skipped, "processed_count": events_processed},
             )
+
+        # Write debug trace IDs to CSV
+        if debug_trace_lines:
+            try:
+                DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+                debug_file = DEBUG_DIR / f"poller_trace_ids_{self.config.domain}.csv"
+
+                # Write header if file doesn't exist
+                write_header = not debug_file.exists()
+
+                with open(debug_file, "a") as f:
+                    if write_header:
+                        f.write("trace_id,ingestion_time,event_type,status_subtype\n")
+                    f.write("\n".join(debug_trace_lines) + "\n")
+            except Exception as e:
+                logger.warning(
+                    "Failed to write debug trace IDs",
+                    extra={"error": str(e)[:100]},
+                )
 
         return events_processed
 
