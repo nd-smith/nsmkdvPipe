@@ -22,6 +22,10 @@ from azure.kusto.data import KustoClient, KustoConnectionStringBuilder
 from azure.kusto.data.exceptions import KustoServiceError
 from core.errors.classifiers import StorageErrorClassifier
 from core.errors.exceptions import KustoError, KustoQueryError
+from kafka_pipeline.common.storage.onelake import (
+    _register_file_credential,
+    _refresh_all_credentials,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +69,8 @@ class FileBackedKustoCredential:
         self._refresh_threshold = timedelta(minutes=refresh_threshold_minutes)
         self._cached_token: Optional[str] = None
         self._token_acquired_at: Optional[datetime] = None
+        # Register for coordinated refresh on auth errors
+        _register_file_credential(self)
 
     def _should_refresh(self) -> bool:
         """Check if token should be refreshed from file."""
@@ -490,6 +496,17 @@ class KQLClient:
                 classified = StorageErrorClassifier.classify_kusto_error(
                     e, {"operation": "execute_query", "attempt": attempt + 1}
                 )
+
+                # Clear all credential caches on auth errors to force token re-read
+                if classified.should_refresh_auth:
+                    logger.info(
+                        "Auth error detected, refreshing all credentials",
+                        extra={
+                            "attempt": attempt + 1,
+                            "error": str(e)[:200],
+                        },
+                    )
+                    _refresh_all_credentials()
 
                 # Check if error is retryable
                 if not classified.is_retryable:
