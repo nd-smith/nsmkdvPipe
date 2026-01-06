@@ -80,6 +80,9 @@ class ResultProcessor:
     BATCH_SIZE = 100
     BATCH_TIMEOUT_SECONDS = 5
 
+    # Cycle output configuration
+    CYCLE_LOG_INTERVAL_SECONDS = 30
+
     def __init__(
         self,
         config: KafkaConfig,
@@ -134,6 +137,11 @@ class ResultProcessor:
         self._batches_written = 0
         self._failed_batches_written = 0
         self._total_records_written = 0
+
+        # Cycle output tracking
+        self._messages_received = 0
+        self._last_cycle_log = time.monotonic()
+        self._cycle_count = 0
 
         # Domain and worker configuration
         self.domain = "xact"
@@ -280,6 +288,9 @@ class ResultProcessor:
         Raises:
             Exception: If message parsing or batch flush fails
         """
+        # Track messages received
+        self._messages_received += 1
+
         # Parse message
         try:
             result = DownloadResultMessage.model_validate_json(message.value)
@@ -337,10 +348,11 @@ class ResultProcessor:
 
     async def _periodic_flush(self) -> None:
         """
-        Background task for timeout-based batch flushing.
+        Background task for timeout-based batch flushing and cycle logging.
 
         Runs continuously while processor is active.
         Flushes batches when timeout threshold exceeded.
+        Logs cycle output at regular intervals for operational visibility.
         """
         logger.debug("Starting periodic flush task")
 
@@ -375,6 +387,33 @@ class ResultProcessor:
                                 },
                             )
                             await self._flush_failed_batch()
+
+                # Log cycle output at regular intervals
+                cycle_elapsed = time.monotonic() - self._last_cycle_log
+                if cycle_elapsed >= self.CYCLE_LOG_INTERVAL_SECONDS:
+                    self._cycle_count += 1
+                    self._last_cycle_log = time.monotonic()
+
+                    # Get current batch sizes for the log
+                    async with self._batch_lock:
+                        pending_success = len(self._batch)
+                        pending_failed = len(self._failed_batch)
+
+                    logger.info(
+                        f"Cycle {self._cycle_count}: messages_received={self._messages_received}, "
+                        f"batches_written={self._batches_written}, "
+                        f"records_written={self._total_records_written}",
+                        extra={
+                            "cycle": self._cycle_count,
+                            "messages_received": self._messages_received,
+                            "batches_written": self._batches_written,
+                            "failed_batches_written": self._failed_batches_written,
+                            "total_records_written": self._total_records_written,
+                            "pending_success_batch": pending_success,
+                            "pending_failed_batch": pending_failed,
+                            "cycle_interval_seconds": self.CYCLE_LOG_INTERVAL_SECONDS,
+                        },
+                    )
 
         except asyncio.CancelledError:
             logger.debug("Periodic flush task cancelled")
