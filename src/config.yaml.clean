@@ -1,0 +1,246 @@
+# =============================================================================
+# Kafka Pipeline Configuration (Hierarchical Structure)
+# =============================================================================
+# Converted from legacy flat structure. Legacy xact/claimx sections removed
+# as they were not being used by the codebase.
+# =============================================================================
+
+# =============================================================================
+# PIPELINE EVENT SOURCE
+# =============================================================================
+event_source: "eventhouse"
+
+# =============================================================================
+# KAFKA CONFIGURATION
+# =============================================================================
+kafka:
+  # ---------------------------------------------------------------------------
+  # Global Connection Settings
+  # ---------------------------------------------------------------------------
+  bootstrap_servers: "localhost:9094"
+  security_protocol: "PLAINTEXT"
+  sasl_mechanism: "OAUTHBEARER"
+  sasl_plain_username: ""
+  sasl_plain_password: ""
+
+  # ---------------------------------------------------------------------------
+  # Topic and Consumer Group Prefixes
+  # ---------------------------------------------------------------------------
+  topic_prefix: ""
+  consumer_group_prefix: "xact"
+
+  # ---------------------------------------------------------------------------
+  # Global Default Settings for All Consumers
+  # ---------------------------------------------------------------------------
+  defaults:
+    consumer:
+      auto_offset_reset: "earliest"
+      enable_auto_commit: false
+      max_poll_records: 3000
+      max_poll_interval_ms: 60000
+      session_timeout_ms: 60000
+      heartbeat_interval_ms: 3000
+      fetch_min_bytes: 1
+      fetch_max_wait_ms: 500
+
+    producer:
+      acks: "all"
+      retries: 3
+      retry_backoff_ms: 1000
+      max_request_size: 200485760
+      compression_type: "lz4"
+      linger_ms: 10
+      batch_size: 16384
+
+  # ---------------------------------------------------------------------------
+  # XACT Domain Configuration
+  # ---------------------------------------------------------------------------
+  xact:
+    # Topic name overrides
+    topics:
+      events: "xact.events.raw"
+      downloads_pending: "xact.downloads.pending"
+      downloads_cached: "xact.downloads.cached"
+      downloads_results: "xact.downloads.results"
+      dlq: "xact.downloads.dlq"
+
+    # Event Ingester Worker
+    event_ingester:
+      processing:
+        health_port: 8080
+
+    # Download Worker
+    download_worker:
+      processing:
+        concurrency: 10
+        batch_size: 20
+        timeout_seconds: 60
+      consumer:
+        max_poll_records: 20
+
+    # Upload Worker
+    upload_worker:
+      processing:
+        concurrency: 25
+        batch_size: 30
+      consumer:
+        max_poll_records: 30
+
+    # Delta Events Writer
+    delta_events_worker:
+      processing:
+        batch_size: 2000
+        max_batches: null
+
+  # ---------------------------------------------------------------------------
+  # ClaimX Domain Configuration
+  # ---------------------------------------------------------------------------
+  claimx:
+    # Topic name overrides
+    topics:
+      events: "claimx.events.raw"
+      enrichment_pending: "claimx.enrichment.pending"
+      downloads_pending: "claimx.downloads.pending"
+      downloads_cached: "claimx.downloads.cached"
+      downloads_results: "claimx.downloads.results"
+      dlq: "claimx.downloads.dlq"
+
+    # Event Ingester Worker
+    event_ingester:
+      processing:
+        health_port: 8084
+
+    # Enrichment Worker (ClaimX-specific)
+    enrichment_worker:
+      processing:
+        batch_size: 3000
+        batch_timeout_seconds: 5.0
+        api_concurrency: 20
+        health_port: 8081
+      consumer:
+        max_poll_records: 3000
+
+    # Download Worker
+    download_worker:
+      processing:
+        concurrency: 40
+        batch_size: 40
+        timeout_seconds: 120
+        health_port: 8082
+      consumer:
+        max_poll_records: 40
+
+    # Upload Worker
+    upload_worker:
+      processing:
+        concurrency: 25
+        batch_size: 30
+        health_port: 8083
+      consumer:
+        max_poll_records: 30
+
+  # ---------------------------------------------------------------------------
+  # Storage Configuration
+  # ---------------------------------------------------------------------------
+  onelake_domain_paths:
+    xact: "abfss://7729c159-0674-42ba-abf7-a6756723c62f@onelake.dfs.fabric.microsoft.com/584315ee-2f41-4943-949f-901d438bcd36/Files/veriskPipeline/xact"
+    claimx: "abfss://7729c159-0674-42ba-abf7-a6756723c62f@onelake.dfs.fabric.microsoft.com/584315ee-2f41-4943-949f-901d438bcd36/Files/veriskPipeline/claimx"
+
+  onelake_base_path: "abfss://7729c159-0674-42ba-abf7-a6756723c62f@onelake.dfs.fabric.microsoft.com/584315ee-2f41-4943-949f-901d438bcd36/Files/veriskPipeline"
+  cache_dir: "/tmp/kafka_pipeline_cache"
+
+  # ---------------------------------------------------------------------------
+  # Retry Configuration
+  # ---------------------------------------------------------------------------
+  retry_delays: [300, 600, 1200, 2400]  # 5min, 10min, 20min, 40min
+  max_retries: 4
+
+  # ---------------------------------------------------------------------------
+  # Delta Events Writer Settings
+  # ---------------------------------------------------------------------------
+  delta_events_batch_size: 2000
+  delta_events_max_batches: null
+
+  # Delta Events Retry Settings
+  delta_events_retry_delays: [300, 600, 1200, 2400]
+  delta_events_max_retries: 4
+  delta_events_retry_topic_prefix: "delta-events.retry"
+  delta_events_dlq_topic: "delta-events.dlq"
+
+# =============================================================================
+# EVENTHOUSE INTEGRATION
+# =============================================================================
+eventhouse:
+  # Connection settings
+  cluster_url: "https://trd-atjd28cdnn65pbxjek.z8.kusto.fabric.microsoft.com"
+  database: "VERISK_XACTANALYSIS_DB"
+
+  # Query settings
+  query_timeout_seconds: 240
+  max_retries: 5
+  retry_base_delay_seconds: 10
+  retry_max_delay_seconds: 30.0
+  max_connections: 5
+
+  # Poller settings
+  poller:
+    poll_interval_seconds: 15
+    batch_size: 20000
+    source_table: "tbl_VERISK_XACTANALYSIS_STATUS_EXPORT"
+    events_table_path: "abfss://7729c159-0674-42ba-abf7-a6756723c62f@onelake.dfs.fabric.microsoft.com/584315ee-2f41-4943-949f-901d438bcd36/Tables/dbo/xact_events"
+
+    # Backfill settings
+    backfill_start_stamp: null
+    backfill_stop_stamp: null
+    bulk_backfill: false
+
+    # Backpressure settings
+    max_kafka_lag: 10000
+    lag_check_interval_seconds: 60
+
+    # Column mapping
+    column_mapping:
+      trace_id: "trace_id"
+      event_type: "event_type"
+      event_subtype: "event_subtype"
+      timestamp: "timestamp"
+      source_system: "source_system"
+      payload: "payload"
+      attachments: "attachments"
+
+  # Deduplication settings
+  dedup:
+    xact_events_table_path: "abfss://7729c159-0674-42ba-abf7-a6756723c62f@onelake.dfs.fabric.microsoft.com/584315ee-2f41-4943-949f-901d438bcd36/Tables/dbo/xact_events"
+    xact_events_window_hours: 25
+    eventhouse_query_window_hours: 24
+    overlap_minutes: 5
+    max_trace_ids_per_query: 500000
+    kql_start_stamp: "2026-1-05 00:00:00.000001"
+
+# =============================================================================
+# SHARED SETTINGS
+# =============================================================================
+health:
+  enabled: true
+  host: "127.0.0.1"
+  port: 8080
+
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  log_dir: "logs"
+
+observability:
+  json_logs: true
+  log_upload_enabled: true
+  log_upload_interval_cycles: 10
+  log_retention_days: 7
+  memory_checkpoints_enabled: true
+  memory_checkpoint_level: "DEBUG"
+  memory_profiling_enabled: true
+  memory_snapshot_interval: 5
+  memory_alert_threshold_mb: 4096
+
+# Runtime metadata
+worker_id: "worker-01"
+test_mode: false

@@ -86,35 +86,27 @@ class ClaimXEntityWriter:
         self.logger = get_logger(self.__class__.__name__)
 
         # Create individual writers for each entity table
-        # No deduplication needed - using merge operations
         self._writers: Dict[str, BaseDeltaWriter] = {
             "projects": BaseDeltaWriter(
                 table_path=projects_table_path,
-                dedupe_column=None,
             ),
             "contacts": BaseDeltaWriter(
                 table_path=contacts_table_path,
-                dedupe_column=None,
             ),
             "media": BaseDeltaWriter(
                 table_path=media_table_path,
-                dedupe_column=None,
             ),
             "tasks": BaseDeltaWriter(
                 table_path=tasks_table_path,
-                dedupe_column=None,
             ),
             "task_templates": BaseDeltaWriter(
                 table_path=task_templates_table_path,
-                dedupe_column=None,
             ),
             "external_links": BaseDeltaWriter(
                 table_path=external_links_table_path,
-                dedupe_column=None,
             ),
             "video_collab": BaseDeltaWriter(
                 table_path=video_collab_table_path,
-                dedupe_column=None,
             ),
         }
 
@@ -260,15 +252,16 @@ class ClaimXEntityWriter:
                 df = df.with_columns(pl.lit(now).alias("updated_at"))
 
             # Contacts: append-only (new contacts from new projects/events)
-            # Media: append with deduplication
+            # Media: append-only (new media from new events)
             # Other tables: merge (upsert)
+            # Note: Deduplication handled by daily Fabric maintenance job
             if table_name == "contacts":
-                # Contacts are append-only, no deduplication needed
-                success = await writer._async_append(df, dedupe=False)
+                # Contacts are append-only
+                success = await writer._async_append(df)
                 rows_affected = len(df) if success else 0
             elif table_name == "media":
-                # Media uses append with deduplication
-                success = await writer._async_append(df, dedupe=True)
+                # Media is append-only
+                success = await writer._async_append(df)
                 rows_affected = len(df) if success else 0
             else:
                 # Other tables use merge (upsert)
