@@ -108,9 +108,13 @@ class ClaimXEnrichmentWorker:
         self.batch_size = processing_config.get("batch_size", 100)
         self.batch_timeout_seconds = processing_config.get("batch_timeout_seconds", 5.0)
 
+        # Retry configuration
+        self._retry_delays = config.get_retry_delays(domain)
+        self._max_retries = config.get_max_retries(domain)
+
         # Build list of topics to consume from (pending + retry topics)
         retry_topics = [
-            self._get_retry_topic(i) for i in range(len(config.retry_delays))
+            self._get_retry_topic(i) for i in range(len(self._retry_delays))
         ]
         self.topics = [self.enrichment_topic] + retry_topics
 
@@ -151,8 +155,8 @@ class ClaimXEnrichmentWorker:
                 "delta_writes_enabled": self.enable_delta_writes,
                 "batch_size": self.batch_size,
                 "batch_timeout_seconds": self.batch_timeout_seconds,
-                "retry_delays": config.retry_delays,
-                "max_retries": config.max_retries,
+                "retry_delays": self._retry_delays,
+                "max_retries": self._max_retries,
             },
         )
 
@@ -1010,13 +1014,13 @@ class ClaimXEnrichmentWorker:
         Raises:
             ValueError: If retry_level exceeds configured retry delays
         """
-        if retry_level >= len(self.consumer_config.retry_delays):
+        if retry_level >= len(self._retry_delays):
             raise ValueError(
                 f"Retry level {retry_level} exceeds max retries "
-                f"({len(self.consumer_config.retry_delays)})"
+                f"({len(self._retry_delays)})"
             )
 
-        delay_seconds = self.consumer_config.retry_delays[retry_level]
+        delay_seconds = self._retry_delays[retry_level]
         delay_minutes = delay_seconds // 60
         return f"{self.enrichment_topic}.retry.{delay_minutes}m"
 

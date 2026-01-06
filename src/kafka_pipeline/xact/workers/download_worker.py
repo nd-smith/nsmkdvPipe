@@ -132,8 +132,9 @@ class DownloadWorker:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
         # Build list of topics to consume from (pending + retry topics)
+        retry_delays = config.get_retry_delays(domain)
         retry_topics = [
-            config.get_retry_topic(domain, i) for i in range(len(config.retry_delays))
+            config.get_retry_topic(domain, i) for i in range(len(retry_delays))
         ]
         self.topics = [config.get_topic(domain, "downloads_pending")] + retry_topics
 

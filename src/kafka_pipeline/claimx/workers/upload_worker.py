@@ -125,7 +125,11 @@ class ClaimXUploadWorker:
         self._shutdown_event: Optional[asyncio.Event] = None
 
         # Create producer for result messages
-        self.producer = BaseKafkaProducer(config=config)
+        self.producer = BaseKafkaProducer(
+            config=config,
+            domain="claimx",
+            worker_name=self.WORKER_NAME,
+        )
 
         # OneLake client (lazy initialized in start())
         self.onelake_client: Optional[OneLakeClient] = None

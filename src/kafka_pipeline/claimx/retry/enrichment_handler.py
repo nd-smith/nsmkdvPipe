@@ -59,14 +59,18 @@ class EnrichmentRetryHandler:
         """
         self.config = config
         self.producer = producer
-        self.pending_topic = config.get_topic("claimx", "enrichment.pending")
-        self.dlq_topic = config.get_topic("claimx", "enrichment.dlq")
+        self.pending_topic = config.get_topic("claimx", "enrichment_pending")
+        self.dlq_topic = config.get_topic("claimx", "dlq")
+
+        # Retry configuration
+        self._retry_delays = config.get_retry_delays("claimx")
+        self._max_retries = config.get_max_retries("claimx")
 
         logger.info(
             "Initialized EnrichmentRetryHandler",
             extra={
-                "retry_delays": config.retry_delays,
-                "max_retries": config.max_retries,
+                "retry_delays": self._retry_delays,
+                "max_retries": self._max_retries,
                 "pending_topic": self.pending_topic,
                 "dlq_topic": self.dlq_topic,
             },
@@ -124,13 +128,13 @@ class EnrichmentRetryHandler:
             return
 
         # Check if retries exhausted
-        if retry_count >= self.config.max_retries:
+        if retry_count >= self._max_retries:
             logger.warning(
                 "Retries exhausted, sending to DLQ",
                 extra={
                     "event_id": task.event_id,
                     "retry_count": retry_count,
-                    "max_retries": self.config.max_retries,
+                    "max_retries": self._max_retries,
                 },
             )
             await self._send_to_dlq(task, error, error_category)
@@ -162,7 +166,7 @@ class EnrichmentRetryHandler:
         """
         retry_count = task.retry_count
         retry_topic = self._get_retry_topic(retry_count)
-        delay_seconds = self.config.retry_delays[retry_count]
+        delay_seconds = self._retry_delays[retry_count]
 
         # Create updated task with incremented retry count
         updated_task = task.model_copy(deep=True)
@@ -290,12 +294,12 @@ class EnrichmentRetryHandler:
         Raises:
             ValueError: If retry_count exceeds configured retry delays
         """
-        if retry_count >= len(self.config.retry_delays):
+        if retry_count >= len(self._retry_delays):
             raise ValueError(
                 f"Retry count {retry_count} exceeds max retries "
-                f"({len(self.config.retry_delays)})"
+                f"({len(self._retry_delays)})"
             )
 
-        delay_seconds = self.config.retry_delays[retry_count]
+        delay_seconds = self._retry_delays[retry_count]
         delay_minutes = delay_seconds // 60
         return f"{self.pending_topic}.retry.{delay_minutes}m"
