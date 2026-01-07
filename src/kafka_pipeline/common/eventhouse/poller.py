@@ -884,8 +884,8 @@ class KQLEventPoller:
         # Use configured stop time or current time
         poll_to = self._backfill_stop_time or now
 
-        # Get trace_id column name - Eventhouse uses camelCase 'traceId'
-        trace_id_column = "traceId"
+        # Get trace_id column name from config mapping
+        trace_id_column = self.config.column_mapping.get("trace_id", "trace_id")
 
         logger.info(
             "Starting bulk backfill",
@@ -932,8 +932,9 @@ class KQLEventPoller:
             if current_trace_id:
                 # Resume from checkpoint - skip records at/before checkpoint
                 escaped_trace_id = current_trace_id.replace("'", "\\'")
+                # Note: wrap trace_id in guid() for correct comparison
                 where_clause = f"""| where ingestion_time() > datetime({start_str})
-    or (ingestion_time() == datetime({start_str}) and {trace_id_column} > '{escaped_trace_id}')
+    or (ingestion_time() == datetime({start_str}) and {trace_id_column} > guid('{escaped_trace_id}'))
 | where ingestion_time() < datetime({stop_str})"""
             else:
                 # No checkpoint - start from beginning of window
@@ -1379,16 +1380,18 @@ class KQLEventPoller:
         from_str = poll_from.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         to_str = poll_to.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
-        # Get trace_id column name - Eventhouse uses camelCase 'traceId'
-        trace_id_column = "traceId"
+        # Get trace_id column name from config mapping
+        # Default to 'trace_id' if not found, but many Kusto tables use 'traceId'
+        trace_id_column = self.config.column_mapping.get("trace_id", "trace_id")
 
         # Construct Where Clause
         if checkpoint_trace_id:
              # Cursor-based pagination:
              # (time > checkpoint_time) OR (time == checkpoint_time AND traceId > checkpoint_traceId)
              escaped_trace_id = checkpoint_trace_id.replace("'", "\\'")
+             # Note: wrap trace_id in guid() for correct comparison if the column is a guid type
              where_clause = f"""| where ingestion_time() > datetime({from_str})
-    or (ingestion_time() == datetime({from_str}) and {trace_id_column} > '{escaped_trace_id}')"""
+    or (ingestion_time() == datetime({from_str}) and {trace_id_column} > guid('{escaped_trace_id}'))"""
         else:
              # Standard time window (inclusive start)
              where_clause = f"| where ingestion_time() >= datetime({from_str})"
