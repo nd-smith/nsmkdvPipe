@@ -188,7 +188,9 @@ class LocalKafkaConfig:
         retry_delays = [int(d.strip()) for d in retry_delays_str.split(",")]
 
         # Build domain paths from config.yaml and environment variables
-        onelake_domain_paths: Dict[str, str] = kafka_data.get("onelake_domain_paths", {}).copy()
+        # Storage settings are under kafka.storage in config.yaml
+        storage_data = kafka_data.get("storage", {})
+        onelake_domain_paths: Dict[str, str] = storage_data.get("onelake_domain_paths", {}).copy()
         if os.getenv("ONELAKE_XACT_PATH"):
             onelake_domain_paths["xact"] = os.getenv("ONELAKE_XACT_PATH", "")
         if os.getenv("ONELAKE_CLAIMX_PATH"):
@@ -238,12 +240,12 @@ class LocalKafkaConfig:
             )),
             onelake_base_path=os.getenv(
                 "ONELAKE_BASE_PATH",
-                kafka_data.get("onelake_base_path", "")
+                storage_data.get("onelake_base_path", "")
             ),
             onelake_domain_paths=onelake_domain_paths,
             cache_dir=os.getenv(
                 "CACHE_DIR",
-                kafka_data.get("cache_dir", "/tmp/kafka_pipeline_cache")
+                storage_data.get("cache_dir", "/tmp/kafka_pipeline_cache")
             ),
             delta_events_batch_size=int(os.getenv(
                 "DELTA_EVENTS_BATCH_SIZE",
