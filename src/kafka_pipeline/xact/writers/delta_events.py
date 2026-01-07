@@ -66,8 +66,8 @@ class DeltaEventsWriter(BaseDeltaWriter):
         super().__init__(
             table_path=table_path,
             timestamp_column="created_at",
-            partition_column="event_date",
-            z_order_columns=["event_date", "trace_id", "event_id", "type"],
+            partition_column="created_date",
+            z_order_columns=["created_date", "trace_id", "event_id", "type"],
         )
 
     async def write_raw_events(
@@ -107,7 +107,10 @@ class DeltaEventsWriter(BaseDeltaWriter):
                 raw_df = pl.DataFrame(raw_events)
                 flattened_df = flatten_events(raw_df)
                 now = datetime.now(timezone.utc)
-                return flattened_df.with_columns(pl.lit(now).alias("created_at"))
+                return flattened_df.with_columns([
+                    pl.lit(now).alias("created_at"),
+                    pl.lit(now.date()).alias("created_date"),
+                ])
 
             flattened_df = await asyncio.to_thread(_sync_transform)
 
