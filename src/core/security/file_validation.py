@@ -15,6 +15,15 @@ ALLOWED_EXTENSIONS: Set[str] = {
     "pdf",
     "xml",
     "txt",
+    "csv",
+    "json",
+    "html",
+    "htm",
+    "xls",
+    "xlsx", 
+    "doc",
+    "docx",
+    "esx",    
     # Images
     "jpg",
     "jpeg",
@@ -24,6 +33,7 @@ ALLOWED_EXTENSIONS: Set[str] = {
     "tiff",
     "tif",
     "webp",
+
 }
 
 # Allowed MIME types (Content-Type header values)
