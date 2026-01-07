@@ -72,7 +72,8 @@ class ClaimXEventsDeltaWriter(BaseDeltaWriter):
         super().__init__(
             table_path=table_path,
             timestamp_column="ingested_at",
-            z_order_columns=["event_id", "event_type"],
+            partition_column="ingested_at",
+            z_order_columns=["project_id"],
         )
 
     async def write_events(self, events: List[Dict[str, Any]]) -> bool:
