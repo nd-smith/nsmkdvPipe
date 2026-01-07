@@ -420,6 +420,11 @@ class KafkaConfig:
                 f"{context}: linger_ms must be >= 0, got {settings['linger_ms']}"
             )
 
+        if "max_request_size" in settings and settings["max_request_size"] <= 0:
+            raise ValueError(
+                f"{context}: max_request_size must be > 0, got {settings['max_request_size']}"
+            )
+
     def _validate_processing_settings(self, settings: Dict[str, Any], context: str) -> None:
         """Validate processing settings.
 

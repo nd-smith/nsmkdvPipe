@@ -156,6 +156,8 @@ class BaseKafkaProducer:
                 self.producer_config["max_in_flight_requests_per_connection"]
         if "buffer_memory" in self.producer_config:
             kafka_producer_config["buffer_memory"] = self.producer_config["buffer_memory"]
+        if "max_request_size" in self.producer_config:
+            kafka_producer_config["max_request_size"] = self.producer_config["max_request_size"]
 
         # Configure security based on protocol
         if self.config.security_protocol != "PLAINTEXT":
