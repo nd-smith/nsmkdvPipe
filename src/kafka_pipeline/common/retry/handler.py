@@ -238,6 +238,7 @@ class RetryHandler:
         # Create DLQ message
         dlq_message = FailedDownloadMessage(
             trace_id=task.trace_id,
+            media_id=task.media_id,
             attachment_url=task.attachment_url,
             original_task=task,
             final_error=error_message,
