@@ -58,6 +58,11 @@ class CachedDownloadMessage(BaseModel):
         description="Unique event identifier for correlation",
         min_length=1
     )
+    media_id: str = Field(
+        ...,
+        description="Unique deterministic ID for the attachment",
+        min_length=1
+    )
     attachment_url: str = Field(
         ...,
         description="Original URL the file was downloaded from",
@@ -120,7 +125,7 @@ class CachedDownloadMessage(BaseModel):
         description="Additional context passed through from original task"
     )
 
-    @field_validator('trace_id', 'attachment_url', 'destination_path',
+    @field_validator('trace_id', 'media_id', 'attachment_url', 'destination_path',
                      'local_cache_path', 'event_type', 'event_subtype',
                      'status_subtype', 'file_type', 'assignment_id')
     @classmethod

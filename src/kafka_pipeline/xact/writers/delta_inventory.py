@@ -22,6 +22,7 @@ from kafka_pipeline.xact.schemas.results import DownloadResultMessage
 
 # Schema for xact_attachments inventory table
 INVENTORY_SCHEMA = {
+    "media_id": pl.Utf8,
     "trace_id": pl.Utf8,
     "attachment_url": pl.Utf8,
     "blob_path": pl.Utf8,
@@ -43,6 +44,7 @@ class DeltaInventoryWriter(BaseDeltaWriter):
     Only completed downloads are written here.
 
     Schema:
+    - media_id: Unique deterministic ID for the attachment
     - trace_id: Unique event identifier
     - attachment_url: Source URL of the file
     - blob_path: Destination path in OneLake
@@ -146,6 +148,7 @@ class DeltaInventoryWriter(BaseDeltaWriter):
         Convert DownloadResultMessage objects to Polars DataFrame.
 
         Schema for xact_attachments inventory table:
+        - media_id: str
         - trace_id: str
         - attachment_url: str
         - blob_path: str
@@ -169,6 +172,7 @@ class DeltaInventoryWriter(BaseDeltaWriter):
         rows = []
         for result in results:
             rows.append({
+                "media_id": result.media_id,
                 "trace_id": result.trace_id,
                 "attachment_url": result.attachment_url,
                 "blob_path": result.blob_path,
@@ -194,7 +198,7 @@ class DeltaFailedAttachmentsWriter(BaseDeltaWriter):
     Records permanent download failures for tracking and potential replay.
 
     Features:
-    - Merge on (trace_id, attachment_url) for idempotency
+    - Merge on media_id for idempotency
     - Non-blocking writes using asyncio.to_thread
     - Captures error details for debugging and replay decisions
 
@@ -213,7 +217,7 @@ class DeltaFailedAttachmentsWriter(BaseDeltaWriter):
         # Initialize base class with z_order columns
         super().__init__(
             table_path=table_path,
-            z_order_columns=["trace_id", "failed_at"],
+            z_order_columns=["media_id", "failed_at"],
         )
 
     async def write_result(self, result: DownloadResultMessage) -> bool:
@@ -236,7 +240,7 @@ class DeltaFailedAttachmentsWriter(BaseDeltaWriter):
         Uses asyncio.to_thread to avoid blocking the event loop.
 
         Merge strategy:
-        - Match on (trace_id, attachment_url) for idempotency
+        - Match on media_id for idempotency (unique per attachment)
         - UPDATE existing rows with new data (e.g., if replayed and failed again)
         - INSERT new rows that don't match
 
@@ -259,10 +263,10 @@ class DeltaFailedAttachmentsWriter(BaseDeltaWriter):
             df = await asyncio.to_thread(self._results_to_dataframe, results)
 
             # Use base class async merge method
-            # Merge on (trace_id, attachment_url) for idempotency
+            # Merge on media_id for idempotency
             success = await self._async_merge(
                 df,
-                merge_keys=["trace_id", "attachment_url"],
+                merge_keys=["media_id"],
                 preserve_columns=["created_at"],
             )
 
@@ -301,6 +305,7 @@ class DeltaFailedAttachmentsWriter(BaseDeltaWriter):
         Convert failed DownloadResultMessage objects to Polars DataFrame.
 
         Schema for xact_attachments_failed table:
+        - media_id: str
         - trace_id: str
         - attachment_url: str
         - error_message: str
@@ -323,6 +328,7 @@ class DeltaFailedAttachmentsWriter(BaseDeltaWriter):
         rows = []
         for result in results:
             row = {
+                "media_id": result.media_id,
                 "trace_id": result.trace_id,
                 "attachment_url": result.attachment_url,
                 "error_message": result.error_message or "Unknown error",
@@ -338,6 +344,7 @@ class DeltaFailedAttachmentsWriter(BaseDeltaWriter):
         df = pl.DataFrame(
             rows,
             schema={
+                "media_id": pl.Utf8,
                 "trace_id": pl.Utf8,
                 "attachment_url": pl.Utf8,
                 "error_message": pl.Utf8,

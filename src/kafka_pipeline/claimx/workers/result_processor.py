@@ -77,16 +77,14 @@ class ClaimXResultProcessor:
         # Consumer group from hierarchical config
         self.consumer_group = config.get_consumer_group(self.domain, self.worker_name)
 
-        # Running statistics (reset periodically for monitoring windows)
-        self._stats_lock = asyncio.Lock()
-        self._stats: Dict[str, int] = {
-            "total_processed": 0,
-            "completed": 0,
-            "failed": 0,
-            "failed_permanent": 0,
-            "bytes_uploaded_total": 0,
-        }
-        self._stats_window_start = datetime.now(timezone.utc)
+        # Cycle output tracking
+        self._records_processed = 0
+        self._records_succeeded = 0
+        self._records_failed = 0
+        self._records_skipped = 0
+        self._last_cycle_log = time.monotonic()
+        self._cycle_count = 0
+        self._cycle_task: Optional[asyncio.Task] = None
 
         logger.info(
             "Initialized ClaimXResultProcessor",
@@ -117,6 +115,9 @@ class ClaimXResultProcessor:
             message_handler=self._handle_result_message,
         )
 
+         # Start cycle output background task
+        self._cycle_task = asyncio.create_task(self._periodic_cycle_output())
+
         # Start consumer (this blocks until stopped)
         await self.consumer.start()
 
@@ -128,8 +129,13 @@ class ClaimXResultProcessor:
         """
         logger.info("Stopping ClaimXResultProcessor")
 
-        # Log final statistics
-        await self._log_statistics(final=True)
+        # Cancel cycle output task
+        if self._cycle_task and not self._cycle_task.done():
+            self._cycle_task.cancel()
+            try:
+                await self._cycle_task
+            except asyncio.CancelledError:
+                pass
 
         # Stop consumer
         if self.consumer:
@@ -168,62 +174,56 @@ class ClaimXResultProcessor:
             raise
 
         # Update statistics
-        async with self._stats_lock:
-            self._stats["total_processed"] += 1
+        self._records_processed += 1
 
-            if result.status == "completed":
-                self._stats["completed"] += 1
-                self._stats["bytes_uploaded_total"] += result.bytes_uploaded
+        if result.status == "completed":
+            self._records_succeeded += 1
 
-                logger.info(
-                    "Upload completed successfully",
-                    extra={
-                        "correlation_id": result.source_event_id,
-                        "media_id": result.media_id,
-                        "project_id": result.project_id,
-                        "file_name": result.file_name,
-                        "file_type": result.file_type,
-                        "bytes_uploaded": result.bytes_uploaded,
-                        "blob_path": result.blob_path,
-                        "source_event_id": result.source_event_id,
-                    },
-                )
+            logger.info(
+                "Upload completed successfully",
+                extra={
+                    "correlation_id": result.source_event_id,
+                    "media_id": result.media_id,
+                    "project_id": result.project_id,
+                    "file_name": result.file_name,
+                    "file_type": result.file_type,
+                    "bytes_uploaded": result.bytes_uploaded,
+                    "blob_path": result.blob_path,
+                    "source_event_id": result.source_event_id,
+                },
+            )
 
-            elif result.status == "failed_permanent":
-                self._stats["failed_permanent"] += 1
+        elif result.status == "failed_permanent":
+            self._records_failed += 1
 
-                logger.error(
-                    "Upload failed permanently",
-                    extra={
-                        "correlation_id": result.source_event_id,
-                        "media_id": result.media_id,
-                        "project_id": result.project_id,
-                        "file_name": result.file_name,
-                        "error_message": result.error_message,
-                        "error_category": "permanent",
-                        "source_event_id": result.source_event_id,
-                    },
-                )
+            logger.error(
+                "Upload failed permanently",
+                extra={
+                    "correlation_id": result.source_event_id,
+                    "media_id": result.media_id,
+                    "project_id": result.project_id,
+                    "file_name": result.file_name,
+                    "error_message": result.error_message,
+                    "error_category": "permanent",
+                    "source_event_id": result.source_event_id,
+                },
+            )
 
-            elif result.status == "failed":
-                self._stats["failed"] += 1
+        elif result.status == "failed":
+            self._records_failed += 1
 
-                logger.warning(
-                    "Upload failed (transient)",
-                    extra={
-                        "correlation_id": result.source_event_id,
-                        "media_id": result.media_id,
-                        "project_id": result.project_id,
-                        "file_name": result.file_name,
-                        "error_message": result.error_message,
-                        "error_category": "transient",
-                        "source_event_id": result.source_event_id,
-                    },
-                )
-
-            # Log statistics periodically (every 100 messages)
-            if self._stats["total_processed"] % 100 == 0:
-                await self._log_statistics()
+            logger.warning(
+                "Upload failed (transient)",
+                extra={
+                    "correlation_id": result.source_event_id,
+                    "media_id": result.media_id,
+                    "project_id": result.project_id,
+                    "file_name": result.file_name,
+                    "error_message": result.error_message,
+                    "error_category": "transient",
+                    "source_event_id": result.source_event_id,
+                },
+            )
 
         # Record message consumption metric
         record_message_consumed(
@@ -233,52 +233,44 @@ class ClaimXResultProcessor:
             success=True,
         )
 
-    async def _log_statistics(self, final: bool = False) -> None:
+    async def _periodic_cycle_output(self) -> None:
         """
-        Log processing statistics for monitoring.
-
-        Args:
-            final: Whether this is the final stats log before shutdown
+        Background task for periodic cycle logging.
         """
-        async with self._stats_lock:
-            elapsed = (datetime.now(timezone.utc) - self._stats_window_start).total_seconds()
+        logger.info(
+            "Cycle 0: processed=0 (succeeded=0, failed=0, skipped=0) "
+            "[cycle output every %ds]",
+            30,
+        )
+        self._last_cycle_log = time.monotonic()
+        self._cycle_count = 0
 
-            total = self._stats["total_processed"]
-            completed = self._stats["completed"]
-            failed = self._stats["failed"]
-            failed_permanent = self._stats["failed_permanent"]
-            bytes_total = self._stats["bytes_uploaded_total"]
+        try:
+            while True:  # Runs until cancelled
+                await asyncio.sleep(1)
 
-            success_rate = (completed / total * 100) if total > 0 else 0.0
-            failure_rate = ((failed + failed_permanent) / total * 100) if total > 0 else 0.0
+                cycle_elapsed = time.monotonic() - self._last_cycle_log
+                if cycle_elapsed >= 30:  # 30 matches standard interval
+                    self._cycle_count += 1
+                    self._last_cycle_log = time.monotonic()
 
-            log_level = "info" if not final else "info"
-            logger.log(
-                getattr(logging, log_level.upper(), logging.INFO),
-                "Result processor statistics" + (" (final)" if final else ""),
-                extra={
-                    "total_processed": total,
-                    "completed": completed,
-                    "failed_transient": failed,
-                    "failed_permanent": failed_permanent,
-                    "success_rate_pct": round(success_rate, 2),
-                    "failure_rate_pct": round(failure_rate, 2),
-                    "bytes_uploaded_total": bytes_total,
-                    "elapsed_seconds": round(elapsed, 2),
-                    "messages_per_second": round(total / elapsed, 2) if elapsed > 0 else 0,
-                },
-            )
+                    logger.info(
+                        f"Cycle {self._cycle_count}: processed={self._records_processed} "
+                        f"(succeeded={self._records_succeeded}, failed={self._records_failed}, "
+                        f"skipped={self._records_skipped})",
+                        extra={
+                            "cycle": self._cycle_count,
+                            "records_processed": self._records_processed,
+                            "records_succeeded": self._records_succeeded,
+                            "records_failed": self._records_failed,
+                            "records_skipped": self._records_skipped,
+                            "cycle_interval_seconds": 30,
+                        },
+                    )
 
-            # Reset stats for next window (if not final)
-            if not final:
-                self._stats = {
-                    "total_processed": 0,
-                    "completed": 0,
-                    "failed": 0,
-                    "failed_permanent": 0,
-                    "bytes_uploaded_total": 0,
-                }
-                self._stats_window_start = datetime.now(timezone.utc)
+        except asyncio.CancelledError:
+            logger.debug("Periodic cycle output task cancelled")
+            raise
 
 
 __all__ = ["ClaimXResultProcessor"]

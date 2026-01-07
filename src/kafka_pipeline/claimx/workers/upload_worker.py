@@ -128,6 +128,15 @@ class ClaimXUploadWorker:
         self._in_flight_tasks: Set[str] = set()  # Track by media_id
         self._in_flight_lock = asyncio.Lock()
         self._shutdown_event: Optional[asyncio.Event] = None
+        
+        # Cycle output tracking
+        self._records_processed = 0
+        self._records_succeeded = 0
+        self._records_failed = 0
+        self._records_skipped = 0
+        self._last_cycle_log = time.monotonic()
+        self._cycle_count = 0
+        self._cycle_task: Optional[asyncio.Task] = None
 
         # Create producer for result messages
         self.producer = BaseKafkaProducer(
@@ -222,6 +231,9 @@ class ClaimXUploadWorker:
 
         self._running = True
 
+        # Start cycle output background task
+        self._cycle_task = asyncio.create_task(self._periodic_cycle_output())
+
         # Update health check readiness (upload worker doesn't use API)
         self.health_server.set_ready(kafka_connected=True, api_reachable=True)
 
@@ -275,6 +287,14 @@ class ClaimXUploadWorker:
 
         logger.info("Stopping ClaimX upload worker...")
         self._running = False
+
+        # Cancel cycle output task
+        if self._cycle_task and not self._cycle_task.done():
+            self._cycle_task.cancel()
+            try:
+                await self._cycle_task
+            except asyncio.CancelledError:
+                pass
 
         # Signal shutdown
         if self._shutdown_event:
@@ -480,7 +500,52 @@ class ClaimXUploadWorker:
             return await self._process_single_upload(message)
 
     async def _process_single_upload(self, message: ConsumerRecord) -> UploadResult:
-        """Process a single cached download message."""
+        """
+        Process a single cached download message.
+        """
+
+    async def _periodic_cycle_output(self) -> None:
+        """
+        Background task for periodic cycle logging.
+        """
+        logger.info(
+            "Cycle 0: processed=0 (succeeded=0, failed=0, skipped=0), pending=0 "
+            "[cycle output every %ds]",
+            30,
+        )
+        self._last_cycle_log = time.monotonic()
+        self._cycle_count = 0
+
+        try:
+            while True:  # Runs until cancelled
+                await asyncio.sleep(1)
+
+                cycle_elapsed = time.monotonic() - self._last_cycle_log
+                if cycle_elapsed >= 30:  # 30 matches standard interval
+                    self._cycle_count += 1
+                    self._last_cycle_log = time.monotonic()
+                    
+                    async with self._in_flight_lock:
+                         in_flight = len(self._in_flight_tasks)
+
+                    logger.info(
+                        f"Cycle {self._cycle_count}: processed={self._records_processed} "
+                        f"(succeeded={self._records_succeeded}, failed={self._records_failed}, "
+                        f"skipped={self._records_skipped}), in_flight={in_flight}",
+                        extra={
+                            "cycle": self._cycle_count,
+                            "records_processed": self._records_processed,
+                            "records_succeeded": self._records_succeeded,
+                            "records_failed": self._records_failed,
+                            "records_skipped": self._records_skipped,
+                            "in_flight": in_flight,
+                            "cycle_interval_seconds": 30,
+                        },
+                    )
+
+        except asyncio.CancelledError:
+            logger.debug("Periodic cycle output task cancelled")
+            raise
         start_time = time.time()
         media_id = "unknown"
 
@@ -497,6 +562,9 @@ class ClaimXUploadWorker:
             record_message_consumed(
                 self.topic, consumer_group, len(message.value), success=True
             )
+
+            # Track records processed
+            self._records_processed += 1
 
             # Verify cached file exists
             cache_path = Path(cached_message.local_cache_path)
@@ -523,10 +591,14 @@ class ClaimXUploadWorker:
                     "domain": self.domain,
                     "destination_path": cached_message.destination_path,
                     "blob_path": blob_path,
+                    "blob_path": blob_path,
                     "bytes_uploaded": cached_message.bytes_downloaded,
                     "processing_time_ms": processing_time_ms,
+                    "records_succeeded": self._records_succeeded,
                 },
             )
+            
+            self._records_succeeded += 1
 
             # Produce success result
             result_message = ClaimXUploadResultMessage(
@@ -580,6 +652,7 @@ class ClaimXUploadWorker:
             )
             consumer_group = self.config.get_consumer_group(self.domain, self.WORKER_NAME)
             record_processing_error(self.topic, consumer_group, "upload_error")
+            self._records_failed += 1
 
             # For upload failures, we produce a failure result
             # The file stays in cache for manual review/retry

@@ -110,6 +110,13 @@ class ClaimXEventIngesterWorker:
         self._pending_tasks: Set[asyncio.Task] = set()
         self._task_counter = 0  # For unique task naming
 
+        # Cycle output tracking
+        self._records_processed = 0
+        self._records_succeeded = 0
+        self._last_cycle_log = time.monotonic()
+        self._cycle_count = 0
+        self._cycle_task: Optional[asyncio.Task] = None
+
         # Health check server - use worker-specific port from config
         processing_config = config.get_worker_config(domain, "event_ingester", "processing")
         health_port = processing_config.get("health_port", 8084)
@@ -148,6 +155,9 @@ class ClaimXEventIngesterWorker:
         """
         logger.info("Starting ClaimXEventIngesterWorker")
 
+        # Start cycle output background task
+        self._cycle_task = asyncio.create_task(self._periodic_cycle_output())
+
         # Start health check server first
         await self.health_server.start()
 
@@ -183,6 +193,14 @@ class ClaimXEventIngesterWorker:
         and flushing pending messages.
         """
         logger.info("Stopping ClaimXEventIngesterWorker")
+
+        # Cancel cycle output task
+        if self._cycle_task and not self._cycle_task.done():
+            self._cycle_task.cancel()
+            try:
+                await self._cycle_task
+            except asyncio.CancelledError:
+                pass
 
         # Wait for pending background tasks with timeout
         await self._wait_for_pending_tasks(timeout_seconds=30)
@@ -381,6 +399,9 @@ class ClaimXEventIngesterWorker:
             )
             raise
 
+        # Track records processed
+        self._records_processed += 1
+
         logger.info(
             "Processing ClaimX event",
             extra={
@@ -448,6 +469,7 @@ class ClaimXEventIngesterWorker:
                     "offset": metadata.offset,
                 },
             )
+            self._records_succeeded += 1
         except Exception as e:
             logger.error(
                 "Failed to produce ClaimX enrichment task",
@@ -503,6 +525,41 @@ class ClaimXEventIngesterWorker:
                 event_count=1,
                 success=False,
             )
+
+    async def _periodic_cycle_output(self) -> None:
+        """
+        Background task for periodic cycle logging.
+        """
+        logger.info(
+            "Cycle 0: processed=0, succeeded=0 (pending=0) [cycle output every %ds]",
+            30,
+        )
+        self._last_cycle_log = time.monotonic()
+        self._cycle_count = 0
+
+        try:
+            while True:  # Runs until cancelled
+                await asyncio.sleep(1)
+
+                cycle_elapsed = time.monotonic() - self._last_cycle_log
+                if cycle_elapsed >= 30:  # 30 matches standard interval
+                    self._cycle_count += 1
+                    self._last_cycle_log = time.monotonic()
+
+                    logger.info(
+                        f"Cycle {self._cycle_count}: processed={self._records_processed}, "
+                        f"succeeded={self._records_succeeded}",
+                        extra={
+                            "cycle": self._cycle_count,
+                            "records_processed": self._records_processed,
+                            "records_succeeded": self._records_succeeded,
+                            "cycle_interval_seconds": 30,
+                        },
+                    )
+
+        except asyncio.CancelledError:
+            logger.debug("Periodic cycle output task cancelled")
+            raise
 
 
 __all__ = ["ClaimXEventIngesterWorker"]

@@ -50,13 +50,20 @@ class ArchivingRotatingFileHandler(RotatingFileHandler):
             logs/xact/2026-01-05/xact_download_0105_1430_happy-tiger.log (new file)
             logs/xact/2026-01-05/archive/xact_download_0105_1430_happy-tiger.log.1
             logs/xact/2026-01-05/archive/xact_download_0105_1430_happy-tiger.log.2
+            
+    If archive_dir is provided, rotated files are moved there instead.
     """
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        # Create archive directory next to log file
-        log_path = Path(self.baseFilename)
-        self.archive_dir = log_path.parent / "archive"
+    def __init__(self, filename, mode="a", maxBytes=0, backupCount=0, encoding=None, delay=False, archive_dir=None):
+        super().__init__(filename, mode, maxBytes, backupCount, encoding, delay)
+        # Create archive directory
+        if archive_dir:
+            self.archive_dir = Path(archive_dir)
+        else:
+            # Fallback to subdirectory behavior
+            log_path = Path(self.baseFilename)
+            self.archive_dir = log_path.parent / "archive"
+        
         self.archive_dir.mkdir(parents=True, exist_ok=True)
 
     def doRollover(self):
@@ -225,11 +232,22 @@ def setup_logging(
     console_formatter = ConsoleFormatter()
 
     # File handler with rotation and auto-archiving
+    # Calculate centralized archive directory
+    # Structure: logs/archive/domain/date
+    try:
+        relative_path = log_file.relative_to(log_dir)
+        archive_dir = log_dir / "archive" / relative_path.parent
+    except ValueError:
+        # Fallback if relative path calculation fails
+        archive_dir = log_file.parent / "archive"
+
+    # File handler with rotation and auto-archiving
     file_handler = ArchivingRotatingFileHandler(
         log_file,
         maxBytes=max_bytes,
         backupCount=backup_count,
         encoding="utf-8",
+        archive_dir=archive_dir,
     )
     file_handler.setLevel(file_level)
     file_handler.setFormatter(file_formatter)
@@ -351,11 +369,18 @@ def setup_multi_worker_logging(
         )
         log_file.parent.mkdir(parents=True, exist_ok=True)
 
+        try:
+            relative_path = log_file.relative_to(log_dir)
+            archive_dir = log_dir / "archive" / relative_path.parent
+        except ValueError:
+            archive_dir = log_file.parent / "archive"
+
         handler = ArchivingRotatingFileHandler(
             log_file,
             maxBytes=max_bytes,
             backupCount=backup_count,
             encoding="utf-8",
+            archive_dir=archive_dir,
         )
         handler.setLevel(file_level)
         handler.setFormatter(file_formatter)
@@ -367,11 +392,19 @@ def setup_multi_worker_logging(
         log_dir, domain=domain, stage="pipeline", instance_id=instance_id
     )
     combined_file.parent.mkdir(parents=True, exist_ok=True)
+    # Calculate archive dir for combined log
+    try:
+        relative_path = combined_file.relative_to(log_dir)
+        combined_archive_dir = log_dir / "archive" / relative_path.parent
+    except ValueError:
+        combined_archive_dir = combined_file.parent / "archive"
+
     combined_handler = ArchivingRotatingFileHandler(
         combined_file,
         maxBytes=max_bytes,
         backupCount=backup_count,
         encoding="utf-8",
+        archive_dir=combined_archive_dir,
     )
     combined_handler.setLevel(file_level)
     combined_handler.setFormatter(file_formatter)

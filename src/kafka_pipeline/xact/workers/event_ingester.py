@@ -22,6 +22,7 @@ Output topic: downloads.pending
 import asyncio
 import json
 import time
+import uuid
 from datetime import datetime
 from typing import Optional
 
@@ -70,6 +71,10 @@ class EventIngesterWorker:
     # Cycle output configuration
     CYCLE_LOG_INTERVAL_SECONDS = 30
 
+    # Namespace for generating deterministic media_ids (UUID5)
+    # Using a fixed namespace ensures the same trace_id + url always yields the same media_id
+    MEDIA_ID_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "http://nsmkdvPipe/media_id")
+
     def __init__(
         self,
         config: KafkaConfig,
@@ -93,9 +98,9 @@ class EventIngesterWorker:
         self.consumer: Optional[BaseKafkaConsumer] = None
 
         # Cycle output tracking
-        self._events_received = 0
-        self._tasks_created = 0
-        self._events_skipped = 0
+        self._records_processed = 0
+        self._records_succeeded = 0
+        self._records_skipped = 0
         self._last_cycle_log = time.monotonic()
         self._cycle_count = 0
         self._cycle_task: Optional[asyncio.Task] = None
@@ -200,7 +205,7 @@ class EventIngesterWorker:
             Exception: If message processing fails (will be handled by consumer error routing)
         """
         # Track events received for cycle output
-        self._events_received += 1
+        self._records_processed += 1
 
         # Decode and parse EventMessage
         try:
@@ -231,7 +236,7 @@ class EventIngesterWorker:
 
         # Skip events without attachments (many events are just status updates)
         if not event.attachments:
-            self._events_skipped += 1
+            self._records_skipped += 1
             logger.debug(
                 "Event has no attachments, skipping download task creation",
                 extra={"trace_id": event.trace_id},
@@ -241,7 +246,7 @@ class EventIngesterWorker:
         # Extract assignment_id from data (required for path generation)
         assignment_id = event.assignment_id
         if not assignment_id:
-            self._events_skipped += 1
+            self._records_skipped += 1
             logger.warning(
                 "Event missing assignmentId in data, cannot generate paths",
                 extra={
@@ -317,8 +322,13 @@ class EventIngesterWorker:
             event.utc_datetime.replace("Z", "+00:00")
         )
 
+        # Generate deterministic media_id from trace_id and attachment_url
+        # This provides a unique ID for each attachment that is stable across retries/replays
+        media_id = str(uuid.uuid5(self.MEDIA_ID_NAMESPACE, f"{event.trace_id}:{attachment_url}"))
+
         # Create download task message matching verisk_pipeline Task schema
         download_task = DownloadTaskMessage(
+            media_id=media_id,
             trace_id=event.trace_id,
             attachment_url=attachment_url,
             blob_path=blob_path,
@@ -342,12 +352,13 @@ class EventIngesterWorker:
             )
 
             # Track successful task creation for cycle output
-            self._tasks_created += 1
+            self._records_succeeded += 1
 
             logger.info(
                 "Created download task",
                 extra={
                     "trace_id": event.trace_id,
+                    "media_id": media_id,
                     "blob_path": blob_path,
                     "status_subtype": event.status_subtype,
                     "file_type": file_type,
@@ -391,13 +402,13 @@ class EventIngesterWorker:
                     self._last_cycle_log = time.monotonic()
 
                     logger.info(
-                        f"Cycle {self._cycle_count}: events={self._events_received} "
-                        f"(tasks={self._tasks_created}, skipped={self._events_skipped})",
+                        f"Cycle {self._cycle_count}: processed={self._records_processed} "
+                        f"(succeeded={self._records_succeeded}, skipped={self._records_skipped})",
                         extra={
                             "cycle": self._cycle_count,
-                            "events_received": self._events_received,
-                            "tasks_created": self._tasks_created,
-                            "events_skipped": self._events_skipped,
+                            "records_processed": self._records_processed,
+                            "records_succeeded": self._records_succeeded,
+                            "records_skipped": self._records_skipped,
                             "cycle_interval_seconds": self.CYCLE_LOG_INTERVAL_SECONDS,
                         },
                     )

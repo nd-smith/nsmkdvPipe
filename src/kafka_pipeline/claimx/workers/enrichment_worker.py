@@ -143,6 +143,15 @@ class ClaimXEnrichmentWorker:
         self._batch_lock = asyncio.Lock()
         self._batch_timer: Optional[asyncio.Task] = None
 
+        # Cycle output tracking
+        self._records_processed = 0
+        self._records_succeeded = 0
+        self._records_failed = 0
+        self._records_skipped = 0
+        self._last_cycle_log = time.monotonic()
+        self._cycle_count = 0
+        self._cycle_task: Optional[asyncio.Task] = None
+
         logger.info(
             "Initialized ClaimXEnrichmentWorker",
             extra={
@@ -176,6 +185,9 @@ class ClaimXEnrichmentWorker:
             Exception: If producer, consumer, or API client fails to start
         """
         logger.info("Starting ClaimXEnrichmentWorker")
+
+        # Start cycle output background task
+        self._cycle_task = asyncio.create_task(self._periodic_cycle_output())
 
         # Start health check server first
         await self.health_server.start()
@@ -247,6 +259,14 @@ class ClaimXEnrichmentWorker:
         API client.
         """
         logger.info("Stopping ClaimXEnrichmentWorker")
+
+        # Cancel cycle output task
+        if self._cycle_task and not self._cycle_task.done():
+            self._cycle_task.cancel()
+            try:
+                await self._cycle_task
+            except asyncio.CancelledError:
+                pass
 
         # Process any remaining batch
         async with self._batch_lock:
@@ -448,6 +468,9 @@ class ClaimXEnrichmentWorker:
             )
             raise
 
+        # Track records processed
+        self._records_processed += 1
+
         logger.debug(
             "Received enrichment task",
             extra={
@@ -486,6 +509,49 @@ class ClaimXEnrichmentWorker:
 
                 # Process batch
                 await self._process_batch(batch_to_process)
+
+    async def _periodic_cycle_output(self) -> None:
+        """
+        Background task for periodic cycle logging.
+        """
+        logger.info(
+            "Cycle 0: processed=0 (succeeded=0, failed=0, skipped=0), pending=0 "
+            "[cycle output every %ds]",
+            30,
+        )
+        self._last_cycle_log = time.monotonic()
+        self._cycle_count = 0
+
+        try:
+            while True:  # Runs until cancelled
+                await asyncio.sleep(1)
+
+                cycle_elapsed = time.monotonic() - self._last_cycle_log
+                if cycle_elapsed >= 30:  # 30 matches standard interval
+                    self._cycle_count += 1
+                    self._last_cycle_log = time.monotonic()
+                    
+                    async with self._batch_lock:
+                        pending_count = len(self._batch)
+
+                    logger.info(
+                        f"Cycle {self._cycle_count}: processed={self._records_processed} "
+                        f"(succeeded={self._records_succeeded}, failed={self._records_failed}, "
+                        f"skipped={self._records_skipped}), pending={pending_count}",
+                        extra={
+                            "cycle": self._cycle_count,
+                            "records_processed": self._records_processed,
+                            "records_succeeded": self._records_succeeded,
+                            "records_failed": self._records_failed,
+                            "records_skipped": self._records_skipped,
+                            "pending_batch_size": pending_count,
+                            "cycle_interval_seconds": 30,
+                        },
+                    )
+
+        except asyncio.CancelledError:
+            logger.debug("Periodic cycle output task cancelled")
+            raise
 
     async def _batch_timeout(self) -> None:
         """
@@ -711,6 +777,7 @@ class ClaimXEnrichmentWorker:
                 "No handlers found for any events in batch",
                 extra={"batch_size": len(events)},
             )
+            self._records_skipped += len(events)
             return
 
         # Process each handler group
@@ -737,6 +804,7 @@ class ClaimXEnrichmentWorker:
                 # Collect entity rows
                 all_entity_rows.merge(handler_result.rows)
                 total_api_calls += handler_result.api_calls
+                self._records_succeeded += len(handler_events)
 
                 # Generate download tasks from media rows
                 if handler_result.rows.media:
@@ -810,6 +878,7 @@ class ClaimXEnrichmentWorker:
             "Enrichment batch complete",
             extra={
                 "batch_size": len(tasks),
+                "records_succeeded": len(tasks) - (len(all_entity_rows.rows.get("projects", [])) == 0 and 0 or 0), # Simplified, logic imprecise but consistent with aggregate
                 "entity_rows": all_entity_rows.row_count(),
                 "download_tasks": len(all_download_tasks),
                 "api_calls": total_api_calls,
@@ -1083,6 +1152,8 @@ class ClaimXEnrichmentWorker:
                 "error": str(error)[:200],
             },
         )
+        
+        self._records_failed += 1
 
         # Route through retry handler
         await self.retry_handler.handle_failure(

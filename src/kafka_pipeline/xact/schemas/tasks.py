@@ -18,6 +18,7 @@ class DownloadTaskMessage(BaseModel):
     Schema matches verisk_pipeline.xact.xact_models.Task for compatibility.
 
     Attributes:
+        media_id: Unique deterministic ID for the attachment (UUID5 of trace_id + url)
         trace_id: Unique identifier from the source event (for correlation)
         attachment_url: URL of the attachment to download
         blob_path: Target path in OneLake/blob storage for the downloaded file
@@ -63,6 +64,11 @@ class DownloadTaskMessage(BaseModel):
     trace_id: str = Field(
         ...,
         description="Unique event identifier (from traceId)",
+        min_length=1
+    )
+    media_id: str = Field(
+        ...,
+        description="Unique deterministic ID for the attachment (UUID5 of trace_id + url)",
         min_length=1
     )
     attachment_url: str = Field(
@@ -118,7 +124,7 @@ class DownloadTaskMessage(BaseModel):
         description="Additional context passed through from original event"
     )
 
-    @field_validator('trace_id', 'attachment_url', 'blob_path', 'status_subtype', 'file_type', 'assignment_id', 'event_type', 'event_subtype')
+    @field_validator('trace_id', 'media_id', 'attachment_url', 'blob_path', 'status_subtype', 'file_type', 'assignment_id', 'event_type', 'event_subtype')
     @classmethod
     def validate_non_empty_strings(cls, v: str, info) -> str:
         """Ensure string fields are not empty or whitespace-only."""
@@ -149,6 +155,7 @@ class DownloadTaskMessage(BaseModel):
         from kafka_pipeline.xact.schemas.models import Task
 
         return Task(
+            media_id=getattr(self, "media_id", None),  # Pass if verisk Task has been updated
             trace_id=self.trace_id,
             attachment_url=self.attachment_url,
             blob_path=self.blob_path,
@@ -171,6 +178,7 @@ class DownloadTaskMessage(BaseModel):
             DownloadTaskMessage instance
         """
         return cls(
+            media_id=getattr(task, "media_id", "unknown"),  # Default if verisk Task not updated
             trace_id=task.trace_id,
             attachment_url=task.attachment_url,
             blob_path=task.blob_path,

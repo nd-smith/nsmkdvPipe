@@ -105,7 +105,7 @@ class DownloadResultMessage(BaseModel):
         description="Whether URL was expired at ingest time"
     )
 
-    @field_validator('trace_id', 'attachment_url', 'blob_path', 'status_subtype', 'file_type', 'assignment_id')
+    @field_validator('trace_id', 'media_id', 'attachment_url', 'blob_path', 'status_subtype', 'file_type', 'assignment_id')
     @classmethod
     def validate_non_empty_strings(cls, v: str, info) -> str:
         """Ensure string fields are not empty or whitespace-only."""
@@ -137,6 +137,7 @@ class DownloadResultMessage(BaseModel):
         """
         return {
             "trace_id": self.trace_id,
+            "media_id": self.media_id,
             "attachment_url": self.attachment_url,
             "blob_path": self.blob_path,
             "status_subtype": self.status_subtype,
@@ -232,9 +233,12 @@ class FailedDownloadMessage(BaseModel):
         ... )
     """
 
-    trace_id: str = Field(
-        ...,
         description="Unique event identifier for correlation",
+        min_length=1
+    )
+    media_id: str = Field(
+        ...,
+        description="Unique deterministic ID for the attachment",
         min_length=1
     )
     attachment_url: str = Field(
@@ -265,7 +269,7 @@ class FailedDownloadMessage(BaseModel):
         description="Timestamp when task was sent to DLQ"
     )
 
-    @field_validator('trace_id', 'attachment_url', 'error_category')
+    @field_validator('trace_id', 'media_id', 'attachment_url', 'error_category')
     @classmethod
     def validate_non_empty_strings(cls, v: str, info) -> str:
         """Ensure string fields are not empty or whitespace-only."""

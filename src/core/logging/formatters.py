@@ -36,6 +36,7 @@ class JSONFormatter(logging.Formatter):
         "records_processed",
         "records_succeeded",
         "records_failed",
+        "records_skipped",
         "batch_size",
         "retry_count",
         # Resilience

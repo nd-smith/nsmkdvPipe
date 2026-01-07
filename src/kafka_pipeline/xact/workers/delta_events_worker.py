@@ -115,7 +115,8 @@ class DeltaEventsWorker:
         self._total_events_written = 0
 
         # Cycle output tracking
-        self._events_received = 0
+        self._records_processed = 0
+        self._records_succeeded = 0
         self._last_cycle_log = time.monotonic()
         self._cycle_count = 0
         self._cycle_task: Optional[asyncio.Task] = None
@@ -229,7 +230,7 @@ class DeltaEventsWorker:
             "DeltaEventsWorker stopped successfully",
             extra={
                 "batches_written": self._batches_written,
-                "total_events_written": self._total_events_written,
+                "records_succeeded": self._records_succeeded,
             },
         )
 
@@ -243,7 +244,7 @@ class DeltaEventsWorker:
             record: ConsumerRecord containing EventMessage JSON
         """
         # Track events received for cycle output
-        self._events_received += 1
+        self._records_processed += 1
 
         # Check if we've reached max batches limit
         if self.max_batches is not None and self._batches_written >= self.max_batches:
@@ -310,7 +311,7 @@ class DeltaEventsWorker:
 
         if success:
             self._batches_written += 1
-            self._total_events_written += batch_size
+            self._records_succeeded += batch_size
 
             # Commit offsets after successful Delta write
             # This ensures at-least-once semantics: offsets are only committed
@@ -330,7 +331,7 @@ class DeltaEventsWorker:
                     "batch_id": batch_id,
                     "batch_size": batch_size,
                     "batches_written": self._batches_written,
-                    "total_events_written": self._total_events_written,
+                    "records_succeeded": self._records_succeeded,
                     "max_batches": self.max_batches,
                 },
             )
@@ -424,7 +425,7 @@ class DeltaEventsWorker:
         Logs processing statistics at regular intervals for operational visibility.
         """
         logger.info(
-            "Cycle 0: events=0, batches_written=0, pending=0 [cycle output every %ds]",
+            "Cycle 0: processed=0, batches_written=0, pending=0 [cycle output every %ds]",
             self.CYCLE_LOG_INTERVAL_SECONDS,
         )
         self._last_cycle_log = time.monotonic()
@@ -440,13 +441,13 @@ class DeltaEventsWorker:
                     self._last_cycle_log = time.monotonic()
 
                     logger.info(
-                        f"Cycle {self._cycle_count}: events={self._events_received}, "
+                        f"Cycle {self._cycle_count}: processed={self._records_processed}, "
                         f"batches_written={self._batches_written}, pending={len(self._batch)}",
                         extra={
                             "cycle": self._cycle_count,
-                            "events_received": self._events_received,
+                            "records_processed": self._records_processed,
                             "batches_written": self._batches_written,
-                            "total_events_written": self._total_events_written,
+                            "records_succeeded": self._records_succeeded,
                             "pending_batch_size": len(self._batch),
                             "cycle_interval_seconds": self.CYCLE_LOG_INTERVAL_SECONDS,
                         },

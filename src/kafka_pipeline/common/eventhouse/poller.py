@@ -1098,22 +1098,25 @@ class KQLEventPoller:
             # Use configured stop time or current time
             poll_to = self._backfill_stop_time or now
         else:
-            # Normal mode - use last poll time with overlap
-            # Simple time window without deduplication (dedup happens in download worker)
+            # Normal mode - use last ingestion time/poll time
             poll_to = now
-            if self._last_poll_time is None:
-                # First poll - use default window (1 hour)
+            if self._last_ingestion_time is not None:
+                 # Resume exactly from last checkpoint
+                 poll_from = self._last_ingestion_time
+            elif self._last_poll_time is None:
+                # First poll (no checkpoint) - use default window (1 hour)
                 poll_from = now - timedelta(hours=1)
             else:
-                # Subsequent poll - from last poll time with 5-minute overlap
-                poll_from = self._last_poll_time - timedelta(minutes=5)
+                # Fallback to last poll time (should have checkpoint if we ran efficiently)
+                poll_from = self._last_poll_time
 
-        # Build simple KQL query (no deduplication at polling level)
+        # Build KQL query with cursor-based pagination (using trace_id and ingestion_time)
         query = self._build_query(
             base_table=self.config.source_table,
             poll_from=poll_from,
             poll_to=poll_to,
             limit=self.config.batch_size,
+            checkpoint_trace_id=self._last_trace_id,
         )
 
         # Execute query
@@ -1354,33 +1357,46 @@ class KQLEventPoller:
         poll_from: datetime,
         poll_to: datetime,
         limit: int = 1000,
+        checkpoint_trace_id: Optional[str] = None,
     ) -> str:
         """
-        Build KQL query with time filter and deterministic ordering.
+        Build KQL query with cursor-based pagination.
 
         Uses deterministic ordering (ingestion_time asc, traceId asc) to enable
-        exact resume from checkpoint without duplicates or gaps.
+        exact resume from checkpoint.
 
         Args:
             base_table: Source table name in Eventhouse
-            poll_from: Start of time window
+            poll_from: Start of time window / Checkpoint time
             poll_to: End of time window
             limit: Max rows to return (default: 1000)
+            checkpoint_trace_id: Last processed trace_id for cursor pagination
 
         Returns:
             Complete KQL query string
         """
         # Format datetime for KQL
-        from_str = poll_from.strftime("%Y-%m-%dT%H:%M:%SZ")
-        to_str = poll_to.strftime("%Y-%m-%dT%H:%M:%SZ")
+        from_str = poll_from.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        to_str = poll_to.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
         # Get trace_id column name - Eventhouse uses camelCase 'traceId'
         trace_id_column = "traceId"
 
+        # Construct Where Clause
+        if checkpoint_trace_id:
+             # Cursor-based pagination:
+             # (time > checkpoint_time) OR (time == checkpoint_time AND traceId > checkpoint_traceId)
+             escaped_trace_id = checkpoint_trace_id.replace("'", "\\'")
+             where_clause = f"""| where ingestion_time() > datetime({from_str})
+    or (ingestion_time() == datetime({from_str}) and {trace_id_column} > '{escaped_trace_id}')"""
+        else:
+             # Standard time window (inclusive start)
+             where_clause = f"| where ingestion_time() >= datetime({from_str})"
+
         # Deterministic ordering enables exact checkpoint resume
         query = f"""
 {base_table}
-| where ingestion_time() >= datetime({from_str})
+{where_clause}
 | where ingestion_time() < datetime({to_str})
 | extend ingestion_time = ingestion_time()
 | order by ingestion_time asc, {trace_id_column} asc
@@ -1394,6 +1410,7 @@ class KQLEventPoller:
                 "poll_from": from_str,
                 "poll_to": to_str,
                 "limit": limit,
+                "has_cursor": checkpoint_trace_id is not None,
             },
         )
 

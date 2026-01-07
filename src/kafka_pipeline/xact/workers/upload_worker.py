@@ -141,9 +141,9 @@ class UploadWorker:
         self.onelake_clients: Dict[str, OneLakeClient] = {}
 
         # Cycle output tracking
-        self._messages_received = 0
-        self._uploads_success = 0
-        self._uploads_failed = 0
+        self._records_processed = 0
+        self._records_succeeded = 0
+        self._records_failed = 0
         self._bytes_uploaded = 0
         self._last_cycle_log = time.monotonic()
         self._cycle_count = 0
@@ -377,7 +377,7 @@ class UploadWorker:
 
         # Log initial cycle 0
         logger.info(
-            "Cycle 0: received=0 (success=0, failed=0), bytes=0, in_flight=0 "
+            "Cycle 0: processed=0 (succeeded=0, failed=0), bytes=0, in_flight=0 "
             "[cycle output every %ds]",
             self.CYCLE_LOG_INTERVAL_SECONDS,
         )
@@ -434,14 +434,14 @@ class UploadWorker:
                     self._last_cycle_log = time.monotonic()
                     in_flight = len(self._in_flight_tasks)
                     logger.info(
-                        f"Cycle {self._cycle_count}: received={self._messages_received} "
-                        f"(success={self._uploads_success}, failed={self._uploads_failed}), "
+                        f"Cycle {self._cycle_count}: processed={self._records_processed} "
+                        f"(succeeded={self._records_succeeded}, failed={self._records_failed}), "
                         f"bytes={self._bytes_uploaded}, in_flight={in_flight}",
                         extra={
                             "cycle": self._cycle_count,
-                            "messages_received": self._messages_received,
-                            "uploads_success": self._uploads_success,
-                            "uploads_failed": self._uploads_failed,
+                            "records_processed": self._records_processed,
+                            "records_succeeded": self._records_succeeded,
+                            "records_failed": self._records_failed,
                             "bytes_uploaded": self._bytes_uploaded,
                             "in_flight": in_flight,
                             "cycle_interval_seconds": self.CYCLE_LOG_INTERVAL_SECONDS,
@@ -514,7 +514,7 @@ class UploadWorker:
             trace_id = cached_message.trace_id
 
             # Track messages received for cycle output
-            self._messages_received += 1
+            self._records_processed += 1
 
             # Track in-flight
             async with self._in_flight_lock:
@@ -540,6 +540,7 @@ class UploadWorker:
                 "Domain lookup for upload",
                 extra={
                     "trace_id": trace_id,
+                    "media_id": cached_message.media_id,
                     "raw_event_type": raw_event_type,
                     "domain": domain,
                     "available_domains": available_domains,
@@ -592,6 +593,7 @@ class UploadWorker:
 
             # Produce success result
             result_message = DownloadResultMessage(
+                media_id=cached_message.media_id,
                 trace_id=trace_id,
                 attachment_url=cached_message.attachment_url,
                 blob_path=cached_message.destination_path,
@@ -613,7 +615,7 @@ class UploadWorker:
             await self._cleanup_cache_file(cache_path)
 
             # Track successful upload for cycle output
-            self._uploads_success += 1
+            self._records_succeeded += 1
             self._bytes_uploaded += cached_message.bytes_downloaded
 
             return UploadResult(
@@ -627,7 +629,7 @@ class UploadWorker:
             processing_time_ms = int((time.time() - start_time) * 1000)
 
             # Track failed upload for cycle output
-            self._uploads_failed += 1
+            self._records_failed += 1
 
             logger.error(
                 f"Upload failed: {e}",
@@ -644,6 +646,7 @@ class UploadWorker:
                     cached_message = CachedDownloadMessage.model_validate_json(message.value)
 
                 result_message = DownloadResultMessage(
+                    media_id=cached_message.media_id,
                     trace_id=cached_message.trace_id,
                     attachment_url=cached_message.attachment_url,
                     blob_path=cached_message.destination_path,

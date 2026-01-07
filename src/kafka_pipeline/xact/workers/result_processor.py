@@ -139,10 +139,10 @@ class ResultProcessor:
         self._total_records_written = 0
 
         # Cycle output tracking
-        self._messages_received = 0
-        self._messages_success = 0
-        self._messages_failed_permanent = 0
-        self._messages_skipped = 0
+        self._records_processed = 0
+        self._records_succeeded = 0
+        self._records_failed = 0
+        self._records_skipped = 0
         self._last_cycle_log = time.monotonic()
         self._cycle_count = 0
 
@@ -292,7 +292,7 @@ class ResultProcessor:
             Exception: If message parsing or batch flush fails
         """
         # Track messages received
-        self._messages_received += 1
+        self._records_processed += 1
 
         # Parse message
         try:
@@ -313,7 +313,7 @@ class ResultProcessor:
         # Route by status
         if result.status == "completed":
             # Add to success batch
-            self._messages_success += 1
+            self._records_succeeded += 1
             async with self._batch_lock:
                 self._batch.append(result)
 
@@ -327,7 +327,7 @@ class ResultProcessor:
 
         elif result.status == "failed_permanent" and self._failed_writer:
             # Add to failed batch (only if tracking enabled)
-            self._messages_failed_permanent += 1
+            self._records_failed += 1
             async with self._batch_lock:
                 self._failed_batch.append(result)
 
@@ -341,7 +341,7 @@ class ResultProcessor:
 
         else:
             # Skip transient failures (still retrying) or permanent without writer
-            self._messages_skipped += 1
+            self._records_skipped += 1
             logger.debug(
                 "Skipping result",
                 extra={
@@ -361,7 +361,7 @@ class ResultProcessor:
         Logs cycle output at regular intervals for operational visibility.
         """
         logger.info(
-            "Cycle 0: received=0 (success=0, failed=0, skipped=0), written=0, pending=0 "
+            "Cycle 0: processed=0 (succeeded=0, failed=0, skipped=0), written=0, pending=0 "
             "[cycle output every %ds]",
             self.CYCLE_LOG_INTERVAL_SECONDS,
         )
@@ -411,16 +411,16 @@ class ResultProcessor:
                         pending_failed = len(self._failed_batch)
 
                     logger.info(
-                        f"Cycle {self._cycle_count}: received={self._messages_received} "
-                        f"(success={self._messages_success}, failed={self._messages_failed_permanent}, "
-                        f"skipped={self._messages_skipped}), "
+                        f"Cycle {self._cycle_count}: processed={self._records_processed} "
+                        f"(succeeded={self._records_succeeded}, failed={self._records_failed}, "
+                        f"skipped={self._records_skipped}), "
                         f"written={self._total_records_written}, pending={pending_success}",
                         extra={
                             "cycle": self._cycle_count,
-                            "messages_received": self._messages_received,
-                            "messages_success": self._messages_success,
-                            "messages_failed_permanent": self._messages_failed_permanent,
-                            "messages_skipped": self._messages_skipped,
+                            "records_processed": self._records_processed,
+                            "records_succeeded": self._records_succeeded,
+                            "records_failed": self._records_failed,
+                            "records_skipped": self._records_skipped,
                             "batches_written": self._batches_written,
                             "failed_batches_written": self._failed_batches_written,
                             "total_records_written": self._total_records_written,

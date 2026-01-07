@@ -181,9 +181,9 @@ class DownloadWorker:
         self.retry_handler: Optional[RetryHandler] = None
 
         # Cycle output tracking
-        self._messages_received = 0
-        self._downloads_success = 0
-        self._downloads_failed = 0
+        self._records_processed = 0
+        self._records_succeeded = 0
+        self._records_failed = 0
         self._bytes_downloaded = 0
         self._last_cycle_log = time.monotonic()
         self._cycle_count = 0
@@ -453,7 +453,7 @@ class DownloadWorker:
 
         # Log initial cycle 0
         logger.info(
-            "Cycle 0: received=0 (success=0, failed=0), bytes=0, in_flight=0 "
+            "Cycle 0: processed=0 (succeeded=0, failed=0), bytes=0, in_flight=0 "
             "[cycle output every %ds]",
             self.CYCLE_LOG_INTERVAL_SECONDS,
         )
@@ -510,14 +510,14 @@ class DownloadWorker:
                     self._last_cycle_log = time.monotonic()
                     in_flight = len(self._in_flight_tasks)
                     logger.info(
-                        f"Cycle {self._cycle_count}: received={self._messages_received} "
-                        f"(success={self._downloads_success}, failed={self._downloads_failed}), "
+                        f"Cycle {self._cycle_count}: processed={self._records_processed} "
+                        f"(succeeded={self._records_succeeded}, failed={self._records_failed}), "
                         f"bytes={self._bytes_downloaded}, in_flight={in_flight}",
                         extra={
                             "cycle": self._cycle_count,
-                            "messages_received": self._messages_received,
-                            "downloads_success": self._downloads_success,
-                            "downloads_failed": self._downloads_failed,
+                            "records_processed": self._records_processed,
+                            "records_succeeded": self._records_succeeded,
+                            "records_failed": self._records_failed,
                             "bytes_downloaded": self._bytes_downloaded,
                             "in_flight": in_flight,
                             "cycle_interval_seconds": self.CYCLE_LOG_INTERVAL_SECONDS,
@@ -635,9 +635,9 @@ class DownloadWorker:
             "Batch processing complete",
             extra={
                 "batch_size": len(messages),
-                "succeeded": succeeded,
-                "failed": failed,
-                "unhandled_errors": errors,
+                "records_succeeded": succeeded,
+                "records_failed": failed,
+                "records_errored": errors,
             },
         )
 
@@ -684,11 +684,12 @@ class DownloadWorker:
             )
 
         # Check dedup cache (simple in-memory duplicate prevention)
-        if self._is_duplicate(task_message.trace_id):
+        if self._is_duplicate(task_message.media_id):
             logger.info(
                 "Skipping duplicate download (already processed recently)",
                 extra={
                     "trace_id": task_message.trace_id,
+                    "media_id": task_message.media_id,
                     "attachment_url": task_message.attachment_url,
                 },
             )
@@ -705,35 +706,6 @@ class DownloadWorker:
                 success=True,
             )
 
-        # Track messages received for cycle output (only non-duplicates)
-        self._messages_received += 1
-
-        # Track in-flight task
-        async with self._in_flight_lock:
-            self._in_flight_tasks.add(task_message.trace_id)
-
-        try:
-            logger.info(
-                "Processing download task",
-                extra={
-                    "trace_id": task_message.trace_id,
-                    "attachment_url": task_message.attachment_url,
-                    "destination_path": task_message.blob_path,
-                    "retry_count": task_message.retry_count,
-                    "topic": message.topic,
-                },
-            )
-
-            # Convert DownloadTaskMessage to DownloadTask
-            download_task = self._convert_to_download_task(task_message)
-
-            # Perform download
-            outcome = await self.downloader.download(download_task)
-
-            # Calculate processing time
-            processing_time_ms = int((time.perf_counter() - start_time) * 1000)
-
-            # Record processing duration metric
             duration = time.perf_counter() - start_time
             message_processing_duration_seconds.labels(
                 topic=message.topic, consumer_group=self.CONSUMER_GROUP
@@ -749,7 +721,7 @@ class DownloadWorker:
                 )
 
                 # Track successful download for cycle output
-                self._downloads_success += 1
+                self._records_succeeded += 1
                 self._bytes_downloaded += outcome.bytes_downloaded or 0
 
                 return TaskResult(
@@ -766,7 +738,7 @@ class DownloadWorker:
                 )
 
                 # Track failed download for cycle output
-                self._downloads_failed += 1
+                self._records_failed += 1
                 # Check if this is a circuit breaker error that should prevent commit
                 is_circuit_error = outcome.error_category == ErrorCategory.CIRCUIT_OPEN
                 return TaskResult(
@@ -896,12 +868,14 @@ class DownloadWorker:
         # Clean up empty temp directory
         try:
             if outcome.file_path.parent.exists():
+```
                 await asyncio.to_thread(outcome.file_path.parent.rmdir)
         except OSError:
             pass  # Directory not empty or already removed
 
         # Produce cached message for upload worker
         cached_message = CachedDownloadMessage(
+            media_id=task_message.media_id,
             trace_id=task_message.trace_id,
             attachment_url=task_message.attachment_url,
             destination_path=task_message.blob_path,
@@ -1032,6 +1006,7 @@ class DownloadWorker:
 
         # Produce result message for observability
         result_message = DownloadResultMessage(
+            media_id=task_message.media_id,
             trace_id=task_message.trace_id,
             attachment_url=task_message.attachment_url,
             blob_path=task_message.blob_path,

@@ -147,6 +147,15 @@ class ClaimXDownloadWorker:
         self._in_flight_tasks: Set[str] = set()  # Track by media_id
         self._in_flight_lock = asyncio.Lock()
         self._shutdown_event: Optional[asyncio.Event] = None
+        
+        # Cycle output tracking
+        self._records_processed = 0
+        self._records_succeeded = 0
+        self._records_failed = 0
+        self._records_skipped = 0
+        self._last_cycle_log = time.monotonic()
+        self._cycle_count = 0
+        self._cycle_task: Optional[asyncio.Task] = None
 
         # Shared HTTP session for connection pooling
         self._http_session: Optional[aiohttp.ClientSession] = None
@@ -252,6 +261,9 @@ class ClaimXDownloadWorker:
         await self._create_consumer()
 
         self._running = True
+
+        # Start cycle output background task
+        self._cycle_task = asyncio.create_task(self._periodic_cycle_output())
 
         # Update health check readiness
         api_reachable = not self.api_client.is_circuit_open()
@@ -373,6 +385,14 @@ class ClaimXDownloadWorker:
 
         logger.info("Stopping ClaimX download worker, waiting for in-flight downloads")
         self._running = False
+
+        # Cancel cycle output task
+        if self._cycle_task and not self._cycle_task.done():
+            self._cycle_task.cancel()
+            try:
+                await self._cycle_task
+            except asyncio.CancelledError:
+                pass
 
         # Signal shutdown
         if self._shutdown_event:
@@ -620,11 +640,15 @@ class ClaimXDownloadWorker:
             "Batch processing complete",
             extra={
                 "batch_size": len(messages),
-                "succeeded": succeeded,
-                "failed": failed,
-                "unhandled_errors": errors,
+                "records_succeeded": succeeded,
+                "records_failed": failed,
+                "records_errored": errors,
             },
         )
+
+        self._records_succeeded += succeeded
+        self._records_failed += failed
+        self._records_failed += errors # Count errors as failed too
 
         return [r for r in processed_results if r is not None]
 
@@ -667,6 +691,9 @@ class ClaimXDownloadWorker:
                 success=False,
                 error=e,
             )
+        
+        # Track records processed
+        self._records_processed += 1
 
         # Track in-flight task
         async with self._in_flight_lock:
@@ -790,6 +817,49 @@ class ClaimXDownloadWorker:
             allowed_extensions=None,
             max_size=None,  # TODO: Make configurable
         )
+
+    async def _periodic_cycle_output(self) -> None:
+        """
+        Background task for periodic cycle logging.
+        """
+        logger.info(
+            "Cycle 0: processed=0 (succeeded=0, failed=0, skipped=0), pending=0 "
+            "[cycle output every %ds]",
+            30,
+        )
+        self._last_cycle_log = time.monotonic()
+        self._cycle_count = 0
+
+        try:
+            while True:  # Runs until cancelled
+                await asyncio.sleep(1)
+
+                cycle_elapsed = time.monotonic() - self._last_cycle_log
+                if cycle_elapsed >= 30:  # 30 matches standard interval
+                    self._cycle_count += 1
+                    self._last_cycle_log = time.monotonic()
+                    
+                    async with self._in_flight_lock:
+                         in_flight = len(self._in_flight_tasks)
+
+                    logger.info(
+                        f"Cycle {self._cycle_count}: processed={self._records_processed} "
+                        f"(succeeded={self._records_succeeded}, failed={self._records_failed}, "
+                        f"skipped={self._records_skipped}), in_flight={in_flight}",
+                        extra={
+                            "cycle": self._cycle_count,
+                            "records_processed": self._records_processed,
+                            "records_succeeded": self._records_succeeded,
+                            "records_failed": self._records_failed,
+                            "records_skipped": self._records_skipped,
+                            "in_flight": in_flight,
+                            "cycle_interval_seconds": 30,
+                        },
+                    )
+
+        except asyncio.CancelledError:
+            logger.debug("Periodic cycle output task cancelled")
+            raise
 
     async def _handle_success(
         self,
