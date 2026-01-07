@@ -177,10 +177,6 @@ class KafkaConfig:
 
         topics = domain_config.get("topics", {})
         if topic_key not in topics:
-            # Fallback for new topic during migration
-            if topic_key == "events_ingested":
-                return f"{domain}.events.ingested"
-
             raise ValueError(
                 f"Topic '{topic_key}' not found in {domain} domain. "
                 f"Available topics: {list(topics.keys())}"
@@ -420,11 +416,6 @@ class KafkaConfig:
                 f"{context}: linger_ms must be >= 0, got {settings['linger_ms']}"
             )
 
-        if "max_request_size" in settings and settings["max_request_size"] <= 0:
-            raise ValueError(
-                f"{context}: max_request_size must be > 0, got {settings['max_request_size']}"
-            )
-
     def _validate_processing_settings(self, settings: Dict[str, Any], context: str) -> None:
         """Validate processing settings.
 
@@ -455,6 +446,13 @@ class KafkaConfig:
             if settings["timeout_seconds"] <= 0:
                 raise ValueError(
                     f"{context}: timeout_seconds must be > 0, got {settings['timeout_seconds']}"
+                )
+
+        # Validate flush_timeout_seconds (for delta writers)
+        if "flush_timeout_seconds" in settings:
+            if settings["flush_timeout_seconds"] <= 0:
+                raise ValueError(
+                    f"{context}: flush_timeout_seconds must be > 0, got {settings['flush_timeout_seconds']}"
                 )
 
 
@@ -557,11 +555,26 @@ def load_config(
     xact_config = kafka_config.get("xact", {})
     claimx_config = kafka_config.get("claimx", {})
 
-    # Extract storage settings (support both flat and nested structure)
-    storage = kafka_config.get("storage", {})
-    if not storage:
-        # Fallback: storage settings directly under kafka (flat structure)
-        storage = kafka_config
+    # Extract storage settings (support multiple locations for flexibility)
+    # Merge sources with priority: kafka.storage > root storage > flat kafka structure
+    # This allows users to split config across locations (e.g., onelake paths at root,
+    # cache_dir under kafka.storage) and have them properly merged.
+    storage = {}
+
+    # Start with flat kafka structure as base (lowest priority)
+    for key in ["onelake_base_path", "onelake_domain_paths", "cache_dir"]:
+        if key in kafka_config:
+            storage[key] = kafka_config[key]
+
+    # Merge root-level storage section (medium priority)
+    root_storage = yaml_data.get("storage", {})
+    if root_storage:
+        storage = _deep_merge(storage, root_storage)
+
+    # Merge kafka.storage section (highest priority)
+    kafka_storage = kafka_config.get("storage", {})
+    if kafka_storage:
+        storage = _deep_merge(storage, kafka_storage)
 
     # Extract ClaimX API settings (from root-level claimx section, not kafka.claimx)
     claimx_root = yaml_data.get("claimx", {})
