@@ -147,12 +147,12 @@ class DownloadWorker:
 
         # Concurrency control (WP-313)
         self._semaphore: Optional[asyncio.Semaphore] = None
-        self._in_flight_tasks: Set[str] = set()  # Track by trace_id
+        self._in_flight_tasks: Set[str] = set()  # Track by media_id (unique per attachment)
         self._in_flight_lock = asyncio.Lock()
         self._shutdown_event: Optional[asyncio.Event] = None
 
         # Simple in-memory dedup cache (replaces complex Delta-based dedup)
-        # Maps trace_id -> timestamp for TTL-based eviction
+        # Maps media_id -> timestamp for TTL-based eviction
         # Prevents duplicate downloads when Eventhouse sends duplicates
         self._dedup_cache: dict[str, float] = {}
         self._dedup_cache_ttl_seconds = 86400  # 24 hours
@@ -677,9 +677,9 @@ class DownloadWorker:
                 error=e,
             )
 
-        # Track in-flight task
+        # Track in-flight task by media_id (unique per attachment)
         async with self._in_flight_lock:
-            self._in_flight_tasks.add(task_message.trace_id)
+            self._in_flight_tasks.add(task_message.media_id)
 
         try:
             # Check dedup cache (simple in-memory duplicate prevention)
@@ -755,7 +755,7 @@ class DownloadWorker:
         finally:
             # Remove from in-flight tracking
             async with self._in_flight_lock:
-                self._in_flight_tasks.discard(task_message.trace_id)
+                self._in_flight_tasks.discard(task_message.media_id)
 
     async def _handle_batch_results(self, results: List[TaskResult]) -> bool:
         """
@@ -1081,47 +1081,47 @@ class DownloadWorker:
             )
 
 
-    def _is_duplicate(self, trace_id: str) -> bool:
+    def _is_duplicate(self, media_id: str) -> bool:
         """
-        Check if trace_id is in dedup cache (already processed recently).
+        Check if media_id is in dedup cache (already processed recently).
 
         Args:
-            trace_id: Trace ID to check
+            media_id: Media ID to check (unique per attachment)
 
         Returns:
             True if duplicate (already in cache), False otherwise
         """
         now = time.time()
-        
+
         # Check if in cache and not expired
-        if trace_id in self._dedup_cache:
-            cached_time = self._dedup_cache[trace_id]
+        if media_id in self._dedup_cache:
+            cached_time = self._dedup_cache[media_id]
             if now - cached_time < self._dedup_cache_ttl_seconds:
                 return True
             # Expired - remove from cache
-            del self._dedup_cache[trace_id]
-        
+            del self._dedup_cache[media_id]
+
         return False
 
-    def _mark_processed(self, trace_id: str) -> None:
+    def _mark_processed(self, media_id: str) -> None:
         """
-        Add trace_id to dedup cache to prevent re-processing.
+        Add media_id to dedup cache to prevent re-processing.
 
         Implements simple LRU eviction if cache is full.
 
         Args:
-            trace_id: Trace ID to mark as processed
+            media_id: Media ID to mark as processed (unique per attachment)
         """
         now = time.time()
-        
+
         # If cache is full, evict oldest entries (simple LRU)
         if len(self._dedup_cache) >= self._dedup_cache_max_size:
             # Sort by timestamp and remove oldest 10%
             sorted_items = sorted(self._dedup_cache.items(), key=lambda x: x[1])
             evict_count = self._dedup_cache_max_size // 10
-            for trace_id_to_evict, _ in sorted_items[:evict_count]:
-                del self._dedup_cache[trace_id_to_evict]
-            
+            for media_id_to_evict, _ in sorted_items[:evict_count]:
+                del self._dedup_cache[media_id_to_evict]
+
             logger.debug(
                 "Evicted old entries from dedup cache",
                 extra={
@@ -1129,22 +1129,22 @@ class DownloadWorker:
                     "cache_size": len(self._dedup_cache),
                 },
             )
-        
+
         # Add to cache
-        self._dedup_cache[trace_id] = now
+        self._dedup_cache[media_id] = now
 
     def _cleanup_dedup_cache(self) -> None:
         """Remove expired entries from dedup cache (TTL-based cleanup)."""
         now = time.time()
         expired_keys = [
-            trace_id
-            for trace_id, cached_time in self._dedup_cache.items()
+            media_id
+            for media_id, cached_time in self._dedup_cache.items()
             if now - cached_time >= self._dedup_cache_ttl_seconds
         ]
-        
-        for trace_id in expired_keys:
-            del self._dedup_cache[trace_id]
-        
+
+        for media_id in expired_keys:
+            del self._dedup_cache[media_id]
+
         if expired_keys:
             logger.debug(
                 "Cleaned up expired dedup cache entries",
