@@ -156,10 +156,11 @@ def flatten_events(df: pl.DataFrame) -> pl.DataFrame:
     )
 
     # Add event_id if present, else null
-    if "eventId" in df.columns:
-        base_df = base_df.with_columns(pl.col("eventId").alias("event_id"))
-    elif "event_id" in df.columns:
+    # Add event_id if present (prioritize snake_case, fallback to camelCase)
+    if "event_id" in df.columns:
         base_df = base_df.with_columns(pl.col("event_id"))
+    elif "eventId" in df.columns:
+        base_df = base_df.with_columns(pl.col("eventId").alias("event_id"))
     else:
         base_df = base_df.with_columns(pl.lit(None).cast(pl.Utf8).alias("event_id"))
 
