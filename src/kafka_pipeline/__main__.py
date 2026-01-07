@@ -658,6 +658,7 @@ async def run_claimx_eventhouse_poller(pipeline_config):
         backfill_start_stamp=claimx_eventhouse.backfill_start_stamp,
         backfill_stop_stamp=claimx_eventhouse.backfill_stop_stamp,
         bulk_backfill=claimx_eventhouse.bulk_backfill,
+        ingestion_time_column="IngestionTime",  # claimx uses column not function
     )
 
     shutdown_event = get_shutdown_event()

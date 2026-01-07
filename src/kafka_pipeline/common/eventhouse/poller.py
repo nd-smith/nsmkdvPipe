@@ -118,6 +118,9 @@ class PollerConfig:
     backfill_stop_stamp: Optional[str] = None
     bulk_backfill: bool = False
     checkpoint_path: Optional[Path] = None
+    # If set, use this column name instead of ingestion_time() function
+    # e.g., "IngestionTime" for claimx which has an actual column
+    ingestion_time_column: Optional[str] = None
 
 
 class KQLEventPoller:
@@ -348,18 +351,25 @@ class KQLEventPoller:
         f_str = p_from.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         t_str = p_to.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         trace_id_col = self._trace_id_col
-        
+
+        # Use configured column name or ingestion_time() function
+        ing_col = self.config.ingestion_time_column
+        ing_expr = ing_col if ing_col else "ingestion_time()"
+
         if cp_tid and trace_id_col:
             esc = cp_tid.replace("'", "\\'")
-            where = f"| where ingestion_time() > datetime({f_str}) or (ingestion_time() == datetime({f_str}) and strcmp(tostring({trace_id_col}), '{esc}') > 0)"
+            where = f"| where {ing_expr} > datetime({f_str}) or ({ing_expr} == datetime({f_str}) and strcmp(tostring({trace_id_col}), '{esc}') > 0)"
         else:
-            where = f"| where ingestion_time() >= datetime({f_str})"
-        
+            where = f"| where {ing_expr} >= datetime({f_str})"
+
         order_clause = "order by ingestion_time asc"
         if trace_id_col:
             order_clause += f", {trace_id_col} asc"
-            
-        return f"{table} {where} | where ingestion_time() < datetime({t_str}) | extend ingestion_time = ingestion_time() | {order_clause} | take {limit}"
+
+        # Extend to normalize column name for downstream processing
+        extend_clause = f"| extend ingestion_time = {ing_expr}" if ing_col else "| extend ingestion_time = ingestion_time()"
+
+        return f"{table} {where} | where {ing_expr} < datetime({t_str}) {extend_clause} | {order_clause} | take {limit}"
 
     async def _process_filtered_results(self, rows: list[dict]) -> int:
         """Processes rows and sends to Kafka."""
