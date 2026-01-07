@@ -128,6 +128,7 @@ class LocalKafkaConfig:
 
     # Topics for internal pipeline
     events_topic: str = "xact.events.raw"  # Raw events from source
+    events_ingested_topic: str = "xact.events.ingested"  # Ingested events for Delta
     downloads_pending_topic: str = "xact.downloads.pending"
     downloads_cached_topic: str = "xact.downloads.cached"
     downloads_results_topic: str = "xact.downloads.results"
@@ -179,15 +180,24 @@ class LocalKafkaConfig:
                 yaml_data = yaml.safe_load(f) or {}
             kafka_data = yaml_data.get("kafka", {})
 
-        # Parse retry delays
+        # Get connection settings (support both flat and nested structure)
+        connection_data = kafka_data.get("connection", kafka_data)
+
+        # Get xact domain config for topics (nested structure: kafka.xact.topics)
+        xact_config = kafka_data.get("xact", {})
+        topics_data = xact_config.get("topics", {})
+
+        # Parse retry delays (check xact config first, then flat)
+        retry_delays_default = xact_config.get("retry_delays", kafka_data.get("retry_delays", [300, 600, 1200, 2400]))
         retry_delays_str = os.getenv(
             "RETRY_DELAYS",
-            ",".join(str(d) for d in kafka_data.get("retry_delays", [300, 600, 1200, 2400]))
+            ",".join(str(d) for d in retry_delays_default)
         )
         retry_delays = [int(d.strip()) for d in retry_delays_str.split(",")]
 
         # Build domain paths from config.yaml and environment variables
-        onelake_domain_paths: Dict[str, str] = kafka_data.get("onelake_domain_paths", {}).copy()
+        storage_data = kafka_data.get("storage", {})
+        onelake_domain_paths: Dict[str, str] = storage_data.get("onelake_domain_paths", kafka_data.get("onelake_domain_paths", {})).copy()
         if os.getenv("ONELAKE_XACT_PATH"):
             onelake_domain_paths["xact"] = os.getenv("ONELAKE_XACT_PATH", "")
         if os.getenv("ONELAKE_CLAIMX_PATH"):
@@ -196,49 +206,54 @@ class LocalKafkaConfig:
         return cls(
             bootstrap_servers=os.getenv(
                 "LOCAL_KAFKA_BOOTSTRAP_SERVERS",
-                kafka_data.get("bootstrap_servers", "localhost:9094")
+                connection_data.get("bootstrap_servers", "localhost:9092")
             ),
             security_protocol=os.getenv(
                 "LOCAL_KAFKA_SECURITY_PROTOCOL",
-                kafka_data.get("security_protocol", "PLAINTEXT")
+                connection_data.get("security_protocol", "PLAINTEXT")
             ),
+            # Topics: check nested kafka.xact.topics first, then flat kafka.*, then defaults
             events_topic=os.getenv(
                 "KAFKA_EVENTS_TOPIC",
-                kafka_data.get("events_topic", "xact.events.raw")
+                topics_data.get("events", kafka_data.get("events_topic", "xact.events.raw"))
+            ),
+            events_ingested_topic=os.getenv(
+                "KAFKA_EVENTS_INGESTED_TOPIC",
+                topics_data.get("events_ingested", kafka_data.get("events_ingested_topic", "xact.events.ingested"))
             ),
             downloads_pending_topic=os.getenv(
                 "KAFKA_DOWNLOADS_PENDING_TOPIC",
-                kafka_data.get("downloads_pending_topic", "xact.downloads.pending")
+                topics_data.get("downloads_pending", kafka_data.get("downloads_pending_topic", "xact.downloads.pending"))
             ),
             downloads_cached_topic=os.getenv(
                 "KAFKA_DOWNLOADS_CACHED_TOPIC",
-                kafka_data.get("downloads_cached_topic", "xact.downloads.cached")
+                topics_data.get("downloads_cached", kafka_data.get("downloads_cached_topic", "xact.downloads.cached"))
             ),
             downloads_results_topic=os.getenv(
                 "KAFKA_DOWNLOADS_RESULTS_TOPIC",
-                kafka_data.get("downloads_results_topic", "xact.downloads.results")
+                topics_data.get("downloads_results", kafka_data.get("downloads_results_topic", "xact.downloads.results"))
             ),
             dlq_topic=os.getenv(
                 "KAFKA_DLQ_TOPIC",
-                kafka_data.get("dlq_topic", "xact.downloads.dlq")
+                topics_data.get("dlq", kafka_data.get("dlq_topic", "xact.downloads.dlq"))
             ),
             consumer_group_prefix=os.getenv(
                 "KAFKA_CONSUMER_GROUP_PREFIX",
-                kafka_data.get("consumer_group_prefix", "xact")
+                xact_config.get("consumer_group_prefix", kafka_data.get("consumer_group_prefix", "xact"))
             ),
             retry_delays=retry_delays,
             max_retries=int(os.getenv(
                 "MAX_RETRIES",
-                str(kafka_data.get("max_retries", 4))
+                str(xact_config.get("max_retries", kafka_data.get("max_retries", 4)))
             )),
             onelake_base_path=os.getenv(
                 "ONELAKE_BASE_PATH",
-                kafka_data.get("onelake_base_path", "")
+                storage_data.get("onelake_base_path", kafka_data.get("onelake_base_path", ""))
             ),
             onelake_domain_paths=onelake_domain_paths,
             cache_dir=os.getenv(
                 "CACHE_DIR",
-                kafka_data.get("cache_dir", "/tmp/kafka_pipeline_cache")
+                storage_data.get("cache_dir", kafka_data.get("cache_dir", "/tmp/kafka_pipeline_cache"))
             ),
             delta_events_batch_size=int(os.getenv(
                 "DELTA_EVENTS_BATCH_SIZE",
@@ -256,6 +271,7 @@ class LocalKafkaConfig:
         xact_config = {
             "topics": {
                 "events": self.events_topic,
+                "events_ingested": self.events_ingested_topic,
                 "downloads_pending": self.downloads_pending_topic,
                 "downloads_cached": self.downloads_cached_topic,
                 "downloads_results": self.downloads_results_topic,

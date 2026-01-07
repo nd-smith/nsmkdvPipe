@@ -143,6 +143,7 @@ kafka:
     # -------------------------------------------------------------------------
     topics:
       events: "xact.events.raw"                  # Raw events from Event Hub/Eventhouse
+      events_ingested: "xact.events.ingested"    # Ingested/parsed events ready for Delta
       downloads_pending: "xact.downloads.pending"  # Download tasks awaiting processing
       downloads_cached: "xact.downloads.cached"    # Downloads cached locally, awaiting upload
       downloads_results: "xact.downloads.results"  # Upload results for Delta processing
@@ -162,7 +163,7 @@ kafka:
     # -------------------------------------------------------------------------
     # Event Ingester Worker
     # Consumes: xact.events.raw
-    # Produces to: xact.downloads.pending
+    # Produces to: xact.events.ingested, xact.downloads.pending
     # Purpose: Parse events, extract attachment metadata, create download tasks
     # -------------------------------------------------------------------------
     event_ingester:
