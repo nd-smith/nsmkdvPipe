@@ -162,6 +162,11 @@ class KQLEventPoller:
         self._load_checkpoint()
         self._pending_tasks: Set[asyncio.Task] = set()
 
+    @property
+    def _trace_id_col(self) -> str:
+        """Get the KQL column name for the unique ID (default: traceId)."""
+        return self.config.column_mapping.get("trace_id", "traceId")
+
     def _parse_timestamp(self, ts_str: str) -> datetime:
         """Helper to ensure all parsed timestamps are offset-aware UTC."""
         dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
@@ -250,7 +255,7 @@ class KQLEventPoller:
         now = datetime.now(timezone.utc)
         start = self._backfill_start_time or (now - timedelta(hours=1))
         stop = self._backfill_stop_time or now
-        trace_id_col = "traceId"
+        trace_id_col = self._trace_id_col
 
         while True:
             start_str = start.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
@@ -302,7 +307,7 @@ class KQLEventPoller:
         if l_time.tzinfo is None:
             l_time = l_time.replace(tzinfo=timezone.utc)
         
-        self._save_checkpoint(l_time, str(last.get("traceId")))
+        self._save_checkpoint(l_time, str(last.get(self._trace_id_col)))
 
     def _filter_checkpoint_rows(self, rows: list[dict]) -> list[dict]:
         """Ensures UTC-aware comparisons to avoid TypeError."""
@@ -319,7 +324,7 @@ class KQLEventPoller:
             if r_time.tzinfo is None:
                 r_time = r_time.replace(tzinfo=timezone.utc)
 
-            r_tid = str(r.get("traceId", ""))
+            r_tid = str(r.get(self._trace_id_col, ""))
 
             if r_time < cp_time:
                 continue
@@ -333,7 +338,7 @@ class KQLEventPoller:
         """Constructs paginated KQL query."""
         f_str = p_from.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         t_str = p_to.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-        trace_id_col = "traceId"
+        trace_id_col = self._trace_id_col
         
         if cp_tid:
             esc = cp_tid.replace("'", "\\'")
@@ -347,7 +352,7 @@ class KQLEventPoller:
         """Processes rows and sends to Kafka."""
         for row in rows:
             event = self._event_schema_class.from_eventhouse_row(row)
-            eid = getattr(event, 'trace_id', str(hash(str(event))))
+            eid = str(row.get(self._trace_id_col) or getattr(event, 'trace_id', str(hash(str(event)))))
             await self._producer.send(
                 topic=self.config.kafka.get_topic(self.config.domain, "events"),
                 key=eid,

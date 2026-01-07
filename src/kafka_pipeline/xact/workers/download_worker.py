@@ -32,6 +32,7 @@ from aiokafka import AIOKafkaConsumer
 from aiokafka.structs import ConsumerRecord
 
 from core.auth.kafka_oauth import create_kafka_oauth_callback
+from core.logging.context import set_log_context
 from core.logging.setup import get_logger
 from core.download.downloader import AttachmentDownloader
 from core.download.models import DownloadTask, DownloadOutcome
@@ -676,6 +677,9 @@ class DownloadWorker:
                 success=False,
                 error=e,
             )
+
+        # Set logging context for this request
+        set_log_context(trace_id=task_message.trace_id)
 
         # Track in-flight task by media_id (unique per attachment)
         async with self._in_flight_lock:

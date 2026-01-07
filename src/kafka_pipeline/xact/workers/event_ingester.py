@@ -29,6 +29,7 @@ from typing import Optional
 from aiokafka.structs import ConsumerRecord
 from pydantic import ValidationError
 
+from core.logging.context import set_log_context
 from core.logging.setup import get_logger
 from core.paths.resolver import generate_blob_path
 from core.security.url_validation import validate_download_url
@@ -242,6 +243,9 @@ class EventIngesterWorker:
         # This provides stable IDs across retries/replays for consistent tracking
         event_id = str(uuid.uuid5(self.EVENT_ID_NAMESPACE, event.trace_id))
         event.event_id = event_id
+
+        # Set logging context for this request
+        set_log_context(trace_id=event.trace_id)
 
         # Check for duplicates (same trace_id processed recently)
         is_duplicate, cached_event_id = self._is_duplicate(event.trace_id)

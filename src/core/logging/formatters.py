@@ -129,6 +129,9 @@ class JSONFormatter(logging.Formatter):
             log_entry["cycle_id"] = ctx["cycle_id"]
         if ctx["worker_id"]:
             log_entry["worker_id"] = ctx["worker_id"]
+        # Inject trace_id from context if available (can be overridden by extra)
+        if ctx["trace_id"]:
+            log_entry["trace_id"] = ctx["trace_id"]
 
         # Add source location for DEBUG/ERROR
         if record.levelno in (logging.DEBUG, logging.ERROR, logging.CRITICAL):
@@ -173,7 +176,7 @@ class ConsoleFormatter(logging.Formatter):
 
         # Add batch_id and/or trace_id if present
         batch_id = getattr(record, "batch_id", None)
-        trace_id = getattr(record, "trace_id", None)
+        trace_id = getattr(record, "trace_id", None) or ctx.get("trace_id")
 
         if batch_id and trace_id:
             return f"{prefix} - [batch:{batch_id}] [{trace_id[:8]}] {record.getMessage()}"

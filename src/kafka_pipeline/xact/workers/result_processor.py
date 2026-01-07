@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional
 
 from aiokafka.structs import ConsumerRecord
 
+from core.logging.context import set_log_context
 from core.logging.setup import get_logger
 from kafka_pipeline.config import KafkaConfig
 from kafka_pipeline.common.consumer import BaseKafkaConsumer
@@ -309,6 +310,9 @@ class ResultProcessor:
                 exc_info=True,
             )
             raise
+
+        # Set logging context
+        set_log_context(trace_id=result.trace_id)
 
         # Route by status
         if result.status == "completed":

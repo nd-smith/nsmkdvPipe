@@ -8,6 +8,7 @@ _cycle_id: ContextVar[str] = ContextVar("cycle_id", default="")
 _stage_name: ContextVar[str] = ContextVar("stage_name", default="")
 _worker_id: ContextVar[str] = ContextVar("worker_id", default="")
 _domain: ContextVar[str] = ContextVar("domain", default="")
+_trace_id: ContextVar[str] = ContextVar("trace_id", default="")
 
 
 def set_log_context(
@@ -15,6 +16,7 @@ def set_log_context(
     stage: Optional[str] = None,
     worker_id: Optional[str] = None,
     domain: Optional[str] = None,
+    trace_id: Optional[str] = None,
 ) -> None:
     """
     Set context variables for structured logging.
@@ -24,6 +26,7 @@ def set_log_context(
         stage: Current stage name
         worker_id: Worker identifier
         domain: Pipeline domain (xact, claimx, kafka)
+        trace_id: Trace identifier for request/event tracking
     """
     if cycle_id is not None:
         _cycle_id.set(cycle_id)
@@ -33,6 +36,8 @@ def set_log_context(
         _worker_id.set(worker_id)
     if domain is not None:
         _domain.set(domain)
+    if trace_id is not None:
+        _trace_id.set(trace_id)
 
 
 def get_log_context() -> Dict[str, str]:
@@ -40,13 +45,14 @@ def get_log_context() -> Dict[str, str]:
     Get current logging context.
 
     Returns:
-        Dictionary with cycle_id, stage, worker_id, and domain
+        Dictionary with cycle_id, stage, worker_id, domain, and trace_id
     """
     return {
         "cycle_id": _cycle_id.get(),
         "stage": _stage_name.get(),
         "worker_id": _worker_id.get(),
         "domain": _domain.get(),
+        "trace_id": _trace_id.get(),
     }
 
 
@@ -56,3 +62,4 @@ def clear_log_context() -> None:
     _stage_name.set("")
     _worker_id.set("")
     _domain.set("")
+    _trace_id.set("")
