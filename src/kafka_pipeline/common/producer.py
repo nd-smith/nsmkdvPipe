@@ -139,8 +139,12 @@ class BaseKafkaProducer:
         # These come from config.get_worker_config(domain, worker_name, "producer")
         # Note: aiokafka doesn't have a 'retries' parameter like kafka-python
         # It handles retries internally based on retry_backoff_ms and request_timeout_ms
+        # Convert acks to int if numeric string (aiokafka requires int for 0/1, or "all")
+        acks_value = self.producer_config.get("acks", "all")
+        if isinstance(acks_value, str) and acks_value.isdigit():
+            acks_value = int(acks_value)
         kafka_producer_config.update({
-            "acks": self.producer_config.get("acks", "all"),
+            "acks": acks_value,
             "retry_backoff_ms": self.producer_config.get("retry_backoff_ms", 1000),
         })
 
