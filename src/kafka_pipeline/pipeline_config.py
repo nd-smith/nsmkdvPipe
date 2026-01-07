@@ -195,9 +195,27 @@ class LocalKafkaConfig:
         )
         retry_delays = [int(d.strip()) for d in retry_delays_str.split(",")]
 
-        # Build domain paths from config.yaml and environment variables
-        storage_data = kafka_data.get("storage", {})
-        onelake_domain_paths: Dict[str, str] = storage_data.get("onelake_domain_paths", kafka_data.get("onelake_domain_paths", {})).copy()
+        # Build storage config from multiple locations (matching config.py logic)
+        # Priority: kafka.storage > root storage > flat kafka structure
+        storage_data: Dict[str, Any] = {}
+
+        # Start with flat kafka structure as base (lowest priority)
+        for key in ["onelake_base_path", "onelake_domain_paths", "cache_dir"]:
+            if key in kafka_data:
+                storage_data[key] = kafka_data[key]
+
+        # Merge root-level storage section (medium priority)
+        root_storage = yaml_data.get("storage", {})
+        if root_storage:
+            storage_data.update(root_storage)
+
+        # Merge kafka.storage section (highest priority)
+        kafka_storage = kafka_data.get("storage", {})
+        if kafka_storage:
+            storage_data.update(kafka_storage)
+
+        # Build domain paths from merged storage config and environment variables
+        onelake_domain_paths: Dict[str, str] = storage_data.get("onelake_domain_paths", {}).copy()
         if os.getenv("ONELAKE_XACT_PATH"):
             onelake_domain_paths["xact"] = os.getenv("ONELAKE_XACT_PATH", "")
         if os.getenv("ONELAKE_CLAIMX_PATH"):
@@ -248,12 +266,12 @@ class LocalKafkaConfig:
             )),
             onelake_base_path=os.getenv(
                 "ONELAKE_BASE_PATH",
-                storage_data.get("onelake_base_path", kafka_data.get("onelake_base_path", ""))
+                storage_data.get("onelake_base_path", "")
             ),
             onelake_domain_paths=onelake_domain_paths,
             cache_dir=os.getenv(
                 "CACHE_DIR",
-                storage_data.get("cache_dir", kafka_data.get("cache_dir", "/tmp/kafka_pipeline_cache"))
+                storage_data.get("cache_dir", "/tmp/kafka_pipeline_cache")
             ),
             delta_events_batch_size=int(os.getenv(
                 "DELTA_EVENTS_BATCH_SIZE",
