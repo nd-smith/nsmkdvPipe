@@ -57,6 +57,7 @@ def sample_download_task_message():
     """Create sample DownloadTaskMessage for testing."""
     return DownloadTaskMessage(
         trace_id="evt-123",
+        media_id="media-abc-123",  # Unique per attachment
         attachment_url="https://claimxperience.com/files/document.pdf",
         blob_path="documentsReceived/C-456/pdf/document.pdf",
         status_subtype="documentsReceived",
@@ -301,7 +302,7 @@ class TestDownloadWorker:
         messages = []
         for i in range(5):
             task = sample_download_task_message.model_copy(
-                update={"trace_id": f"evt-{i}", "blob_path": f"claims/C-{i}/document.pdf"}
+                update={"trace_id": f"evt-{i}", "media_id": f"media-{i}", "blob_path": f"claims/C-{i}/document.pdf"}
             )
             record = ConsumerRecord(
                 topic="test.downloads.pending",
@@ -384,7 +385,7 @@ class TestDownloadWorker:
         messages = []
         for i in range(3):
             task = sample_download_task_message.model_copy(
-                update={"trace_id": f"evt-{i}", "blob_path": f"claims/C-{i}/document.pdf"}
+                update={"trace_id": f"evt-{i}", "media_id": f"media-{i}", "blob_path": f"claims/C-{i}/document.pdf"}
             )
             record = ConsumerRecord(
                 topic="test.downloads.pending",

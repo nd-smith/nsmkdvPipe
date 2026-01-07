@@ -75,6 +75,11 @@ class EventIngesterWorker:
     # Using a fixed namespace ensures the same trace_id + url always yields the same media_id
     MEDIA_ID_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "http://nsmkdvPipe/media_id")
 
+    # Namespace for generating deterministic event_ids (UUID5)
+    # Using a fixed namespace ensures the same trace_id always yields the same event_id
+    # This provides replayability and consistent tracking across the pipeline
+    EVENT_ID_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "http://nsmkdvPipe/event_id")
+
     def __init__(
         self,
         config: KafkaConfig,
@@ -101,10 +106,18 @@ class EventIngesterWorker:
         self._records_processed = 0
         self._records_succeeded = 0
         self._records_skipped = 0
+        self._records_deduplicated = 0
         self._last_cycle_log = time.monotonic()
         self._cycle_count = 0
         self._cycle_task: Optional[asyncio.Task] = None
         self._running = False
+
+        # In-memory dedup cache: trace_id -> event_id
+        # Prevents duplicate event processing when Eventhouse sends duplicates
+        self._dedup_cache: dict[str, str] = {}
+        self._dedup_cache_ttl_seconds = 86400  # 24 hours
+        self._dedup_cache_max_size = 100_000  # ~2MB memory for 100k entries
+        self._dedup_cache_timestamps: dict[str, float] = {}  # trace_id -> timestamp
 
         logger.info(
             "Initialized EventIngesterWorker",
@@ -225,9 +238,24 @@ class EventIngesterWorker:
             )
             raise
 
-        # Generate unique event_id for tracking
-        event_id = str(uuid.uuid4())
+        # Generate deterministic event_id from trace_id (UUID5)
+        # This provides stable IDs across retries/replays for consistent tracking
+        event_id = str(uuid.uuid5(self.EVENT_ID_NAMESPACE, event.trace_id))
         event.event_id = event_id
+
+        # Check for duplicates (same trace_id processed recently)
+        is_duplicate, cached_event_id = self._is_duplicate(event.trace_id)
+        if is_duplicate:
+            self._records_deduplicated += 1
+            logger.debug(
+                "Skipping duplicate event (already processed recently)",
+                extra={
+                    "trace_id": event.trace_id,
+                    "event_id": event_id,
+                    "cached_event_id": cached_event_id,
+                },
+            )
+            return
 
         # Produce to ingested topic (ALL events)
         try:
@@ -292,6 +320,12 @@ class EventIngesterWorker:
                 attachment_url=attachment_url,
                 assignment_id=assignment_id,
             )
+
+        # Mark event as processed in dedup cache
+        self._mark_processed(event.trace_id, event_id)
+
+        # Periodic cleanup of expired cache entries
+        self._cleanup_dedup_cache()
 
     async def _process_attachment(
         self,
@@ -419,7 +453,7 @@ class EventIngesterWorker:
         Logs processing statistics at regular intervals for operational visibility.
         """
         logger.info(
-            "Cycle 0: events=0 (tasks=0, skipped=0) [cycle output every %ds]",
+            "Cycle 0: events=0 (tasks=0, skipped=0, deduped=0) [cycle output every %ds]",
             self.CYCLE_LOG_INTERVAL_SECONDS,
         )
         self._last_cycle_log = time.monotonic()
@@ -436,12 +470,14 @@ class EventIngesterWorker:
 
                     logger.info(
                         f"Cycle {self._cycle_count}: processed={self._records_processed} "
-                        f"(succeeded={self._records_succeeded}, skipped={self._records_skipped})",
+                        f"(succeeded={self._records_succeeded}, skipped={self._records_skipped}, "
+                        f"deduped={self._records_deduplicated})",
                         extra={
                             "cycle": self._cycle_count,
                             "records_processed": self._records_processed,
                             "records_succeeded": self._records_succeeded,
                             "records_skipped": self._records_skipped,
+                            "records_deduplicated": self._records_deduplicated,
                             "cycle_interval_seconds": self.CYCLE_LOG_INTERVAL_SECONDS,
                         },
                     )
@@ -449,6 +485,86 @@ class EventIngesterWorker:
         except asyncio.CancelledError:
             logger.debug("Periodic cycle output task cancelled")
             raise
+
+    def _is_duplicate(self, trace_id: str) -> tuple[bool, Optional[str]]:
+        """
+        Check if trace_id is in dedup cache (already processed recently).
+
+        Args:
+            trace_id: Trace ID to check
+
+        Returns:
+            Tuple of (is_duplicate, cached_event_id or None)
+        """
+        now = time.time()
+
+        # Check if in cache and not expired
+        if trace_id in self._dedup_cache:
+            cached_time = self._dedup_cache_timestamps.get(trace_id, 0)
+            if now - cached_time < self._dedup_cache_ttl_seconds:
+                return True, self._dedup_cache[trace_id]
+            # Expired - remove from both caches
+            del self._dedup_cache[trace_id]
+            self._dedup_cache_timestamps.pop(trace_id, None)
+
+        return False, None
+
+    def _mark_processed(self, trace_id: str, event_id: str) -> None:
+        """
+        Add trace_id -> event_id mapping to dedup cache.
+
+        Implements simple LRU eviction if cache is full.
+
+        Args:
+            trace_id: Trace ID to mark as processed
+            event_id: Event ID generated for this trace
+        """
+        now = time.time()
+
+        # If cache is full, evict oldest entries (simple LRU)
+        if len(self._dedup_cache) >= self._dedup_cache_max_size:
+            # Sort by timestamp and remove oldest 10%
+            sorted_items = sorted(
+                self._dedup_cache_timestamps.items(), key=lambda x: x[1]
+            )
+            evict_count = self._dedup_cache_max_size // 10
+            for trace_id_to_evict, _ in sorted_items[:evict_count]:
+                self._dedup_cache.pop(trace_id_to_evict, None)
+                self._dedup_cache_timestamps.pop(trace_id_to_evict, None)
+
+            logger.debug(
+                "Evicted old entries from event dedup cache",
+                extra={
+                    "evicted_count": evict_count,
+                    "cache_size": len(self._dedup_cache),
+                },
+            )
+
+        # Add to caches
+        self._dedup_cache[trace_id] = event_id
+        self._dedup_cache_timestamps[trace_id] = now
+
+    def _cleanup_dedup_cache(self) -> None:
+        """Remove expired entries from dedup cache (TTL-based cleanup)."""
+        now = time.time()
+        expired_keys = [
+            trace_id
+            for trace_id, cached_time in self._dedup_cache_timestamps.items()
+            if now - cached_time >= self._dedup_cache_ttl_seconds
+        ]
+
+        for trace_id in expired_keys:
+            self._dedup_cache.pop(trace_id, None)
+            self._dedup_cache_timestamps.pop(trace_id, None)
+
+        if expired_keys:
+            logger.debug(
+                "Cleaned up expired event dedup cache entries",
+                extra={
+                    "expired_count": len(expired_keys),
+                    "cache_size": len(self._dedup_cache),
+                },
+            )
 
 
 __all__ = ["EventIngesterWorker"]
