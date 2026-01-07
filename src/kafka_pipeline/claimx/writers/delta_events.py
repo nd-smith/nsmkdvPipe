@@ -50,9 +50,9 @@ class ClaimXEventsDeltaWriter(BaseDeltaWriter):
         - task_assignment_id: Optional task assignment identifier
         - video_collaboration_id: Optional video collaboration identifier
         - master_file_name: Optional master file name
+        - ingested_at: Event ingestion timestamp
         - created_at: Pipeline processing timestamp
         - event_date: Date partition column (from ingested_at)
-        - ingested_at: Event ingestion timestamp
 
     Usage:
         >>> writer = ClaimXEventsDeltaWriter(table_path="abfss://.../claimx_events")
@@ -115,6 +115,7 @@ class ClaimXEventsDeltaWriter(BaseDeltaWriter):
             )
 
             # Select only columns that match the target schema (exclude raw_data)
+            # Order matches Delta table schema definition
             target_columns = [
                 "event_id",
                 "event_type",
@@ -123,9 +124,9 @@ class ClaimXEventsDeltaWriter(BaseDeltaWriter):
                 "task_assignment_id",
                 "video_collaboration_id",
                 "master_file_name",
+                "ingested_at",
                 "created_at",
                 "event_date",
-                "ingested_at",
             ]
             df = df.select([col for col in target_columns if col in df.columns])
 
