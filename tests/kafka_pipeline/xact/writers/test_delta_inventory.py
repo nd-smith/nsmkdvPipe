@@ -263,16 +263,16 @@ class TestDeltaInventoryWriter:
         # created_at should be between before and after
         assert before <= created_at <= after
 
-    def test_created_date_field(self, delta_writer, sample_result):
-        """Test that created_date is set to current UTC date."""
+    def test_event_date_field(self, delta_writer, sample_result):
+        """Test that event_date is set to current UTC date."""
         before_date = datetime.now(timezone.utc).date()
         df = delta_writer._results_to_dataframe([sample_result])
         after_date = datetime.now(timezone.utc).date()
 
-        created_date = df["created_date"][0]
+        event_date = df["event_date"][0]
 
-        # created_date should be today's date
-        assert created_date == before_date or created_date == after_date
+        # event_date should be today's date
+        assert event_date == before_date or event_date == after_date
 
     def test_timezone_handling(self, delta_writer, sample_result):
         """Test that all timestamps are timezone-aware (UTC)."""
