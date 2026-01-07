@@ -5,12 +5,6 @@ Consumes DownloadTaskMessage from pending and retry topics,
 downloads attachments using AttachmentDownloader, caches to local
 filesystem, and produces CachedDownloadMessage for upload worker.
 
-This implementation includes:
-- WP-304: Core download processing
-- WP-305: Cache file and produce cached message (upload decoupled)
-- WP-306: Error handling
-- WP-313: Concurrent processing (FR-2.6 requirement)
-
 Architecture:
 - Downloads are cached locally before upload (decoupled from upload worker)
 - Upload worker consumes from downloads.cached topic
@@ -683,39 +677,47 @@ class DownloadWorker:
                 error=e,
             )
 
-        # Check dedup cache (simple in-memory duplicate prevention)
-        if self._is_duplicate(task_message.media_id):
-            logger.info(
-                "Skipping duplicate download (already processed recently)",
-                extra={
-                    "trace_id": task_message.trace_id,
-                    "media_id": task_message.media_id,
-                    "attachment_url": task_message.attachment_url,
-                },
-            )
-            # Return success result without downloading (already processed)
-            return TaskResult(
-                message=message,
-                task_message=task_message,
-                outcome=DownloadOutcome(
-                    success=True,
-                    error_message=None,
-                    error_category=None,
-                ),
-                processing_time_ms=int((time.perf_counter() - start_time) * 1000),
-                success=True,
-            )
+        # Track in-flight task
+        async with self._in_flight_lock:
+            self._in_flight_tasks.add(task_message.trace_id)
 
-            duration = time.perf_counter() - start_time
-            message_processing_duration_seconds.labels(
-                topic=message.topic, consumer_group=self.CONSUMER_GROUP
-            ).observe(duration)
+        try:
+            # Check dedup cache (simple in-memory duplicate prevention)
+            if self._is_duplicate(task_message.media_id):
+                logger.info(
+                    "Skipping duplicate download (already processed recently)",
+                    extra={
+                        "trace_id": task_message.trace_id,
+                        "media_id": task_message.media_id,
+                        "attachment_url": task_message.attachment_url,
+                    },
+                )
+                # Return success result without downloading (already processed)
+                return TaskResult(
+                    message=message,
+                    task_message=task_message,
+                    outcome=DownloadOutcome(
+                        success=True,
+                        error_message=None,
+                        error_category=None,
+                    ),
+                    processing_time_ms=int((time.perf_counter() - start_time) * 1000),
+                    success=True,
+                )
+
+            # Convert to download task
+            download_task = self._convert_to_download_task(task_message)
+
+            # Perform download
+            outcome = await self.downloader.download(download_task)
+
+            processing_time_ms = int((time.perf_counter() - start_time) * 1000)
 
             # Handle outcome: upload and produce result
             if outcome.success:
                 await self._handle_success(task_message, outcome, processing_time_ms)
                 # Mark as processed in dedup cache to prevent future duplicates
-                self._mark_processed(task_message.trace_id)
+                self._mark_processed(task_message.media_id)
                 record_message_consumed(
                     message.topic, self.CONSUMER_GROUP, len(message.value), success=True
                 )
@@ -868,7 +870,6 @@ class DownloadWorker:
         # Clean up empty temp directory
         try:
             if outcome.file_path.parent.exists():
-```
                 await asyncio.to_thread(outcome.file_path.parent.rmdir)
         except OSError:
             pass  # Directory not empty or already removed
