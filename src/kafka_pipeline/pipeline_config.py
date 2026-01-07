@@ -154,6 +154,9 @@ class LocalKafkaConfig:
     # ClaimX domain config (loaded from yaml)
     claimx_config: Dict[str, Any] = field(default_factory=dict)
 
+    # XACT domain config (loaded from yaml) - preserves full yaml structure
+    xact_config: Dict[str, Any] = field(default_factory=dict)
+
     @classmethod
     def load_config(cls, config_path: Optional[Path] = None) -> "LocalKafkaConfig":
         """Load local Kafka configuration from config.yaml and environment variables.
@@ -284,38 +287,46 @@ class LocalKafkaConfig:
                 str(kafka_data.get("delta_events_batch_size", 1000))
             )),
             claimx_config=claimx_config,
+            xact_config=xact_config,
         )
 
     def to_kafka_config(self) -> KafkaConfig:
         """Convert to KafkaConfig for use with workers.
 
         Creates a hierarchical KafkaConfig matching the new config.yaml structure.
-        Maps flat LocalKafkaConfig fields to domain-specific nested config.
+        Uses full yaml config for both xact and claimx domains.
+        Flat fields provide fallbacks for topics if not in yaml.
         """
-        # Build xact domain config from flat fields
-        xact_config = {
-            "topics": {
-                "events": self.events_topic,
-                "events_ingested": self.events_ingested_topic,
-                "downloads_pending": self.downloads_pending_topic,
-                "downloads_cached": self.downloads_cached_topic,
-                "downloads_results": self.downloads_results_topic,
-                "dlq": self.dlq_topic,
-            },
-            "consumer_group_prefix": self.consumer_group_prefix,
-            "retry_delays": self.retry_delays,
-            "max_retries": self.max_retries,
-            # Worker-specific configs with defaults
-            "delta_events_writer": {
-                "processing": {
-                    "batch_size": self.delta_events_batch_size,
-                    "retry_delays": self.retry_delays,
-                    "max_retries": self.max_retries,
-                    "retry_topic_prefix": "delta-events.retry",
-                    "dlq_topic": "delta-events.dlq",
-                }
-            },
-        }
+        # Start with full yaml xact config, ensure topics have fallbacks from flat fields
+        xact_config = self.xact_config.copy() if self.xact_config else {}
+
+        # Ensure topics exist with fallbacks from flat fields
+        if "topics" not in xact_config:
+            xact_config["topics"] = {}
+        topics = xact_config["topics"]
+        topics.setdefault("events", self.events_topic)
+        topics.setdefault("events_ingested", self.events_ingested_topic)
+        topics.setdefault("downloads_pending", self.downloads_pending_topic)
+        topics.setdefault("downloads_cached", self.downloads_cached_topic)
+        topics.setdefault("downloads_results", self.downloads_results_topic)
+        topics.setdefault("dlq", self.dlq_topic)
+
+        # Ensure other required fields have fallbacks
+        xact_config.setdefault("consumer_group_prefix", self.consumer_group_prefix)
+        xact_config.setdefault("retry_delays", self.retry_delays)
+        xact_config.setdefault("max_retries", self.max_retries)
+
+        # Ensure delta_events_writer has processing defaults
+        if "delta_events_writer" not in xact_config:
+            xact_config["delta_events_writer"] = {}
+        if "processing" not in xact_config["delta_events_writer"]:
+            xact_config["delta_events_writer"]["processing"] = {}
+        delta_processing = xact_config["delta_events_writer"]["processing"]
+        delta_processing.setdefault("batch_size", self.delta_events_batch_size)
+        delta_processing.setdefault("retry_delays", self.retry_delays)
+        delta_processing.setdefault("max_retries", self.max_retries)
+        delta_processing.setdefault("retry_topic_prefix", "delta-events.retry")
+        delta_processing.setdefault("dlq_topic", "delta-events.dlq")
 
         return KafkaConfig(
             bootstrap_servers=self.bootstrap_servers,
