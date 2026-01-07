@@ -151,6 +151,9 @@ class LocalKafkaConfig:
     # Delta events writer settings
     delta_events_batch_size: int = 1000
 
+    # ClaimX domain config (loaded from yaml)
+    claimx_config: Dict[str, Any] = field(default_factory=dict)
+
     @classmethod
     def load_config(cls, config_path: Optional[Path] = None) -> "LocalKafkaConfig":
         """Load local Kafka configuration from config.yaml and environment variables.
@@ -186,6 +189,9 @@ class LocalKafkaConfig:
         # Get xact domain config for topics (nested structure: kafka.xact.topics)
         xact_config = kafka_data.get("xact", {})
         topics_data = xact_config.get("topics", {})
+
+        # Get claimx domain config (nested structure: kafka.claimx)
+        claimx_config = kafka_data.get("claimx", {})
 
         # Parse retry delays (check xact config first, then flat)
         retry_delays_default = xact_config.get("retry_delays", kafka_data.get("retry_delays", [300, 600, 1200, 2400]))
@@ -277,6 +283,7 @@ class LocalKafkaConfig:
                 "DELTA_EVENTS_BATCH_SIZE",
                 str(kafka_data.get("delta_events_batch_size", 1000))
             )),
+            claimx_config=claimx_config,
         )
 
     def to_kafka_config(self) -> KafkaConfig:
@@ -315,7 +322,7 @@ class LocalKafkaConfig:
             security_protocol=self.security_protocol,
             sasl_mechanism=self.sasl_mechanism,
             xact=xact_config,
-            claimx={},  # ClaimX can be configured separately
+            claimx=self.claimx_config,
             onelake_base_path=self.onelake_base_path,
             onelake_domain_paths=self.onelake_domain_paths,
             cache_dir=self.cache_dir,
