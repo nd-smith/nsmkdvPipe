@@ -45,6 +45,11 @@ class DownloadResultMessage(BaseModel):
         description="Unique event identifier for correlation",
         min_length=1
     )
+    media_id: str = Field(
+        ...,
+        description="Unique deterministic ID for the attachment",
+        min_length=1
+    )
     attachment_url: str = Field(
         ...,
         description="URL of the attachment that was processed",
@@ -233,6 +238,8 @@ class FailedDownloadMessage(BaseModel):
         ... )
     """
 
+    trace_id: str = Field(
+        ...,
         description="Unique event identifier for correlation",
         min_length=1
     )
