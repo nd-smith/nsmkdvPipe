@@ -1382,7 +1382,7 @@ class KQLEventPoller:
 
         # Get trace_id column name from config mapping
         # Default to 'trace_id' if not found, but many Kusto tables use 'traceId'
-        trace_id_column = self.config.column_mapping.get("trace_id", "trace_id")
+        trace_id_column = "traceId"
 
         # Construct Where Clause
         if checkpoint_trace_id:
