@@ -370,7 +370,9 @@ class KQLEventPoller:
                 eid = str(row.get(self._trace_id_col))
             else:
                 # Use schema-generated or default ID
-                eid = getattr(event, 'event_id', getattr(event, 'trace_id', str(hash(str(event)))))
+                # Note: use 'or' to handle None values since getattr returns None
+                # when the attribute exists but has value None
+                eid = getattr(event, 'event_id', None) or getattr(event, 'trace_id', None) or str(hash(str(event)))
             
             await self._producer.send(
                 topic=self.config.kafka.get_topic(self.config.domain, "events"),
