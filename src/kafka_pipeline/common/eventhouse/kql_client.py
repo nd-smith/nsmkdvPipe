@@ -627,13 +627,29 @@ class KQLClient:
         except KustoServiceError as e:
             query_duration_ms = (time.perf_counter() - start_time) * 1000
 
+            # Extract detailed error info from KustoServiceError
+            error_details = {}
+            try:
+                # Try to get structured error info if available
+                if hasattr(e, 'get_api_errors'):
+                    api_errors = e.get_api_errors()
+                    if api_errors:
+                        error_details["api_errors"] = str(api_errors)[:500]
+                if hasattr(e, 'http_response') and e.http_response:
+                    error_details["http_status"] = getattr(e.http_response, 'status_code', None) or getattr(e.http_response, 'status', None)
+            except Exception:
+                pass  # Don't fail on error introspection
+
             logger.error(
                 "KQL query failed",
                 extra={
                     "database": database,
                     "query_length": len(query),
+                    "query": query[:500] if len(query) > 500 else query,
                     "duration_ms": round(query_duration_ms, 2),
-                    "error": str(e)[:200],
+                    "error": str(e)[:1000],
+                    "error_type": type(e).__name__,
+                    **error_details,
                 },
             )
 
@@ -656,8 +672,10 @@ class KQLClient:
                 extra={
                     "database": database,
                     "query_length": len(query),
+                    "query": query[:500] if len(query) > 500 else query,
                     "duration_ms": round(query_duration_ms, 2),
-                    "error": str(e)[:200],
+                    "error": str(e)[:1000],
+                    "error_type": type(e).__name__,
                 },
             )
 
