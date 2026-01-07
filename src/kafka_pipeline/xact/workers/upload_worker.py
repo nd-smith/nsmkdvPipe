@@ -562,6 +562,7 @@ class UploadWorker:
                     "Using fallback OneLake client - domain not found",
                     extra={
                         "trace_id": trace_id,
+                        "media_id": cached_message.media_id,
                         "raw_event_type": raw_event_type,
                         "domain": domain,
                         "available_domains": available_domains,
@@ -579,6 +580,7 @@ class UploadWorker:
                 "Uploaded file to OneLake",
                 extra={
                     "trace_id": trace_id,
+                    "media_id": cached_message.media_id,
                     "domain": domain,
                     "raw_event_type": raw_event_type,
                     "destination_path": cached_message.destination_path,
@@ -633,7 +635,10 @@ class UploadWorker:
 
             logger.error(
                 f"Upload failed: {e}",
-                extra={"trace_id": trace_id},
+                extra={
+                    "trace_id": trace_id,
+                    "media_id": cached_message.media_id if 'cached_message' in locals() and cached_message else None,
+                },
                 exc_info=True,
             )
             record_processing_error(self.topic, consumer_group, "upload_error")
@@ -665,7 +670,13 @@ class UploadWorker:
                     value=result_message,
                 )
             except Exception as produce_error:
-                logger.error(f"Failed to produce failure result: {produce_error}")
+                logger.error(
+                    f"Failed to produce failure result: {produce_error}",
+                    extra={
+                        "trace_id": trace_id,
+                        "media_id": cached_message.media_id if cached_message else None,
+                    },
+                )
 
             return UploadResult(
                 message=message,
