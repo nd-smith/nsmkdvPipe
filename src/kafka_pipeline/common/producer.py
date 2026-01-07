@@ -145,8 +145,9 @@ class BaseKafkaProducer:
         })
 
         # Optional producer settings (only add if present)
+        # Note: aiokafka uses 'max_batch_size', config uses 'batch_size' for compatibility
         if "batch_size" in self.producer_config:
-            kafka_producer_config["batch_size"] = self.producer_config["batch_size"]
+            kafka_producer_config["max_batch_size"] = self.producer_config["batch_size"]
         if "linger_ms" in self.producer_config:
             kafka_producer_config["linger_ms"] = self.producer_config["linger_ms"]
         if "compression_type" in self.producer_config:
