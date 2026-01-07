@@ -52,7 +52,6 @@ class ClaimXEventsDeltaWriter(BaseDeltaWriter):
         - master_file_name: Optional master file name
         - ingested_at: Event ingestion timestamp
         - created_at: Pipeline processing timestamp
-        - event_date: Date partition column (from ingested_at)
 
     Usage:
         >>> writer = ClaimXEventsDeltaWriter(table_path="abfss://.../claimx_events")
@@ -73,8 +72,7 @@ class ClaimXEventsDeltaWriter(BaseDeltaWriter):
         super().__init__(
             table_path=table_path,
             timestamp_column="ingested_at",
-            partition_column="event_date",
-            z_order_columns=["event_date", "event_id", "event_type"],
+            z_order_columns=["event_id", "event_type"],
         )
 
     async def write_events(self, events: List[Dict[str, Any]]) -> bool:
@@ -103,11 +101,6 @@ class ClaimXEventsDeltaWriter(BaseDeltaWriter):
             # Create DataFrame from events
             df = pl.DataFrame(events)
 
-            # Add event_date partition column (from ingested_at)
-            df = df.with_columns(
-                pl.col("ingested_at").dt.date().alias("event_date")
-            )
-
             # Add created_at column (pipeline processing timestamp)
             now = datetime.now(timezone.utc)
             df = df.with_columns(
@@ -126,7 +119,6 @@ class ClaimXEventsDeltaWriter(BaseDeltaWriter):
                 "master_file_name",
                 "ingested_at",
                 "created_at",
-                "event_date",
             ]
             df = df.select([col for col in target_columns if col in df.columns])
 
