@@ -32,6 +32,9 @@ class JSONFormatter(logging.Formatter):
         "error_category",
         "error_message",
         "error_code",
+        "error",
+        "error_type",
+        "api_errors",
         # Processing metrics
         "records_processed",
         "records_succeeded",
@@ -77,6 +80,10 @@ class JSONFormatter(logging.Formatter):
         "kafka_topic",
         "kafka_partition",
         "kafka_offset",
+        # KQL/Kusto
+        "database",
+        "query",
+        "query_length",
     ]
 
     # Fields that contain URLs and should be sanitized
