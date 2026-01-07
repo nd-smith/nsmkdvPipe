@@ -142,7 +142,8 @@ kafka:
     # Topic Configuration
     # -------------------------------------------------------------------------
     topics:
-      events: "xact.events.raw"                  # Raw events from Event Hub/Eventhouse
+      events: "xact.events.raw"                    # Raw events from Event Hub/Eventhouse
+      events_ingested: "xact.events.ingested"      # Processed events after ingestion
       downloads_pending: "xact.downloads.pending"  # Download tasks awaiting processing
       downloads_cached: "xact.downloads.cached"    # Downloads cached locally, awaiting upload
       downloads_results: "xact.downloads.results"  # Upload results for Delta processing
