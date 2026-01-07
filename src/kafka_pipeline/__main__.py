@@ -646,7 +646,7 @@ async def run_claimx_eventhouse_poller(pipeline_config):
         batch_size=claimx_eventhouse.batch_size,
         source_table=claimx_eventhouse.source_table,
         column_mapping={
-            "trace_id": "event_id",  # claimx uses event_id instead of trace_id
+            # trace_id not mapped - table columns TBD, order by ingestion_time only for now
             "event_type": "event_type",
             "event_subtype": "event_subtype",
             "timestamp": "timestamp",
