@@ -76,6 +76,7 @@ htmlcov/
 .tox/
 .hypothesis/
 debug/
+poller_xact.json
 
 # Jupyter
 .ipynb_checkpoints
