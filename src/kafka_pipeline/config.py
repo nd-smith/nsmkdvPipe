@@ -556,14 +556,25 @@ def load_config(
     claimx_config = kafka_config.get("claimx", {})
 
     # Extract storage settings (support multiple locations for flexibility)
-    # Priority: kafka.storage > root storage > flat kafka structure
-    storage = kafka_config.get("storage", {})
-    if not storage:
-        # Try root-level storage section (common user configuration pattern)
-        storage = yaml_data.get("storage", {})
-    if not storage:
-        # Fallback: storage settings directly under kafka (flat structure)
-        storage = kafka_config
+    # Merge sources with priority: kafka.storage > root storage > flat kafka structure
+    # This allows users to split config across locations (e.g., onelake paths at root,
+    # cache_dir under kafka.storage) and have them properly merged.
+    storage = {}
+
+    # Start with flat kafka structure as base (lowest priority)
+    for key in ["onelake_base_path", "onelake_domain_paths", "cache_dir"]:
+        if key in kafka_config:
+            storage[key] = kafka_config[key]
+
+    # Merge root-level storage section (medium priority)
+    root_storage = yaml_data.get("storage", {})
+    if root_storage:
+        storage = _deep_merge(storage, root_storage)
+
+    # Merge kafka.storage section (highest priority)
+    kafka_storage = kafka_config.get("storage", {})
+    if kafka_storage:
+        storage = _deep_merge(storage, kafka_storage)
 
     # Extract ClaimX API settings (from root-level claimx section, not kafka.claimx)
     claimx_root = yaml_data.get("claimx", {})
