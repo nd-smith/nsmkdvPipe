@@ -27,6 +27,7 @@ from typing import Any, Dict, Optional, Set
 from aiokafka.structs import ConsumerRecord
 from pydantic import ValidationError
 
+from core.logging.context import set_log_context
 from core.logging.setup import get_logger
 from kafka_pipeline.config import KafkaConfig
 from kafka_pipeline.common.consumer import BaseKafkaConsumer
@@ -425,6 +426,9 @@ class ClaimXEventIngesterWorker:
         composite_key = "|".join(composite_parts)
         event_id = str(uuid.uuid5(self.CLAIMX_EVENT_ID_NAMESPACE, composite_key))
         event.event_id = event_id
+
+        # Set logging context for this request (enables trace correlation)
+        set_log_context(trace_id=event.event_id)
 
         # Track records processed
         self._records_processed += 1
