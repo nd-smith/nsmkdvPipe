@@ -35,11 +35,12 @@ class TestClassifyApiError:
     """Test error classification logic."""
 
     def test_classify_401_unauthorized(self):
-        """Test 401 returns AUTH error, not retryable."""
+        """Test 401 returns AUTH error, retryable with credential refresh."""
         error = classify_api_error(401, "https://api.test/project/123")
         assert error.status_code == 401
         assert error.category == ErrorCategory.AUTH
-        assert error.is_retryable is False
+        assert error.is_retryable is True  # Now retryable with credential refresh
+        assert error.should_refresh_auth is True  # Should trigger credential refresh
         assert "Unauthorized" in str(error)
 
     def test_classify_403_forbidden(self):
