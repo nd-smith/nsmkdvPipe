@@ -112,6 +112,7 @@ class EventIngesterWorker:
                 "domain": domain,
                 "worker_name": "event_ingester",
                 "events_topic": config.get_topic(domain, "events"),
+                "ingested_topic": self.producer_config.get_topic(domain, "events_ingested"),
                 "pending_topic": self.producer_config.get_topic(domain, "downloads_pending"),
                 "pipeline_domain": self.domain,
                 "separate_producer_config": producer_config is not None,
@@ -224,10 +225,37 @@ class EventIngesterWorker:
             )
             raise
 
+        # Generate unique event_id for tracking
+        event_id = str(uuid.uuid4())
+        event.event_id = event_id
+
+        # Produce to ingested topic (ALL events)
+        try:
+            await self.producer.send(
+                topic=self.producer_config.get_topic(self.domain, "events_ingested"),
+                key=event.trace_id,
+                value=event,
+                headers={"trace_id": event.trace_id, "event_id": event_id},
+            )
+        except Exception as e:
+            logger.error(
+                "Failed to produce to ingested topic",
+                extra={
+                    "trace_id": event.trace_id,
+                    "event_id": event_id,
+                    "error": str(e),
+                },
+                exc_info=True,
+            )
+            # We arguably should raise here to prevent processing if ingestion fails
+            # ensuring consistent state in Delta vs downloads
+            raise
+
         logger.info(
-            "Processing event",
+            "Ingested event",
             extra={
                 "trace_id": event.trace_id,
+                "event_id": event_id,
                 "type": event.type,
                 "status_subtype": event.status_subtype,
                 "attachment_count": len(event.attachments) if event.attachments else 0,
@@ -239,7 +267,7 @@ class EventIngesterWorker:
             self._records_skipped += 1
             logger.debug(
                 "Event has no attachments, skipping download task creation",
-                extra={"trace_id": event.trace_id},
+                extra={"trace_id": event.trace_id, "event_id": event.event_id},
             )
             return
 
@@ -251,6 +279,7 @@ class EventIngesterWorker:
                 "Event missing assignmentId in data, cannot generate paths",
                 extra={
                     "trace_id": event.trace_id,
+                    "event_id": event.event_id,
                     "type": event.type,
                 },
             )
@@ -288,6 +317,7 @@ class EventIngesterWorker:
                 "Invalid attachment URL, skipping",
                 extra={
                     "trace_id": event.trace_id,
+                    "event_id": event.event_id,
                     "type": event.type,
                     "url": sanitize_url(attachment_url),
                     "validation_error": error_message,
@@ -309,6 +339,7 @@ class EventIngesterWorker:
                 "Failed to generate blob path",
                 extra={
                     "trace_id": event.trace_id,
+                    "event_id": event.event_id,
                     "status_subtype": event.status_subtype,
                     "assignment_id": assignment_id,
                     "error": str(e),
@@ -358,6 +389,7 @@ class EventIngesterWorker:
                 "Created download task",
                 extra={
                     "trace_id": event.trace_id,
+                    "event_id": event.event_id,
                     "media_id": media_id,
                     "blob_path": blob_path,
                     "status_subtype": event.status_subtype,
@@ -372,6 +404,7 @@ class EventIngesterWorker:
                 "Failed to produce download task",
                 extra={
                     "trace_id": event.trace_id,
+                    "event_id": event.event_id,
                     "blob_path": blob_path,
                     "error": str(e),
                 },

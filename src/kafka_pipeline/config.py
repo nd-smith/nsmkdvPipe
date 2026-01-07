@@ -177,6 +177,10 @@ class KafkaConfig:
 
         topics = domain_config.get("topics", {})
         if topic_key not in topics:
+            # Fallback for new topic during migration
+            if topic_key == "events_ingested":
+                return f"{domain}.events.ingested"
+
             raise ValueError(
                 f"Topic '{topic_key}' not found in {domain} domain. "
                 f"Available topics: {list(topics.keys())}"

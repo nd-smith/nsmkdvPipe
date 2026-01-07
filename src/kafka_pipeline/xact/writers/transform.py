@@ -155,6 +155,14 @@ def flatten_events(df: pl.DataFrame) -> pl.DataFrame:
         ]
     )
 
+    # Add event_id if present, else null
+    if "eventId" in df.columns:
+        base_df = base_df.with_columns(pl.col("eventId").alias("event_id"))
+    elif "event_id" in df.columns:
+        base_df = base_df.with_columns(pl.col("event_id"))
+    else:
+        base_df = base_df.with_columns(pl.lit(None).cast(pl.Utf8).alias("event_id"))
+
     # Parse data column and extract fields row by row
     data_json_list = df["data"].to_list()
 
@@ -193,6 +201,7 @@ FLATTENED_SCHEMA = {
     "ingested_at": pl.Datetime(time_zone="UTC"),
     "event_date": pl.Date,
     "trace_id": pl.Utf8,
+    "event_id": pl.Utf8,
     "description": pl.Utf8,
     "assignment_id": pl.Utf8,
     "original_assignment_id": pl.Utf8,

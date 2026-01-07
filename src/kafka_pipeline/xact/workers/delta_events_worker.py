@@ -185,7 +185,7 @@ class DeltaEventsWorker:
             config=self.config,
             domain=self.domain,
             worker_name="delta_events_writer",
-            topics=[self.config.get_topic(self.domain, "events")],
+            topics=[self.config.get_topic(self.domain, "events_ingested")],
             message_handler=self._handle_event_message,
             enable_message_commit=False,
         )
@@ -282,6 +282,7 @@ class DeltaEventsWorker:
             "Added event to batch",
             extra={
                 "trace_id": message_data.get("traceId"),
+                "event_id": message_data.get("eventId"),
                 "batch_size": len(self._batch),
                 "batch_threshold": self.batch_size,
             },
@@ -350,17 +351,20 @@ class DeltaEventsWorker:
                     await self.consumer.stop()
         else:
             # Route to Kafka retry topic
-            trace_ids = [
-                e.get("traceId") or e.get("trace_id")
-                for e in batch_to_write[:10]
-                if e.get("traceId") or e.get("trace_id")
-            ]
+            trace_ids = []
+            event_ids = []
+            for e in batch_to_write[:10]:
+                if e.get("traceId") or e.get("trace_id"):
+                    trace_ids.append(e.get("traceId") or e.get("trace_id"))
+                if e.get("eventId") or e.get("event_id"):
+                    event_ids.append(e.get("eventId") or e.get("event_id"))
             logger.warning(
                 "Batch write failed, routing to retry topic",
                 extra={
                     "batch_id": batch_id,
                     "batch_size": batch_size,
                     "trace_ids": trace_ids,
+                    "event_ids": event_ids,
                 },
             )
             await self.retry_handler.handle_batch_failure(
@@ -396,11 +400,13 @@ class DeltaEventsWorker:
             return success
 
         except Exception as e:
-            trace_ids = [
-                evt.get("traceId") or evt.get("trace_id")
-                for evt in batch[:10]
-                if evt.get("traceId") or evt.get("trace_id")
-            ]
+            trace_ids = []
+            event_ids = []
+            for evt in batch[:10]:
+                if evt.get("traceId") or evt.get("trace_id"):
+                    trace_ids.append(evt.get("traceId") or evt.get("trace_id"))
+                if evt.get("eventId") or evt.get("event_id"):
+                    event_ids.append(evt.get("eventId") or evt.get("event_id"))
             logger.error(
                 "Unexpected error writing batch to Delta",
                 extra={
@@ -408,6 +414,7 @@ class DeltaEventsWorker:
                     "batch_size": batch_size,
                     "error": str(e),
                     "trace_ids": trace_ids,
+                    "event_ids": event_ids,
                 },
                 exc_info=True,
             )
