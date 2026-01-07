@@ -19,6 +19,8 @@ Delta table: claimx_events
 
 import asyncio
 import json
+import time
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Set
 
@@ -52,7 +54,7 @@ class ClaimXEventIngesterWorker:
     Also writes events to Delta Lake claimx_events table for analytics.
 
     Features:
-    - Event ID preservation for downstream tracking
+    - Deterministic UUID5 event_id generation for consistent tracking
     - All events trigger enrichment (not just file events)
     - Non-blocking Delta Lake writes for analytics
     - Graceful shutdown with background task tracking
@@ -64,6 +66,13 @@ class ClaimXEventIngesterWorker:
         >>> # Worker runs until stopped
         >>> await worker.stop()
     """
+
+    # Namespace for generating deterministic event_ids (UUID5)
+    # Using a fixed namespace ensures the same project_id + event_type + ingested_at
+    # always yields the same event_id, providing replayability and consistent tracking
+    CLAIMX_EVENT_ID_NAMESPACE = uuid.uuid5(
+        uuid.NAMESPACE_URL, "http://nsmkdvPipe/claimx/event_id"
+    )
 
     def __init__(
         self,
@@ -372,9 +381,9 @@ class ClaimXEventIngesterWorker:
         """
         Process a single ClaimX event message from Kafka.
 
-        Parses the ClaimXEventMessage, creates an enrichment task, and produces
-        it to the enrichment pending topic. Also writes event to Delta Lake for
-        analytics.
+        Parses the ClaimXEventMessage, generates deterministic UUID5 event_id,
+        creates an enrichment task, and produces it to the enrichment pending
+        topic. Also writes event to Delta Lake for analytics.
 
         Args:
             record: ConsumerRecord containing ClaimXEventMessage JSON
@@ -398,6 +407,24 @@ class ClaimXEventIngesterWorker:
                 exc_info=True,
             )
             raise
+
+        # Generate deterministic event_id from composite key (UUID5)
+        # This provides stable IDs across retries/replays for consistent tracking
+        # Include optional identifiers to ensure uniqueness for simultaneous events
+        composite_parts = [
+            event.project_id,
+            event.event_type,
+            event.ingested_at.isoformat(),
+        ]
+        if event.media_id:
+            composite_parts.append(f"media:{event.media_id}")
+        if event.task_assignment_id:
+            composite_parts.append(f"task:{event.task_assignment_id}")
+        if event.video_collaboration_id:
+            composite_parts.append(f"video:{event.video_collaboration_id}")
+        composite_key = "|".join(composite_parts)
+        event_id = str(uuid.uuid5(self.CLAIMX_EVENT_ID_NAMESPACE, composite_key))
+        event.event_id = event_id
 
         # Track records processed
         self._records_processed += 1
