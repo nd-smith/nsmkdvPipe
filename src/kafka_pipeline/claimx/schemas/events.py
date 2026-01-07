@@ -6,6 +6,8 @@ Schema aligned with verisk_pipeline ClaimXEvent for compatibility.
 """
 
 from datetime import datetime
+import hashlib
+import json
 from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, Field, field_validator
@@ -129,6 +131,14 @@ class ClaimXEventMessage(BaseModel):
         event_type = row.get("event_type") or row.get("eventType") or ""
         project_id = row.get("project_id") or row.get("projectId") or ""
         ingested_at = row.get("ingested_at") or row.get("IngestionTime") or datetime.now()
+
+        # Generate deterministic ID if missing
+        if not event_id:
+            # Create a stable string representation for hashing
+            # Use specific fields + valid parts of raw_data to ensure uniqueness
+            payload_str = json.dumps(row, sort_keys=True, default=str)
+            composite_key = f"{project_id}|{event_type}|{ingested_at}|{payload_str}"
+            event_id = hashlib.sha256(composite_key.encode()).hexdigest()
 
         return cls(
             event_id=event_id,

@@ -1,5 +1,19 @@
 # Local Kafka for development and testing
 # Usage: docker-compose -f docker-compose.kafka.yml up -d
+#
+# To add ClaimX topics to a RUNNING instance without data loss:
+# docker exec kafka-pipeline-local /bin/bash -c '
+#   /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server localhost:9092 --topic claimx.events.raw --partitions 6 --replication-factor 1
+#   /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server localhost:9092 --topic claimx.enrichment.pending --partitions 6 --replication-factor 1
+#   /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server localhost:9092 --topic claimx.downloads.pending --partitions 6 --replication-factor 1
+#   /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server localhost:9092 --topic claimx.downloads.cached --partitions 6 --replication-factor 1
+#   /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server localhost:9092 --topic claimx.downloads.results --partitions 6 --replication-factor 1
+#   /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server localhost:9092 --topic claimx.downloads.dlq --partitions 3 --replication-factor 1
+#   /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server localhost:9092 --topic claimx.downloads.pending.retry.5m --partitions 3 --replication-factor 1
+#   /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server localhost:9092 --topic claimx.downloads.pending.retry.10m --partitions 3 --replication-factor 1
+#   /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server localhost:9092 --topic claimx.downloads.pending.retry.20m --partitions 3 --replication-factor 1
+#   /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server localhost:9092 --topic claimx.downloads.pending.retry.40m --partitions 3 --replication-factor 1
+# '
 
 services:
   kafka:
@@ -69,6 +83,16 @@ services:
         /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server kafka:9092 --topic delta-events.retry.20m --partitions 3 --replication-factor 1
         /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server kafka:9092 --topic delta-events.retry.40m --partitions 3 --replication-factor 1
         /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server kafka:9092 --topic delta-events.dlq --partitions 3 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server kafka:9092 --topic claimx.events.raw --partitions 6 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server kafka:9092 --topic claimx.enrichment.pending --partitions 6 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server kafka:9092 --topic claimx.downloads.pending --partitions 6 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server kafka:9092 --topic claimx.downloads.cached --partitions 6 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server kafka:9092 --topic claimx.downloads.results --partitions 6 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server kafka:9092 --topic claimx.downloads.dlq --partitions 3 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server kafka:9092 --topic claimx.downloads.pending.retry.5m --partitions 3 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server kafka:9092 --topic claimx.downloads.pending.retry.10m --partitions 3 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server kafka:9092 --topic claimx.downloads.pending.retry.20m --partitions 3 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server kafka:9092 --topic claimx.downloads.pending.retry.40m --partitions 3 --replication-factor 1
         echo "Topics created successfully:"
         /opt/kafka/bin/kafka-topics.sh --list --bootstrap-server kafka:9092
 

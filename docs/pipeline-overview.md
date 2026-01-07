@@ -157,6 +157,7 @@ python -m kafka_pipeline --worker xact-result-processor
 
 ```bash
 # Start individual claimx workers
+python -m kafka_pipeline --worker claimx-poller
 python -m kafka_pipeline --worker claimx-ingester
 python -m kafka_pipeline --worker claimx-enricher
 python -m kafka_pipeline --worker claimx-downloader

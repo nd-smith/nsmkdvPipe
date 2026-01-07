@@ -163,9 +163,12 @@ class KQLEventPoller:
         self._pending_tasks: Set[asyncio.Task] = set()
 
     @property
-    def _trace_id_col(self) -> str:
-        """Get the KQL column name for the unique ID (default: traceId)."""
-        return self.config.column_mapping.get("trace_id", "traceId")
+    def _trace_id_col(self) -> Optional[str]:
+        """Get the KQL column name for the unique ID (default: traceId). Returns None if disabled."""
+        col = self.config.column_mapping.get("trace_id")
+        if col == "None" or col is None:
+             return None
+        return col
 
     def _parse_timestamp(self, ts_str: str) -> datetime:
         """Helper to ensure all parsed timestamps are offset-aware UTC."""
@@ -262,13 +265,17 @@ class KQLEventPoller:
             stop_str = stop.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
             
             # Use strcmp() to handle string/GUID inequality
-            if self._last_trace_id:
+            if self._last_trace_id and trace_id_col:
                 esc = self._last_trace_id.replace("'", "\\'")
                 where = f"| where ingestion_time() > datetime({start_str}) or (ingestion_time() == datetime({start_str}) and strcmp(tostring({trace_id_col}), '{esc}') > 0)"
             else:
                 where = f"| where ingestion_time() >= datetime({start_str})"
 
-            query = f"{self.config.source_table} {where} | where ingestion_time() < datetime({stop_str}) | extend ingestion_time = ingestion_time() | order by ingestion_time asc, {trace_id_col} asc | take {self.config.batch_size}"
+            order_clause = "order by ingestion_time asc"
+            if trace_id_col:
+                order_clause += f", {trace_id_col} asc"
+
+            query = f"{self.config.source_table} {where} | where ingestion_time() < datetime({stop_str}) | extend ingestion_time = ingestion_time() | {order_clause} | take {self.config.batch_size}"
             
             result = await self._kql_client.execute_query(query)
             if not result.rows:
@@ -282,7 +289,8 @@ class KQLEventPoller:
             if l_time.tzinfo is None:
                 l_time = l_time.replace(tzinfo=timezone.utc)
             
-            self._save_checkpoint(l_time, str(last.get(trace_id_col)))
+            l_tid = str(last.get(trace_id_col)) if trace_id_col else ""
+            self._save_checkpoint(l_time, l_tid)
             start = l_time
             
             if len(result.rows) < self.config.batch_size:
@@ -307,7 +315,8 @@ class KQLEventPoller:
         if l_time.tzinfo is None:
             l_time = l_time.replace(tzinfo=timezone.utc)
         
-        self._save_checkpoint(l_time, str(last.get(self._trace_id_col)))
+        l_tid = str(last.get(self._trace_id_col)) if self._trace_id_col else ""
+        self._save_checkpoint(l_time, l_tid)
 
     def _filter_checkpoint_rows(self, rows: list[dict]) -> list[dict]:
         """Ensures UTC-aware comparisons to avoid TypeError."""
@@ -324,11 +333,11 @@ class KQLEventPoller:
             if r_time.tzinfo is None:
                 r_time = r_time.replace(tzinfo=timezone.utc)
 
-            r_tid = str(r.get(self._trace_id_col, ""))
+            r_tid = str(r.get(self._trace_id_col, "")) if self._trace_id_col else ""
 
             if r_time < cp_time:
                 continue
-            if r_time == cp_time and cp_tid and r_tid <= cp_tid:
+            if self._trace_id_col and r_time == cp_time and cp_tid and r_tid <= cp_tid:
                 continue
             
             filtered.append(r)
@@ -340,19 +349,29 @@ class KQLEventPoller:
         t_str = p_to.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         trace_id_col = self._trace_id_col
         
-        if cp_tid:
+        if cp_tid and trace_id_col:
             esc = cp_tid.replace("'", "\\'")
             where = f"| where ingestion_time() > datetime({f_str}) or (ingestion_time() == datetime({f_str}) and strcmp(tostring({trace_id_col}), '{esc}') > 0)"
         else:
             where = f"| where ingestion_time() >= datetime({f_str})"
         
-        return f"{table} {where} | where ingestion_time() < datetime({t_str}) | extend ingestion_time = ingestion_time() | order by ingestion_time asc, {trace_id_col} asc | take {limit}"
+        order_clause = "order by ingestion_time asc"
+        if trace_id_col:
+            order_clause += f", {trace_id_col} asc"
+            
+        return f"{table} {where} | where ingestion_time() < datetime({t_str}) | extend ingestion_time = ingestion_time() | {order_clause} | take {limit}"
 
     async def _process_filtered_results(self, rows: list[dict]) -> int:
         """Processes rows and sends to Kafka."""
         for row in rows:
             event = self._event_schema_class.from_eventhouse_row(row)
-            eid = str(row.get(self._trace_id_col) or getattr(event, 'trace_id', str(hash(str(event)))))
+            # Use configured column if available, otherwise rely on schema generation
+            if self._trace_id_col and row.get(self._trace_id_col):
+                eid = str(row.get(self._trace_id_col))
+            else:
+                # Use schema-generated or default ID
+                eid = getattr(event, 'event_id', getattr(event, 'trace_id', str(hash(str(event)))))
+            
             await self._producer.send(
                 topic=self.config.kafka.get_topic(self.config.domain, "events"),
                 key=eid,
