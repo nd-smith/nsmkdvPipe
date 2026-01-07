@@ -360,13 +360,13 @@ class EventhouseSourceConfig:
 
         Configuration priority (highest to lowest):
         1. Environment variables
-        2. config.yaml file (under 'eventhouse:' key)
+        2. config.yaml file (under 'xact_eventhouse:' key, fallback to 'eventhouse:')
         3. Dataclass defaults
 
         Optional env var overrides:
-            EVENTHOUSE_CLUSTER_URL: Kusto cluster URL
-            EVENTHOUSE_DATABASE: Database name
-            EVENTHOUSE_SOURCE_TABLE: Table name (default: Events)
+            XACT_EVENTHOUSE_CLUSTER_URL: Kusto cluster URL
+            XACT_EVENTHOUSE_DATABASE: Database name
+            XACT_EVENTHOUSE_SOURCE_TABLE: Table name (default: Events)
             POLL_INTERVAL_SECONDS: Poll interval (default: 30)
             POLL_BATCH_SIZE: Max events per poll (default: 1000)
             EVENTHOUSE_QUERY_TIMEOUT: Query timeout (default: 120)
@@ -381,28 +381,31 @@ class EventhouseSourceConfig:
         if config_path.exists():
             with open(config_path, "r") as f:
                 yaml_data = yaml.safe_load(f) or {}
-            eventhouse_data = yaml_data.get("eventhouse", {})
+            # Check for xact_eventhouse first, fallback to legacy eventhouse
+            eventhouse_data = yaml_data.get("xact_eventhouse", yaml_data.get("eventhouse", {}))
             poller_data = eventhouse_data.get("poller", {})
             dedup_data = eventhouse_data.get("dedup", {})
 
         cluster_url = os.getenv(
-            "EVENTHOUSE_CLUSTER_URL",
-            eventhouse_data.get("cluster_url", "")
+            "XACT_EVENTHOUSE_CLUSTER_URL",
+            os.getenv("EVENTHOUSE_CLUSTER_URL", eventhouse_data.get("cluster_url", ""))
         )
         database = os.getenv(
-            "EVENTHOUSE_DATABASE",
-            eventhouse_data.get("database", "")
+            "XACT_EVENTHOUSE_DATABASE",
+            os.getenv("EVENTHOUSE_DATABASE", eventhouse_data.get("database", ""))
         )
 
         if not cluster_url:
             raise ValueError(
-                "Eventhouse cluster_url is required. "
-                "Set in config.yaml under 'eventhouse:' or via EVENTHOUSE_CLUSTER_URL env var."
+                "Xact Eventhouse cluster_url is required. "
+                "Set in config.yaml under 'xact_eventhouse:' (or 'eventhouse:') "
+                "or via XACT_EVENTHOUSE_CLUSTER_URL env var."
             )
         if not database:
             raise ValueError(
-                "Eventhouse database is required. "
-                "Set in config.yaml under 'eventhouse:' or via EVENTHOUSE_DATABASE env var."
+                "Xact Eventhouse database is required. "
+                "Set in config.yaml under 'xact_eventhouse:' (or 'eventhouse:') "
+                "or via XACT_EVENTHOUSE_DATABASE env var."
             )
 
         # Parse bulk_backfill boolean
@@ -510,8 +513,8 @@ class ClaimXEventhouseSourceConfig:
         3. Dataclass defaults
 
         Optional env var overrides:
-            CLAIMX_EVENTHOUSE_CLUSTER_URL: Kusto cluster URL (fallback: EVENTHOUSE_CLUSTER_URL)
-            CLAIMX_EVENTHOUSE_DATABASE: Database name (fallback: EVENTHOUSE_DATABASE)
+            CLAIMX_EVENTHOUSE_CLUSTER_URL: Kusto cluster URL
+            CLAIMX_EVENTHOUSE_DATABASE: Database name
             CLAIMX_EVENTHOUSE_SOURCE_TABLE: Table name (default: ClaimXEvents)
             CLAIMX_POLL_INTERVAL_SECONDS: Poll interval (default: 30)
             CLAIMX_POLL_BATCH_SIZE: Max events per poll (default: 1000)
@@ -532,20 +535,14 @@ class ClaimXEventhouseSourceConfig:
             poller_data = claimx_eventhouse_data.get("poller", {})
             dedup_data = claimx_eventhouse_data.get("dedup", {})
 
-        # Get cluster_url with fallback to xact eventhouse config
+        # Get cluster_url (no fallback to xact/global env vars)
         cluster_url = os.getenv(
             "CLAIMX_EVENTHOUSE_CLUSTER_URL",
-            os.getenv(
-                "EVENTHOUSE_CLUSTER_URL",
-                claimx_eventhouse_data.get("cluster_url", "")
-            )
+            claimx_eventhouse_data.get("cluster_url", "")
         )
         database = os.getenv(
             "CLAIMX_EVENTHOUSE_DATABASE",
-            os.getenv(
-                "EVENTHOUSE_DATABASE",
-                claimx_eventhouse_data.get("database", "")
-            )
+            claimx_eventhouse_data.get("database", "")
         )
 
         if not cluster_url:
@@ -637,7 +634,8 @@ class PipelineConfig:
     eventhub: Optional[EventHubConfig] = None
 
     # Eventhouse config (only populated if event_source == eventhouse)
-    eventhouse: Optional[EventhouseSourceConfig] = None
+    # This is the Xact domain Eventhouse config (legacy name: eventhouse, new name: xact_eventhouse)
+    xact_eventhouse: Optional[EventhouseSourceConfig] = None
 
     # ClaimX Eventhouse config (optional, can run alongside xact)
     claimx_eventhouse: Optional[ClaimXEventhouseSourceConfig] = None
@@ -729,7 +727,7 @@ class PipelineConfig:
         return cls(
             event_source=event_source,
             eventhub=eventhub_config,
-            eventhouse=eventhouse_config,
+            xact_eventhouse=eventhouse_config,
             claimx_eventhouse=claimx_eventhouse_config,
             local_kafka=local_kafka,
             domain=domain,

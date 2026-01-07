@@ -274,9 +274,9 @@ async def run_eventhouse_poller(pipeline_config):
     set_log_context(stage="eventhouse-poller")
     logger.info("Starting Eventhouse Poller...")
 
-    eventhouse_source = pipeline_config.eventhouse
+    eventhouse_source = pipeline_config.xact_eventhouse
     if not eventhouse_source:
-        raise ValueError("Eventhouse configuration required for EVENT_SOURCE=eventhouse")
+        raise ValueError("Xact Eventhouse configuration required for EVENT_SOURCE=eventhouse")
 
     # Build Eventhouse config
     eventhouse_config = EventhouseConfig(
