@@ -158,6 +158,9 @@ class BaseKafkaProducer:
             kafka_producer_config["buffer_memory"] = self.producer_config["buffer_memory"]
         if "max_request_size" in self.producer_config:
             kafka_producer_config["max_request_size"] = self.producer_config["max_request_size"]
+        if "max_request_size" not in self.producer_config:
+            # Set default max_request_size to 10MB if not specified
+            kafka_producer_config["max_request_size"] = 10 * 1024 * 1024
 
         # Configure security based on protocol
         if self.config.security_protocol != "PLAINTEXT":

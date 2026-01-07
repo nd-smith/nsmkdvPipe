@@ -129,18 +129,16 @@ def _extract_row_fields(data_dict: Optional[Dict]) -> Dict[str, Any]:
 
 
 def flatten_events(df: pl.DataFrame) -> pl.DataFrame:
-    """
-    Flatten events when data column is JSON string.
+    # 1. Resolve event_id source logic BEFORE the initial select
+    if "event_id" in df.columns:
+        event_id_expr = pl.col("event_id")
+    elif "eventId" in df.columns:
+        event_id_expr = pl.col("eventId").alias("event_id")
+    else:
+        # Initialize as Utf8 nulls if it doesn't exist in source yet
+        event_id_expr = pl.lit(None).cast(pl.Utf8).alias("event_id")
 
-    This is the preferred path - handles heterogeneous schemas correctly.
-
-    Args:
-        df: Input DataFrame with columns: type, version, utcDateTime, traceId, data
-
-    Returns:
-        Flattened DataFrame with all extracted fields
-    """
-    # Build base columns
+    # 2. Build base columns including the resolved event_id_expr
     base_df = df.select(
         [
             pl.col("type"),
@@ -152,17 +150,9 @@ def flatten_events(df: pl.DataFrame) -> pl.DataFrame:
             .dt.date()
             .alias("event_date"),
             pl.col("traceId").alias("trace_id"),
+            event_id_expr, # Successfully added to the schema here
         ]
     )
-
-    # Add event_id if present, else null
-    # Add event_id if present (prioritize snake_case, fallback to camelCase)
-    if "event_id" in df.columns:
-        base_df = base_df.with_columns(pl.col("event_id"))
-    elif "eventId" in df.columns:
-        base_df = base_df.with_columns(pl.col("eventId").alias("event_id"))
-    else:
-        base_df = base_df.with_columns(pl.lit(None).cast(pl.Utf8).alias("event_id"))
 
     # Parse data column and extract fields row by row
     data_json_list = df["data"].to_list()
