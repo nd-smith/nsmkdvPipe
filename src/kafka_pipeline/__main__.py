@@ -962,7 +962,7 @@ async def run_all_workers(
     # Get events table path for delta writer
     if pipeline_config.event_source == EventSourceType.EVENTHOUSE:
         events_table_path = (
-            pipeline_config.eventhouse.xact_events_table_path
+            pipeline_config.xact_eventhouse.xact_events_table_path
             or pipeline_config.events_table_path
         )
     else:
@@ -1227,7 +1227,7 @@ def main():
             events_table_path = pipeline_config.events_table_path
             if pipeline_config.event_source == EventSourceType.EVENTHOUSE:
                 events_table_path = (
-                    pipeline_config.eventhouse.xact_events_table_path
+                    pipeline_config.xact_eventhouse.xact_events_table_path
                     or events_table_path
                 )
             if not events_table_path:
@@ -1249,7 +1249,7 @@ def main():
             events_table_path = pipeline_config.events_table_path
             if pipeline_config.event_source == EventSourceType.EVENTHOUSE:
                 events_table_path = (
-                    pipeline_config.eventhouse.xact_events_table_path
+                    pipeline_config.xact_eventhouse.xact_events_table_path
                     or events_table_path
                 )
             if not events_table_path:
