@@ -161,15 +161,40 @@ class MediaHandler(EventHandler):
                 if mid is not None:
                     media_by_id[mid] = media
 
+            # In-flight Project Verification
+            # Ensure the project exists in our warehouse before processing media
+            from kafka_pipeline.claimx.handlers.project import ProjectHandler
+
+            project_handler = ProjectHandler(self.client)
+            project_rows = await project_handler.fetch_project_data(
+                int(project_id),
+                source_event_id=events[0].event_id,
+            )
+
             results = []
             total_media_rows = 0
-            for event in events:
+            for i, event in enumerate(events):
                 result = self._process_single_event(
                     event,
                     media_by_id,
                     int(project_id),
                     start_time,
                 )
+                # Merge project rows into first result only and update api_calls
+                if i == 0:
+                    if result.rows:
+                        result.rows.merge(project_rows)
+                    # Update api_calls to include project verification (media=1 + project=1)
+                    result = EnrichmentResult(
+                        event=result.event,
+                        success=result.success,
+                        rows=result.rows,
+                        error=result.error,
+                        error_category=result.error_category,
+                        is_retryable=result.is_retryable,
+                        api_calls=2,  # Media API + Project verification API
+                        duration_ms=result.duration_ms,
+                    )
                 results.append(result)
                 if result.rows:
                     total_media_rows += len(result.rows.media)
@@ -184,6 +209,7 @@ class MediaHandler(EventHandler):
                 media_count=total_media_rows,
                 succeeded=sum(1 for r in results if r.success),
                 failed=sum(1 for r in results if not r.success),
+                project_verification=bool(project_rows.projects),
             )
 
             return results
@@ -208,7 +234,7 @@ class MediaHandler(EventHandler):
                     error=str(e),
                     error_category=e.category,
                     is_retryable=e.is_retryable,
-                    api_calls=1 if i == 0 else 0,
+                    api_calls=2 if i == 0 else 0,  # Media + Project verification
                     duration_ms=duration if i == 0 else 0,
                 )
                 for i, event in enumerate(events)
@@ -230,7 +256,7 @@ class MediaHandler(EventHandler):
                     error=str(e),
                     error_category=ErrorCategory.TRANSIENT,
                     is_retryable=True,
-                    api_calls=1 if i == 0 else 0,
+                    api_calls=2 if i == 0 else 0,  # Media + Project verification
                     duration_ms=duration if i == 0 else 0,
                 )
                 for i, event in enumerate(events)

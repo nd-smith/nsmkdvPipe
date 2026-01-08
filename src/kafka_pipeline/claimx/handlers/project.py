@@ -65,15 +65,25 @@ class ProjectHandler(EventHandler):
             rows = EntityRowsMessage()
 
             if event.event_type == "PROJECT_MFN_ADDED":
-                # No API call needed - just update MFN from event payload
-                rows.projects.append(
-                    {
-                        "project_id": event.project_id,
-                        "master_file_name": event.master_file_name,
-                        "updated_at": now_iso(),
-                        "source_event_id": event.event_id,
-                    }
+                # In-flight project verification: ensure project exists in warehouse
+                # Fetch full project data first, then overlay MFN from event
+                rows = await self.fetch_project_data(
+                    int(event.project_id), source_event_id=event.event_id
                 )
+
+                # Overlay the MFN from event payload (this is the authoritative value)
+                if rows.projects and event.master_file_name:
+                    rows.projects[0]["master_file_name"] = event.master_file_name
+                elif not rows.projects:
+                    # Fallback if API call failed to return project data
+                    rows.projects.append(
+                        {
+                            "project_id": event.project_id,
+                            "master_file_name": event.master_file_name,
+                            "updated_at": now_iso(),
+                            "source_event_id": event.event_id,
+                        }
+                    )
 
                 duration_ms = elapsed_ms(start_time)
                 log_with_context(
@@ -81,9 +91,9 @@ class ProjectHandler(EventHandler):
                     logging.DEBUG,
                     "Handler complete",
                     handler_name="project",
-                    api_calls=0,
-                    projects_count=1,
-                    contacts_count=0,
+                    api_calls=1,
+                    projects_count=len(rows.projects),
+                    contacts_count=len(rows.contacts),
                     duration_ms=duration_ms,
                     **extract_log_context(event),
                 )
@@ -92,7 +102,7 @@ class ProjectHandler(EventHandler):
                     event=event,
                     success=True,
                     rows=rows,
-                    api_calls=0,
+                    api_calls=1,
                     duration_ms=duration_ms,
                 )
 
