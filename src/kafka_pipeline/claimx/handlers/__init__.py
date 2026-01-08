@@ -40,10 +40,10 @@ from kafka_pipeline.claimx.handlers.base import (
 
 # Import specific handlers to trigger registration
 from kafka_pipeline.claimx.handlers.project import ProjectHandler
-from kafka_pipeline.claimx.handlers.media import MediaHandler
-from kafka_pipeline.claimx.handlers.task import TaskHandler
-from kafka_pipeline.claimx.handlers.contact import PolicyholderHandler
-from kafka_pipeline.claimx.handlers.video import VideoCollabHandler
+# from kafka_pipeline.claimx.handlers.media import MediaHandler
+# from kafka_pipeline.claimx.handlers.task import TaskHandler
+# from kafka_pipeline.claimx.handlers.contact import PolicyholderHandler
+# from kafka_pipeline.claimx.handlers.video import VideoCollabHandler
 
 __all__ = [
     # Base classes
@@ -57,8 +57,8 @@ __all__ = [
     "register_handler",
     # Specific handlers
     "ProjectHandler",
-    "MediaHandler",
-    "TaskHandler",
-    "PolicyholderHandler",
-    "VideoCollabHandler",
+    # "MediaHandler",
+    # "TaskHandler",
+    # "PolicyholderHandler",
+    # "VideoCollabHandler",
 ]
