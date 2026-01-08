@@ -157,6 +157,12 @@ class LocalKafkaConfig:
     # XACT domain config (loaded from yaml) - preserves full yaml structure
     xact_config: Dict[str, Any] = field(default_factory=dict)
 
+    # ClaimX API settings
+    claimx_api_url: str = ""
+    claimx_api_token: str = ""
+    claimx_api_timeout_seconds: int = 30
+    claimx_api_concurrency: int = 20
+
     @classmethod
     def load_config(cls, config_path: Optional[Path] = None) -> "LocalKafkaConfig":
         """Load local Kafka configuration from config.yaml and environment variables.
@@ -195,6 +201,10 @@ class LocalKafkaConfig:
 
         # Get claimx domain config (nested structure: kafka.claimx)
         claimx_config = kafka_data.get("claimx", {})
+
+        # Get ClaimX API settings (from root-level claimx.api section, not kafka.claimx)
+        claimx_root = yaml_data.get("claimx", {})
+        claimx_api_data = claimx_root.get("api", {})
 
         # Parse retry delays (check xact config first, then flat)
         retry_delays_default = xact_config.get("retry_delays", kafka_data.get("retry_delays", [300, 600, 1200, 2400]))
@@ -288,6 +298,23 @@ class LocalKafkaConfig:
             )),
             claimx_config=claimx_config,
             xact_config=xact_config,
+            # ClaimX API settings (loaded from root claimx.api section)
+            claimx_api_url=os.getenv(
+                "CLAIMX_API_URL",
+                claimx_api_data.get("base_url", "")
+            ),
+            claimx_api_token=os.getenv(
+                "CLAIMX_API_TOKEN",
+                claimx_api_data.get("token", "")
+            ),
+            claimx_api_timeout_seconds=int(os.getenv(
+                "CLAIMX_API_TIMEOUT_SECONDS",
+                str(claimx_api_data.get("timeout_seconds", 30))
+            )),
+            claimx_api_concurrency=int(os.getenv(
+                "CLAIMX_API_CONCURRENCY",
+                str(claimx_api_data.get("max_concurrent", 20))
+            )),
         )
 
     def to_kafka_config(self) -> KafkaConfig:
@@ -337,6 +364,11 @@ class LocalKafkaConfig:
             onelake_base_path=self.onelake_base_path,
             onelake_domain_paths=self.onelake_domain_paths,
             cache_dir=self.cache_dir,
+            # ClaimX API settings
+            claimx_api_url=self.claimx_api_url,
+            claimx_api_token=self.claimx_api_token,
+            claimx_api_timeout_seconds=self.claimx_api_timeout_seconds,
+            claimx_api_concurrency=self.claimx_api_concurrency,
         )
 
 
