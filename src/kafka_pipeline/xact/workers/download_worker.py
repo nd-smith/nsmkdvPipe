@@ -743,6 +743,10 @@ class DownloadWorker:
                     message.topic, self.CONSUMER_GROUP, len(message.value), success=False
                 )
 
+                # Clean up empty temp directory even if outcome.file_path is None
+                # The directory may have been created before download failed
+                await self._cleanup_empty_temp_dir(download_task.destination.parent)
+
                 # Track failed download for cycle output
                 self._records_failed += 1
                 # Check if this is a circuit breaker error that should prevent commit
@@ -1080,6 +1084,42 @@ class DownloadWorker:
                 "Failed to clean up temporary file",
                 extra={
                     "file_path": str(file_path),
+                    "error": str(e),
+                },
+            )
+
+    async def _cleanup_empty_temp_dir(self, dir_path: Path) -> None:
+        """
+        Clean up empty temporary directory.
+
+        Called after download failures to remove directories that were created
+        before the download started but left empty when the download failed.
+
+        Args:
+            dir_path: Path to temporary directory (e.g., temp_dir/trace_id)
+
+        Note:
+            Only removes the directory if it exists and is empty.
+            Errors are logged but not raised.
+        """
+        try:
+            def _delete_if_empty():
+                if dir_path.exists() and dir_path.is_dir():
+                    # Only remove if empty
+                    if not any(dir_path.iterdir()):
+                        dir_path.rmdir()
+                        logger.debug(
+                            "Deleted empty temporary directory after failed download",
+                            extra={"directory": str(dir_path)},
+                        )
+
+            await asyncio.to_thread(_delete_if_empty)
+
+        except Exception as e:
+            logger.warning(
+                "Failed to clean up empty temporary directory",
+                extra={
+                    "directory": str(dir_path),
                     "error": str(e),
                 },
             )
