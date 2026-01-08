@@ -608,7 +608,7 @@ class ClaimXEnrichmentWorker:
         )
 
         # Find handler for this event
-        handler_class = self.handler_registry.get_handler(event)
+        handler_class = self.handler_registry.get_handler_class(event.event_type)
         if not handler_class:
             logger.warning(
                 "No handler found for event",
