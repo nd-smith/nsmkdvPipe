@@ -76,12 +76,28 @@ class PollerCheckpoint:
     def save(self, path: Path) -> bool:
         """
         Save checkpoint to JSON file.
+
+        Uses atomic write pattern: write to temp file, then rename.
+        Handles stale temp files from previous failed attempts.
         """
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             self.updated_at = datetime.now(timezone.utc).isoformat()
 
             temp_path = path.with_suffix(".tmp")
+
+            # Clean up stale temp file from previous failed attempt
+            if temp_path.exists():
+                try:
+                    temp_path.unlink()
+                except OSError:
+                    # If we can't delete it, another process likely has it locked
+                    logger.warning(
+                        "Cannot remove stale temp file - another poller instance may be running",
+                        extra={"temp_path": str(temp_path)},
+                    )
+                    return False
+
             with open(temp_path, "w") as f:
                 json.dump(asdict(self), f, indent=2)
 
