@@ -6,6 +6,7 @@ Usage:
     python -m kafka_pipeline
 
     # Run specific xact worker
+    python -m kafka_pipeline --worker xact-poller
     python -m kafka_pipeline --worker xact-event-ingester
     python -m kafka_pipeline --worker xact-local-ingester
     python -m kafka_pipeline --worker xact-delta-writer
@@ -68,8 +69,7 @@ from core.logging.setup import get_logger, setup_logging, setup_multi_worker_log
 
 # Worker stages for multi-worker logging
 WORKER_STAGES = [
-    "eventhouse-poller",
-    "xact-event-ingester", "xact-local-ingester", "xact-delta-writer", "xact-delta-retry", "xact-download", "xact-upload", "xact-result-processor",
+    "xact-poller", "xact-event-ingester", "xact-local-ingester", "xact-delta-writer", "xact-delta-retry", "xact-download", "xact-upload", "xact-result-processor",
     "claimx-poller", "claimx-ingester", "claimx-enricher", "claimx-downloader", "claimx-uploader", "claimx-result-processor"
 ]
 
@@ -156,7 +156,7 @@ Examples:
     parser.add_argument(
         "--worker",
         choices=[
-            "xact-event-ingester", "xact-local-ingester", "xact-delta-writer", "xact-delta-retry", "xact-download", "xact-upload", "xact-result-processor",
+            "xact-poller", "xact-event-ingester", "xact-local-ingester", "xact-delta-writer", "xact-delta-retry", "xact-download", "xact-upload", "xact-result-processor",
             "claimx-poller", "claimx-ingester", "claimx-enricher", "claimx-downloader", "claimx-uploader", "claimx-result-processor",
             "all"
         ],
@@ -261,7 +261,7 @@ async def run_event_ingester(
 async def run_eventhouse_poller(pipeline_config):
     """Run the Eventhouse Poller.
 
-    Polls Microsoft Fabric Eventhouse for events and produces download tasks to local Kafka.
+    Polls Microsoft Fabric Eventhouse for events and produces to events.raw topic.
 
     Supports graceful shutdown: when shutdown event is set, the poller
     finishes its current poll cycle before exiting.
@@ -271,8 +271,8 @@ async def run_eventhouse_poller(pipeline_config):
     from kafka_pipeline.common.eventhouse.kql_client import EventhouseConfig
     from kafka_pipeline.common.eventhouse.poller import KQLEventPoller, PollerConfig
 
-    set_log_context(stage="eventhouse-poller")
-    logger.info("Starting Eventhouse Poller...")
+    set_log_context(stage="xact-poller")
+    logger.info("Starting xact Eventhouse Poller...")
 
     eventhouse_source = pipeline_config.xact_eventhouse
     if not eventhouse_source:
@@ -1202,11 +1202,24 @@ def main():
     setup_signal_handlers(loop)
 
     try:
-        if args.worker == "xact-event-ingester":
-            # Event ingester uses Event Hub or Eventhouse based on config
+        if args.worker == "xact-poller":
+            # Eventhouse poller - polls Eventhouse and produces to events.raw topic
+            if pipeline_config.event_source != EventSourceType.EVENTHOUSE:
+                logger.error("xact-poller requires EVENT_SOURCE=eventhouse")
+                sys.exit(1)
+            loop.run_until_complete(run_eventhouse_poller(pipeline_config))
+        elif args.worker == "xact-event-ingester":
+            # Event ingester - consumes events and produces download tasks
             if pipeline_config.event_source == EventSourceType.EVENTHOUSE:
-                loop.run_until_complete(run_eventhouse_poller(pipeline_config))
+                # Eventhouse mode: consume from local events.raw topic
+                loop.run_until_complete(
+                    run_local_event_ingester(
+                        local_kafka_config,
+                        domain=pipeline_config.domain,
+                    )
+                )
             else:
+                # EventHub mode: consume from Event Hub
                 loop.run_until_complete(
                     run_event_ingester(
                         eventhub_config,
