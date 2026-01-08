@@ -6,7 +6,7 @@ Enrichment tasks trigger API calls, download tasks handle media file downloads.
 """
 
 from datetime import datetime
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, Field, field_serializer, field_validator
 
@@ -81,6 +81,10 @@ class ClaimXEnrichmentTask(BaseModel):
     master_file_name: Optional[str] = Field(
         default=None,
         description="Master file name (for MFN events)"
+    )
+    metadata: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Metadata for enrichment tracking (error context, retry info, etc.)"
     )
 
     @field_validator('event_id', 'event_type', 'project_id')
