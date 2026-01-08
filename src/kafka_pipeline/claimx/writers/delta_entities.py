@@ -372,8 +372,16 @@ class ClaimXEntityWriter:
                     # Column is all nulls - cast to expected type
                     cast_exprs.append(pl.col(col_name).cast(col_type))
                 elif current_dtype != col_type:
+                    # Handle string -> datetime conversion (ISO format timestamps)
+                    if col_type == pl.Datetime("us", "UTC") and current_dtype == pl.Utf8:
+                        # Parse ISO format string to datetime
+                        cast_exprs.append(
+                            pl.col(col_name)
+                            .str.to_datetime(format="%Y-%m-%dT%H:%M:%S%.fZ", time_zone="UTC", strict=False)
+                            .alias(col_name)
+                        )
                     # Handle datetime -> timestamp conversion
-                    if col_type == pl.Datetime("us", "UTC") and current_dtype in (
+                    elif col_type == pl.Datetime("us", "UTC") and current_dtype in (
                         pl.Datetime,
                         pl.Datetime("us"),
                         pl.Datetime("us", "UTC"),
