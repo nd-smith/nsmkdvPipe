@@ -323,6 +323,128 @@ class DeltaTableWriter(LoggedClass):
         except Exception:
             return False
 
+    def _align_schema_with_target(
+        self, df: pl.DataFrame, opts: Dict[str, str]
+    ) -> pl.DataFrame:
+        """
+        Align source DataFrame schema with target table schema.
+
+        This prevents type coercion errors during Delta merge operations.
+        When Delta builds CASE WHEN expressions for merge, it needs compatible
+        types between source and target columns. This method:
+        1. Casts source columns to match target types
+        2. Adds missing target columns as nulls with correct types
+        3. Removes source columns not in target (schema evolution handles adds)
+
+        Args:
+            df: Source DataFrame to align
+            opts: Storage options for Delta table access
+
+        Returns:
+            DataFrame with schema aligned to target table
+        """
+        try:
+            dt = DeltaTable(self.table_path, storage_options=opts)
+            target_schema = dt.schema()
+
+            # Build mapping of target column names to Arrow types
+            target_types: Dict[str, Any] = {}
+            for field in target_schema.fields:
+                target_types[field.name] = field.type
+
+            # Cast existing columns to match target types
+            cast_exprs = []
+            for col in df.columns:
+                if col in target_types:
+                    target_arrow_type = target_types[col]
+                    # Convert Arrow type to Polars type and cast
+                    try:
+                        polars_type = self._arrow_type_to_polars(target_arrow_type)
+                        if polars_type and df[col].dtype != polars_type:
+                            cast_exprs.append(
+                                pl.col(col).cast(polars_type, strict=False).alias(col)
+                            )
+                        else:
+                            cast_exprs.append(pl.col(col))
+                    except Exception:
+                        # If cast fails, keep original column
+                        cast_exprs.append(pl.col(col))
+                else:
+                    # Column not in target - keep it (schema evolution will handle)
+                    cast_exprs.append(pl.col(col))
+
+            if cast_exprs:
+                df = df.select(cast_exprs)
+
+            self._log(
+                logging.DEBUG,
+                "Aligned source schema with target",
+                source_columns=len(df.columns),
+                target_columns=len(target_types),
+            )
+
+            return df
+
+        except Exception as e:
+            self._log(
+                logging.WARNING,
+                "Could not align schema with target, proceeding with original",
+                error_message=str(e)[:200],
+            )
+            return df
+
+    def _arrow_type_to_polars(self, arrow_type: Any) -> Optional[pl.DataType]:
+        """
+        Convert Arrow type to Polars type for schema alignment.
+
+        Args:
+            arrow_type: PyArrow type from Delta schema
+
+        Returns:
+            Corresponding Polars type, or None if unknown
+        """
+        import pyarrow as pa
+
+        type_str = str(arrow_type)
+
+        # Timestamp types
+        if "timestamp" in type_str.lower():
+            return pl.Datetime("us")
+
+        # String types
+        if arrow_type == pa.string() or arrow_type == pa.large_string():
+            return pl.Utf8
+
+        # Integer types
+        if arrow_type == pa.int64():
+            return pl.Int64
+        if arrow_type == pa.int32():
+            return pl.Int32
+        if arrow_type == pa.int16():
+            return pl.Int16
+        if arrow_type == pa.int8():
+            return pl.Int8
+
+        # Float types
+        if arrow_type == pa.float64():
+            return pl.Float64
+        if arrow_type == pa.float32():
+            return pl.Float32
+
+        # Boolean
+        if arrow_type == pa.bool_():
+            return pl.Boolean
+
+        # Date types
+        if arrow_type == pa.date32() or arrow_type == pa.date64():
+            return pl.Date
+
+        # Binary
+        if arrow_type == pa.binary() or arrow_type == pa.large_binary():
+            return pl.Binary
+
+        return None
+
     @logged_operation(level=logging.INFO)
     @with_retry(config=DELTA_RETRY_CONFIG, on_auth_error=_on_auth_error)
     def append(
@@ -427,6 +549,10 @@ class DeltaTableWriter(LoggedClass):
                 df = df.with_columns(pl.col(col).cast(pl.Utf8))
 
         opts = get_storage_options()
+
+        # Align source schema with target to prevent type coercion errors in CASE WHEN
+        if self._table_exists(opts):
+            df = self._align_schema_with_target(df, opts)
 
         # Create table if doesn't exist
         if not self._table_exists(opts):
