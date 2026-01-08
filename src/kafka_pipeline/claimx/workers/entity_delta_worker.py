@@ -173,31 +173,58 @@ class ClaimXEntityDeltaWorker(BaseKafkaConsumer):
             
     async def _flush_batch(self) -> None:
         """Write accumulated batch to Delta Lake."""
+        batch_size = 0
         async with self._batch_lock:
             if not self._batch:
                 return
-            
+
+            batch_size = len(self._batch)
+
             # Merge all EntityRowsMessages into one
             merged_rows = EntityRowsMessage()
             for msg in self._batch:
                 merged_rows.merge(msg)
-                
+
             batch_to_proces = self._batch.copy() # Keep for error handling if needed
             self._batch.clear()
 
         if merged_rows.is_empty():
+            logger.warning(
+                "Batch contained no entity data to write - messages may have empty entity arrays",
+                extra={
+                    "messages_in_batch": batch_size,
+                    "entity_row_count": merged_rows.row_count(),
+                },
+            )
             return
 
         try:
+            logger.info(
+                "Flushing entity batch to Delta tables",
+                extra={
+                    "messages_in_batch": batch_size,
+                    "entity_row_count": merged_rows.row_count(),
+                },
+            )
+
             counts = await self.entity_writer.write_all(merged_rows)
-            
+
             total_rows = sum(counts.values())
             self._batches_written += 1
             self._records_succeeded += total_rows
-            
+
+            logger.info(
+                "Entity batch written to Delta tables",
+                extra={
+                    "tables_written": list(counts.keys()),
+                    "total_rows": total_rows,
+                    "batches_written": self._batches_written,
+                },
+            )
+
             # Commit offsets if successful
             await self.consumer.commit()
-            
+
             # Metrics
             for table_name, row_count in counts.items():
                 record_delta_write(
