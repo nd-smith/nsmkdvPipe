@@ -932,7 +932,7 @@ class ClaimXEnrichmentWorker:
                 task_assignment_id=task.task_assignment_id,
                 video_collaboration_id=task.video_collaboration_id,
                 master_file_name=task.master_file_name,
-                event_date=task.created_at.isoformat(),
+                ingested_at=task.created_at,
             )
             for task in tasks
         ]
