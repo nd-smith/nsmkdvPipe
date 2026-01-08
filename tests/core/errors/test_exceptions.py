@@ -409,6 +409,13 @@ class TestClassifyException:
         err = NotFoundError("Not found")
         assert classify_exception(err) == ErrorCategory.PERMANENT
 
+    def test_delta_commit_errors(self):
+        """Detects Delta Lake commit conflicts as transient."""
+        assert classify_exception(Exception("Failed to commit transaction: 15")) == ErrorCategory.TRANSIENT
+        assert classify_exception(Exception("transaction conflict")) == ErrorCategory.TRANSIENT
+        assert classify_exception(Exception("version conflict")) == ErrorCategory.TRANSIENT
+        assert classify_exception(Exception("concurrent modification")) == ErrorCategory.TRANSIENT
+
     def test_connection_errors(self):
         """Detects connection errors."""
         assert classify_exception(Exception("connection refused")) == ErrorCategory.TRANSIENT

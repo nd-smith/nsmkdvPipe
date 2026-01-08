@@ -259,6 +259,18 @@ def classify_exception(exc: Exception) -> ErrorCategory:
     exc_type = type(exc).__name__.lower()
     exc_str = str(exc).lower()
 
+    # Delta Lake commit conflicts (delta-rs error code 15 = version conflict)
+    # These are transient and should be retried with backoff
+    delta_conflict_markers = (
+        "commitfailederror",
+        "failed to commit transaction",
+        "transaction conflict",
+        "version conflict",
+        "concurrent modification",
+    )
+    if any(m in exc_type or m in exc_str for m in delta_conflict_markers):
+        return ErrorCategory.TRANSIENT
+
     # Connection errors
     connection_markers = (
         "connectionerror",
