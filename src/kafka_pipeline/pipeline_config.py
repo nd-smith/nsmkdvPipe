@@ -186,6 +186,7 @@ class LocalKafkaConfig:
         config_path = config_path or DEFAULT_CONFIG_PATH
 
         # Load from config.yaml
+        yaml_data: Dict[str, Any] = {}
         kafka_data: Dict[str, Any] = {}
         if config_path.exists():
             with open(config_path, "r") as f:
