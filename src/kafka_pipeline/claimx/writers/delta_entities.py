@@ -217,10 +217,11 @@ class ClaimXEntityWriter:
                 counts["video_collab"] = result
 
         self.logger.info(
-            "Entity tables write summary",
+            f"Write cycle complete: {sum(counts.values())} total rows across {len(counts)} tables",
             extra={
                 "tables_written": counts,
                 "total_rows": sum(counts.values()),
+                "table_count": len(counts),
             },
         )
 
@@ -244,8 +245,8 @@ class ClaimXEntityWriter:
         if not rows:
             return 0
 
-        self.logger.info(
-            f"Writing {table_name} entity table",
+        self.logger.debug(
+            f"Writing {len(rows)} rows to {table_name}",
             extra={
                 "table_name": table_name,
                 "row_count": len(rows),
@@ -307,10 +308,10 @@ class ClaimXEntityWriter:
 
             if success:
                 self.logger.info(
-                    f"{table_name} table write complete",
+                    f"Wrote {rows_affected} rows to {table_name}",
                     extra={
                         "table_name": table_name,
-                        "rows_affected": rows_affected,
+                        "rows_written": rows_affected,
                     },
                 )
                 return rows_affected
