@@ -79,7 +79,10 @@ class PollerCheckpoint:
 
         Uses atomic write pattern: write to temp file, then rename.
         Handles stale temp files from previous failed attempts.
+        On Windows, includes retry logic for locked files.
         """
+        import platform
+
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             self.updated_at = datetime.now(timezone.utc).isoformat()
@@ -101,7 +104,32 @@ class PollerCheckpoint:
             with open(temp_path, "w") as f:
                 json.dump(asdict(self), f, indent=2)
 
-            os.replace(temp_path, path)
+            # Windows-compatible atomic replace with retry
+            max_retries = 3
+            retry_delay = 0.1  # 100ms between retries
+
+            for attempt in range(max_retries):
+                try:
+                    os.replace(temp_path, path)
+                    return True
+                except OSError as replace_error:
+                    # On Windows, os.replace can fail if target is locked
+                    if platform.system() != "Windows" or attempt == max_retries - 1:
+                        raise
+
+                    # Windows fallback: try explicit delete then rename
+                    try:
+                        if path.exists():
+                            path.unlink()
+                        temp_path.rename(path)
+                        return True
+                    except OSError:
+                        # File may be temporarily locked (antivirus, indexer, etc.)
+                        # Wait and retry
+                        time.sleep(retry_delay)
+                        retry_delay *= 2  # Exponential backoff
+                        continue
+
             return True
 
         except (OSError, IOError) as e:
