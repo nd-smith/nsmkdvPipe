@@ -13,7 +13,7 @@ Writes ClaimX entity data to 7 separate Delta tables:
 Uses merge (upsert) operations with appropriate primary keys for idempotency.
 """
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import polars as pl
@@ -21,6 +21,28 @@ import polars as pl
 from core.logging.setup import get_logger
 from kafka_pipeline.claimx.schemas.entities import EntityRowsMessage
 from kafka_pipeline.common.writers.base import BaseDeltaWriter
+
+
+# Schema definitions for contacts table to ensure proper type casting
+# This prevents null type inference when all values in a column are None
+CONTACTS_SCHEMA = {
+    "project_id": pl.Utf8,
+    "contact_email": pl.Utf8,
+    "contact_type": pl.Utf8,
+    "first_name": pl.Utf8,
+    "last_name": pl.Utf8,
+    "phone_number": pl.Utf8,
+    "phone_country_code": pl.Int64,
+    "is_primary_contact": pl.Boolean,
+    "master_file_name": pl.Utf8,
+    "task_assignment_id": pl.Int32,
+    "video_collaboration_id": pl.Utf8,
+    "source_event_id": pl.Utf8,
+    "created_at": pl.Datetime("us", "UTC"),
+    "updated_at": pl.Utf8,
+    "created_date": pl.Date,
+    "last_enriched_at": pl.Datetime("us", "UTC"),
+}
 
 
 # Merge keys for each entity table (from verisk_pipeline)
@@ -257,6 +279,10 @@ class ClaimXEntityWriter:
             if "updated_at" not in df.columns:
                 df = df.with_columns(pl.lit(now).alias("updated_at"))
 
+            # Apply schema casting for contacts table to avoid null type inference
+            if table_name == "contacts":
+                df = self._cast_contacts_schema(df, now)
+
             # Contacts: append-only (new contacts from new projects/events)
             # Media: append-only (new media from new events)
             # Other tables: merge (upsert)
@@ -309,6 +335,64 @@ class ClaimXEntityWriter:
                 exc_info=True,
             )
             return None
+
+    def _cast_contacts_schema(
+        self, df: pl.DataFrame, now: datetime
+    ) -> pl.DataFrame:
+        """
+        Cast contacts DataFrame columns to match Delta table schema.
+
+        Ensures proper type casting to avoid null type inference when
+        columns contain only None values. Also adds missing required columns.
+
+        Args:
+            df: Input DataFrame with contact rows
+            now: Current timestamp for last_enriched_at
+
+        Returns:
+            DataFrame with properly typed columns
+        """
+        # Add last_enriched_at if not present (required by table schema)
+        if "last_enriched_at" not in df.columns:
+            df = df.with_columns(pl.lit(now).alias("last_enriched_at"))
+
+        # Convert updated_at to string if it's a datetime (table expects string)
+        if "updated_at" in df.columns and df["updated_at"].dtype != pl.Utf8:
+            df = df.with_columns(
+                pl.col("updated_at").cast(pl.Utf8)
+            )
+
+        # Cast columns to their expected types to avoid null type inference
+        cast_exprs = []
+        for col_name, col_type in CONTACTS_SCHEMA.items():
+            if col_name in df.columns:
+                current_dtype = df[col_name].dtype
+                # Only cast if needed (skip if already correct type or if it's a datetime)
+                if current_dtype == pl.Null:
+                    # Column is all nulls - cast to expected type
+                    cast_exprs.append(pl.col(col_name).cast(col_type))
+                elif current_dtype != col_type:
+                    # Handle datetime -> timestamp conversion
+                    if col_type == pl.Datetime("us", "UTC") and current_dtype in (
+                        pl.Datetime,
+                        pl.Datetime("us"),
+                        pl.Datetime("us", "UTC"),
+                    ):
+                        # Already a datetime, just ensure proper timezone
+                        if current_dtype != pl.Datetime("us", "UTC"):
+                            cast_exprs.append(
+                                pl.col(col_name).dt.replace_time_zone("UTC").alias(col_name)
+                            )
+                    elif col_type == pl.Date and current_dtype == pl.Date:
+                        # Already date type
+                        pass
+                    else:
+                        cast_exprs.append(pl.col(col_name).cast(col_type))
+
+        if cast_exprs:
+            df = df.with_columns(cast_exprs)
+
+        return df
 
 
 __all__ = ["ClaimXEntityWriter", "MERGE_KEYS"]

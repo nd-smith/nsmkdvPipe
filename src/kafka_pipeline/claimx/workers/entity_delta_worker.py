@@ -223,7 +223,7 @@ class ClaimXEntityDeltaWorker(BaseKafkaConsumer):
             )
 
             # Commit offsets if successful
-            await self.consumer.commit()
+            await self.commit()
 
             # Metrics
             for table_name, row_count in counts.items():
