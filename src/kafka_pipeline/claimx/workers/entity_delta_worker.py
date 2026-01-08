@@ -82,6 +82,7 @@ class ClaimXEntityDeltaWorker(BaseKafkaConsumer):
         # Get processing config
         processing_config = config.get_worker_config(domain, "entity_delta_writer", "processing")
         self.batch_size = processing_config.get("batch_size", 100)
+        self.batch_timeout_seconds = processing_config.get("batch_timeout_seconds", 30.0)
         self.max_retries = processing_config.get("max_retries", 3)
         
         # Retry config
@@ -92,7 +93,8 @@ class ClaimXEntityDeltaWorker(BaseKafkaConsumer):
         # Batch state
         self._batch: List[EntityRowsMessage] = []
         self._batch_lock = asyncio.Lock()
-        
+        self._batch_timer: Optional[asyncio.Task] = None
+
         # Metrics
         self._batches_written = 0
         self._records_succeeded = 0
@@ -106,7 +108,7 @@ class ClaimXEntityDeltaWorker(BaseKafkaConsumer):
             worker_name="entity_delta_writer",
         )
         await self.producer.start()
-        
+
         # Initialize retry handler
         self.retry_handler = DeltaRetryHandler(
             config=self.producer_config,
@@ -116,16 +118,24 @@ class ClaimXEntityDeltaWorker(BaseKafkaConsumer):
             retry_topic_prefix=self._retry_topic_prefix,
             dlq_topic=self._dlq_topic,
         )
-        
+
+        # Start batch timer for periodic flushing
+        self._reset_batch_timer()
+
         await super().start()
 
     async def stop(self) -> None:
         """Stop the worker."""
+        # Cancel batch timer
+        if self._batch_timer:
+            self._batch_timer.cancel()
+            self._batch_timer = None
+
         # Flush remaining batch
         await self._flush_batch()
-        
+
         await super().stop()
-        
+
         if self.producer:
             await self.producer.stop()
 
@@ -136,12 +146,18 @@ class ClaimXEntityDeltaWorker(BaseKafkaConsumer):
         try:
             message_data = json.loads(record.value.decode("utf-8"))
             entity_rows = EntityRowsMessage.model_validate(message_data)
-            
+
+            # Add to batch and check if flush needed
+            should_flush = False
             async with self._batch_lock:
                 self._batch.append(entity_rows)
                 if len(self._batch) >= self.batch_size:
-                    await self._flush_batch()
-                    
+                    should_flush = True
+
+            if should_flush:
+                await self._flush_batch()
+                self._reset_batch_timer()
+
         except Exception as e:
             logger.error(
                 "Failed to parse EntityRowsMessage",
@@ -208,4 +224,29 @@ class ClaimXEntityDeltaWorker(BaseKafkaConsumer):
              
             # Ideal: Replicate DeltaRetryHandler logic from events worker
             pass
+
+    async def _periodic_flush(self) -> None:
+        """Timer callback to periodically flush batch regardless of size."""
+        try:
+            while True:
+                await asyncio.sleep(self.batch_timeout_seconds)
+                # Check if there's anything to flush (without holding lock during write)
+                should_flush = False
+                async with self._batch_lock:
+                    if self._batch:
+                        should_flush = True
+                        logger.debug(
+                            "Flushing batch on timeout",
+                            extra={"batch_size": len(self._batch)},
+                        )
+                if should_flush:
+                    await self._flush_batch()
+        except asyncio.CancelledError:
+            pass  # Expected on shutdown
+
+    def _reset_batch_timer(self) -> None:
+        """Reset the batch flush timer."""
+        if self._batch_timer:
+            self._batch_timer.cancel()
+        self._batch_timer = asyncio.create_task(self._periodic_flush())
 
