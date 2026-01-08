@@ -63,7 +63,7 @@ class ClaimXEnrichmentWorker:
     - Event routing via handler registry
     - Concurrent API calls with rate limiting (via ClaimXApiClient)
     - Manual consumer control for graceful shutdown
-    - Batch processing by handler type
+    - Single-task processing (no batching - delta writer handles batching)
     - Entity data writes to 7 Delta tables
     - Download task generation for media files
     - Graceful shutdown with background task tracking
@@ -115,8 +115,8 @@ class ClaimXEnrichmentWorker:
 
         # Get worker-specific processing config
         processing_config = config.get_worker_config(domain, "enrichment_worker", "processing")
-        self.batch_size = processing_config.get("batch_size", 100)
-        self.batch_timeout_seconds = processing_config.get("batch_timeout_seconds", 5.0)
+        # max_records for getmany polling (not for batching - delta writer handles batching)
+        self.max_poll_records = processing_config.get("max_poll_records", 100)
 
         # Retry configuration
         self._retry_delays = config.get_retry_delays(domain)
@@ -148,11 +148,6 @@ class ClaimXEnrichmentWorker:
         self._pending_tasks: Set[asyncio.Task] = set()
         self._task_counter = 0
 
-        # Batch accumulation
-        self._batch: List[ClaimXEnrichmentTask] = []
-        self._batch_lock = asyncio.Lock()
-        self._batch_timer: Optional[asyncio.Task] = None
-
         # Helper method for creating tasks
         self._consume_task: Optional[asyncio.Task] = None
         self._running = False
@@ -176,8 +171,7 @@ class ClaimXEnrichmentWorker:
                 "enrichment_topic": self.enrichment_topic,
                 "download_topic": self.download_topic,
                 "delta_writes_enabled": self.enable_delta_writes,
-                "batch_size": self.batch_size,
-                "batch_timeout_seconds": self.batch_timeout_seconds,
+                "max_poll_records": self.max_poll_records,
                 "retry_delays": self._retry_delays,
                 "max_retries": self._max_retries,
             },
@@ -282,9 +276,8 @@ class ClaimXEnrichmentWorker:
         """
         Stop the ClaimX enrichment worker.
 
-        Processes any remaining batch, waits for pending background tasks
-        (with timeout), then gracefully shuts down consumer, producer, and
-        API client.
+        Waits for pending background tasks (with timeout), then gracefully
+        shuts down consumer, producer, and API client.
         """
         logger.info("Stopping ClaimXEnrichmentWorker")
         self._running = False
@@ -301,24 +294,6 @@ class ClaimXEnrichmentWorker:
             self._cycle_task.cancel()
             try:
                 await self._cycle_task
-            except asyncio.CancelledError:
-                pass
-
-        # Process any remaining batch
-        async with self._batch_lock:
-            if self._batch:
-                logger.info(
-                    "Processing final batch before shutdown",
-                    extra={"batch_size": len(self._batch)},
-                )
-                await self._process_batch(self._batch.copy())
-                self._batch.clear()
-
-        # Cancel batch timer if running
-        if self._batch_timer and not self._batch_timer.done():
-            self._batch_timer.cancel()
-            try:
-                await self._batch_timer
             except asyncio.CancelledError:
                 pass
 
@@ -346,17 +321,12 @@ class ClaimXEnrichmentWorker:
     async def request_shutdown(self) -> None:
         """
         Request graceful shutdown.
-        
+
         Signals the worker to stop accepting new messages but allows
         in-progress tasks to complete.
         """
         logger.info("Graceful shutdown requested")
         self._running = False
-        
-        # If we have a batch timer waiting, cancel it to speed up shutdown
-        # (The loop will exit, then stop() will process remaining batch immediately)
-        if self._batch_timer and not self._batch_timer.done():
-            self._batch_timer.cancel()
 
     def _create_consumer(self) -> AIOKafkaConsumer:
         """Create configured AIOKafkaConsumer instance."""
@@ -396,7 +366,7 @@ class ClaimXEnrichmentWorker:
                 # timeout ensures we check _running periodically
                 msg_dict = await self.consumer.getmany(
                     timeout_ms=1000,
-                    max_records=self.batch_size
+                    max_records=self.max_poll_records
                 )
                 
                 if not msg_dict:
@@ -409,45 +379,9 @@ class ClaimXEnrichmentWorker:
                     for msg in messages:
                         await self._handle_enrichment_task(msg)
                         
-                # Commit offsets after processing batch (accumulated in _handle_enrichment_task handlers)
-                # Note: _handle_enrichment_task spawns tasks or adds to internal batch.
-                # If it adds to internal batch, that batch might not be processed yet.
-                # We should only commit if we are sure data is safe.
-                # BUT BaseKafkaConsumer committed after message_handler returned.
-                # _handle_enrichment_task adds to self._batch.
-                # If we commit here, and then crash before self._batch is flushed to Delta/Kafka, we lose data.
-                # CORRECTNESS FIX: We should NOT commit here if _process_batch handles the "real" work.
-                # _process_batch writes to Delta and produces tasks.
-                # We should commit AFTER _process_batch succeeds.
-                # HOWEVER, _process_batch is async and decoupled via batch_timer or batch_size trigger.
-                # This is a bit complex.
-                # 
-                # Strategy:
-                # 1. _handle_enrichment_task uses self._batch.
-                # 2. _process_batch does the work.
-                # 3. We can only commit offsets corresponding to processed tasks.
-                # 
-                # Simplification for now:
-                # Replicate previous behavior. BaseKafkaConsumer loop:
-                # async for msg in consumer:
-                #    await handler(msg)
-                #    if enable_message_commit: await consumer.commit()
-                # 
-                # _handle_enrichment_task was:
-                # async def _handle...:
-                #    add to batch
-                #    if batch full: process batch
-                # 
-                # So in BaseKafkaConsumer, if batch was NOT full, it committed the offset anyway!
-                # This implies "at most once" or potentially lost data if crash happens before batch flush.
-                # BUT BaseKafkaConsumer does manual commit capability?
-                # No, BaseKafkaConsumer defaults to `enable_message_commit=True`.
-                # So the original code WAS committing effectively immediately after adding to memory buffer.
-                # This is technically "unsafe" but it's the existing behavior I am refactoring.
-                # I will preserve this behavior for now to minimize regression risk, 
-                # but "Graceful Shutdown" ensures we flush that memory buffer.
-                #
-                # So, I will commit here.
+                # Commit offsets after processing all messages
+                # Each task is processed immediately (no batching at enricher level).
+                # Entity rows are produced to Kafka where the delta writer batches them.
                 await self.consumer.commit()
                 
                 # Update metrics
@@ -606,8 +540,8 @@ class ClaimXEnrichmentWorker:
         """
         Process a single enrichment task message from Kafka.
 
-        Accumulates tasks into a batch and processes when batch is full
-        or timeout expires.
+        Each task is processed immediately (no batching at enricher level).
+        The delta writer handles batching for efficient writes.
 
         Args:
             record: ConsumerRecord containing ClaimXEnrichmentTask JSON
@@ -633,7 +567,7 @@ class ClaimXEnrichmentWorker:
         self._records_processed += 1
 
         logger.debug(
-            "Received enrichment task",
+            "Processing enrichment task",
             extra={
                 "event_id": task.event_id,
                 "event_type": task.event_type,
@@ -642,41 +576,125 @@ class ClaimXEnrichmentWorker:
             },
         )
 
-        # Add to batch
-        async with self._batch_lock:
-            self._batch.append(task)
+        # Process the task immediately
+        await self._process_single_task(task)
 
-            # Start batch timer if this is the first task
-            if len(self._batch) == 1 and not (
-                self._batch_timer and not self._batch_timer.done()
-            ):
-                self._batch_timer = self._create_tracked_task(
-                    self._batch_timeout(),
-                    task_name="batch_timeout",
+    async def _process_single_task(self, task: ClaimXEnrichmentTask) -> None:
+        """
+        Process a single enrichment task.
+
+        Calls the appropriate handler, produces entity rows to Kafka,
+        and creates download tasks for media files.
+
+        Args:
+            task: The enrichment task to process
+        """
+        start_time = datetime.now(timezone.utc)
+
+        # Pre-flight check: Ensure the project exists in Delta table
+        if task.project_id:
+            await self._ensure_projects_exist([task.project_id])
+
+        # Convert task to event for handler processing
+        event = ClaimXEventMessage(
+            event_id=task.event_id,
+            event_type=task.event_type,
+            project_id=task.project_id,
+            media_id=task.media_id,
+            task_assignment_id=task.task_assignment_id,
+            video_collaboration_id=task.video_collaboration_id,
+            master_file_name=task.master_file_name,
+            ingested_at=task.created_at,
+        )
+
+        # Find handler for this event
+        handler_class = self.handler_registry.get_handler(event)
+        if not handler_class:
+            logger.warning(
+                "No handler found for event",
+                extra={
+                    "event_id": event.event_id,
+                    "event_type": event.event_type,
+                },
+            )
+            self._records_skipped += 1
+            return
+
+        # Create handler instance
+        handler = handler_class(self.api_client)
+
+        try:
+            # Process event with handler
+            handler_result = await handler.process([event])
+
+            entity_rows = handler_result.rows
+            self._records_succeeded += 1
+
+            # Produce entity rows to Kafka (delta writer will batch)
+            if self.enable_delta_writes and not entity_rows.is_empty():
+                self._create_tracked_task(
+                    self._produce_entity_rows(entity_rows, [task]),
+                    task_name="produce_entity_rows",
+                    context={
+                        "event_id": task.event_id,
+                        "row_count": entity_rows.row_count(),
+                    },
                 )
 
-            # Process batch if full
-            if len(self._batch) >= self.batch_size:
-                batch_to_process = self._batch.copy()
-                self._batch.clear()
+            # Generate and produce download tasks from media rows
+            if entity_rows.media:
+                download_tasks = self._create_download_tasks_from_media(entity_rows.media)
+                if download_tasks:
+                    await self._produce_download_tasks(download_tasks)
 
-                # Cancel timer
-                if self._batch_timer and not self._batch_timer.done():
-                    self._batch_timer.cancel()
-                    try:
-                        await self._batch_timer
-                    except asyncio.CancelledError:
-                        pass
+            # Log completion at debug level (individual tasks)
+            elapsed_ms = (datetime.now(timezone.utc) - start_time).total_seconds() * 1000
+            logger.debug(
+                "Enrichment task complete",
+                extra={
+                    "event_id": task.event_id,
+                    "event_type": task.event_type,
+                    "handler": handler_class.__name__,
+                    "entity_rows": entity_rows.row_count(),
+                    "api_calls": handler_result.api_calls,
+                    "duration_ms": round(elapsed_ms, 2),
+                },
+            )
 
-                # Process batch
-                await self._process_batch(batch_to_process)
+        except ClaimXApiError as e:
+            logger.error(
+                "Handler failed with API error",
+                extra={
+                    "handler": handler_class.__name__,
+                    "event_id": task.event_id,
+                    "error_category": e.category.value,
+                    "error": str(e)[:200],
+                },
+                exc_info=True,
+            )
+            await self._handle_enrichment_failure(task, e, e.category)
+
+        except Exception as e:
+            error_category = ErrorCategory.UNKNOWN
+            logger.error(
+                "Handler failed with unexpected error",
+                extra={
+                    "handler": handler_class.__name__,
+                    "event_id": task.event_id,
+                    "error_type": type(e).__name__,
+                    "error_category": error_category.value,
+                    "error": str(e)[:200],
+                },
+                exc_info=True,
+            )
+            await self._handle_enrichment_failure(task, e, error_category)
 
     async def _periodic_cycle_output(self) -> None:
         """
         Background task for periodic cycle logging.
         """
         logger.info(
-            "Cycle 0: processed=0 (succeeded=0, failed=0, skipped=0), pending=0 "
+            "Cycle 0: processed=0 (succeeded=0, failed=0, skipped=0) "
             "[cycle output every %ds]",
             30,
         )
@@ -691,52 +709,23 @@ class ClaimXEnrichmentWorker:
                 if cycle_elapsed >= 30:  # 30 matches standard interval
                     self._cycle_count += 1
                     self._last_cycle_log = time.monotonic()
-                    
-                    async with self._batch_lock:
-                        pending_count = len(self._batch)
 
                     logger.info(
                         f"Cycle {self._cycle_count}: processed={self._records_processed} "
                         f"(succeeded={self._records_succeeded}, failed={self._records_failed}, "
-                        f"skipped={self._records_skipped}), pending={pending_count}",
+                        f"skipped={self._records_skipped})",
                         extra={
                             "cycle": self._cycle_count,
                             "records_processed": self._records_processed,
                             "records_succeeded": self._records_succeeded,
                             "records_failed": self._records_failed,
                             "records_skipped": self._records_skipped,
-                            "pending_batch_size": pending_count,
                             "cycle_interval_seconds": 30,
                         },
                     )
 
         except asyncio.CancelledError:
             logger.debug("Periodic cycle output task cancelled")
-            raise
-
-    async def _batch_timeout(self) -> None:
-        """
-        Timer for batch processing timeout.
-
-        Processes the current batch when timeout expires.
-        """
-        try:
-            await asyncio.sleep(self.batch_timeout_seconds)
-
-            async with self._batch_lock:
-                if self._batch:
-                    batch_to_process = self._batch.copy()
-                    self._batch.clear()
-
-                    logger.debug(
-                        "Batch timeout expired, processing batch",
-                        extra={"batch_size": len(batch_to_process)},
-                    )
-
-                    await self._process_batch(batch_to_process)
-
-        except asyncio.CancelledError:
-            logger.debug("Batch timeout cancelled")
             raise
 
     async def _ensure_projects_exist(
@@ -894,165 +883,6 @@ class ClaimXEnrichmentWorker:
                 },
                 exc_info=True,
             )
-
-    async def _process_batch(self, tasks: List[ClaimXEnrichmentTask]) -> None:
-        """
-        Process a batch of enrichment tasks.
-
-        Routes tasks to handlers, collects entity rows, writes to Delta,
-        and produces download tasks.
-
-        Args:
-            tasks: List of enrichment tasks to process
-        """
-        if not tasks:
-            return
-
-        logger.info(
-            "Processing enrichment batch",
-            extra={"batch_size": len(tasks)},
-        )
-
-        start_time = datetime.now(timezone.utc)
-
-        # Pre-flight check: Ensure all referenced projects exist in Delta table
-        # This minimizes API calls (batch check vs per-event) and prevents
-        # referential integrity issues when writing child entities
-        project_ids = [task.project_id for task in tasks if task.project_id]
-        if project_ids:
-            await self._ensure_projects_exist(project_ids)
-
-        # Convert tasks to events for handler processing
-        events = [
-            ClaimXEventMessage(
-                event_id=task.event_id,
-                event_type=task.event_type,
-                project_id=task.project_id,
-                media_id=task.media_id,
-                task_assignment_id=task.task_assignment_id,
-                video_collaboration_id=task.video_collaboration_id,
-                master_file_name=task.master_file_name,
-                ingested_at=task.created_at,
-            )
-            for task in tasks
-        ]
-
-        # Group events by handler type
-        handler_groups = self.handler_registry.group_events_by_handler(events)
-
-        if not handler_groups:
-            logger.warning(
-                "No handlers found for any events in batch",
-                extra={"batch_size": len(events)},
-            )
-            self._records_skipped += len(events)
-            return
-
-        # Process each handler group
-        all_entity_rows = EntityRowsMessage()
-        all_download_tasks: List[ClaimXDownloadTask] = []
-        total_api_calls = 0
-
-        for handler_class, handler_events in handler_groups.items():
-            logger.info(
-                "Processing handler group",
-                extra={
-                    "handler": handler_class.__name__,
-                    "event_count": len(handler_events),
-                },
-            )
-
-            # Create handler instance
-            handler = handler_class(self.api_client)
-
-            # Process events with handler - wrap with error handling
-            try:
-                handler_result = await handler.process(handler_events)
-
-                # Collect entity rows
-                all_entity_rows.merge(handler_result.rows)
-                total_api_calls += handler_result.api_calls
-                self._records_succeeded += len(handler_events)
-
-                # Generate download tasks from media rows
-                if handler_result.rows.media:
-                    download_tasks = self._create_download_tasks_from_media(
-                        handler_result.rows.media
-                    )
-                    all_download_tasks.extend(download_tasks)
-
-            except ClaimXApiError as e:
-                # API error with category classification
-                logger.error(
-                    "Handler failed with API error",
-                    extra={
-                        "handler": handler_class.__name__,
-                        "event_count": len(handler_events),
-                        "event_ids": [evt.event_id for evt in handler_events[:5]],  # Sample for correlation
-                        "error_category": e.category.value,
-                        "error": str(e)[:200],
-                    },
-                    exc_info=True,
-                )
-                # Route each failed event to retry/DLQ
-                for event in handler_events:
-                    # Find original task for this event
-                    task = self._find_task_for_event(event, tasks)
-                    if task:
-                        await self._handle_enrichment_failure(task, e, e.category)
-
-            except Exception as e:
-                # Unknown error - classify and route
-                # Classify as UNKNOWN for conservative retry
-                error_category = ErrorCategory.UNKNOWN
-                logger.error(
-                    "Handler failed with unexpected error",
-                    extra={
-                        "handler": handler_class.__name__,
-                        "event_count": len(handler_events),
-                        "event_ids": [evt.event_id for evt in handler_events[:5]],  # Sample for correlation
-                        "error_type": type(e).__name__,
-                        "error_category": error_category.value,
-                        "error": str(e)[:200],
-                    },
-                    exc_info=True,
-                )
-                # Route each failed event to retry/DLQ
-                for event in handler_events:
-                    # Find original task for this event
-                    task = self._find_task_for_event(event, tasks)
-                    if task:
-                        await self._handle_enrichment_failure(task, e, error_category)
-
-        # Write entity rows to Delta tables (non-blocking)
-        # Pass tasks list to enable retry routing on Delta failures
-        if self.enable_delta_writes and not all_entity_rows.is_empty():
-            self._create_tracked_task(
-                self._produce_entity_rows(all_entity_rows, tasks),
-                task_name="delta_write",
-                context={"row_count": all_entity_rows.row_count()},
-            )
-
-        # Produce download tasks
-        if all_download_tasks:
-            await self._produce_download_tasks(all_download_tasks)
-
-        # Log batch summary
-        elapsed_ms = (
-            datetime.now(timezone.utc) - start_time
-        ).total_seconds() * 1000
-
-        logger.info(
-            "Enrichment batch complete",
-            extra={
-                "batch_size": len(tasks),
-                "records_succeeded": self._records_succeeded,
-                "entity_rows": all_entity_rows.row_count(),
-                "download_tasks": len(all_download_tasks),
-                "api_calls": total_api_calls,
-                "duration_ms": round(elapsed_ms, 2),
-            },
-        )
 
     def _create_download_tasks_from_media(
         self,
@@ -1257,33 +1087,6 @@ class ClaimXEnrichmentWorker:
         delay_seconds = self._retry_delays[retry_level]
         delay_minutes = delay_seconds // 60
         return f"{self.enrichment_topic}.retry.{delay_minutes}m"
-
-    def _find_task_for_event(
-        self,
-        event: ClaimXEventMessage,
-        tasks: List[ClaimXEnrichmentTask],
-    ) -> Optional[ClaimXEnrichmentTask]:
-        """
-        Find original enrichment task for an event.
-
-        Maps event back to its source task to preserve retry_count and metadata.
-
-        Args:
-            event: Event message processed by handler
-            tasks: Original batch of enrichment tasks
-
-        Returns:
-            Original enrichment task, or None if not found
-        """
-        for task in tasks:
-            if task.event_id == event.event_id:
-                return task
-
-        logger.error(
-            "Could not find task for event",
-            extra={"event_id": event.event_id, "event_type": event.event_type},
-        )
-        return None
 
     async def _handle_enrichment_failure(
         self,
