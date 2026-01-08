@@ -97,7 +97,6 @@ class VideoCollabHandler(EventHandler):
             logging.DEBUG,
             "Video collab extracted",
             handler_name="video",
-            project_id=event.project_id,
             video_collab_count=len(rows.video_collab),
             project_verification=bool(project_rows.projects),
             **extract_log_context(event),

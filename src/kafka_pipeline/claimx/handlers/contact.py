@@ -78,8 +78,6 @@ class PolicyholderHandler(EventHandler):
             logging.DEBUG,
             "Policyholder event processed",
             handler_name="contact",
-            event_type=event.event_type,
-            project_id=event.project_id,
             project_verification=bool(rows.projects),
             **extract_log_context(event),
         )
