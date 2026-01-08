@@ -266,11 +266,11 @@ class ClaimXDownloadWorker:
         self._cycle_task = asyncio.create_task(self._periodic_cycle_output())
 
         # Update health check readiness
-        api_reachable = not self.api_client.is_circuit_open()
+        api_reachable = not self.api_client.is_circuit_open
         self.health_server.set_ready(
             kafka_connected=True,
             api_reachable=api_reachable,
-            circuit_open=self.api_client.is_circuit_open(),
+            circuit_open=self.api_client.is_circuit_open,
         )
 
         # Update connection status
