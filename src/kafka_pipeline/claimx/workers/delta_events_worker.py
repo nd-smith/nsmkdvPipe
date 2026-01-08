@@ -34,7 +34,7 @@ from kafka_pipeline.config import KafkaConfig
 from kafka_pipeline.common.consumer import BaseKafkaConsumer
 from kafka_pipeline.common.producer import BaseKafkaProducer
 from kafka_pipeline.common.metrics import record_delta_write
-from kafka_pipeline.claimx.retry import DeltaRetryHandler
+from kafka_pipeline.claimx.retry.handler import DeltaRetryHandler
 from kafka_pipeline.claimx.writers import ClaimXEventsDeltaWriter
 
 logger = get_logger(__name__)
