@@ -103,6 +103,12 @@ class ClaimXEventsDeltaWriter(BaseDeltaWriter):
             # Create DataFrame from events
             df = pl.DataFrame(events)
 
+            # Ensure ingested_at is datetime type (may be string from JSON serialization)
+            if df.schema.get("ingested_at") == pl.Utf8:
+                df = df.with_columns(
+                    pl.col("ingested_at").str.to_datetime().alias("ingested_at")
+                )
+
             # Add event_date partition column (from ingested_at)
             df = df.with_columns(
                 pl.col("ingested_at").dt.date().alias("event_date")
