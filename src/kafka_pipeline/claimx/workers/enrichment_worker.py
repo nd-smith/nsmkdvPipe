@@ -1046,7 +1046,7 @@ class ClaimXEnrichmentWorker:
             "Enrichment batch complete",
             extra={
                 "batch_size": len(tasks),
-                "records_succeeded": len(tasks) - (len(all_entity_rows.rows.get("projects", [])) == 0 and 0 or 0), # Simplified, logic imprecise but consistent with aggregate
+                "records_succeeded": self._records_succeeded,
                 "entity_rows": all_entity_rows.row_count(),
                 "download_tasks": len(all_download_tasks),
                 "api_calls": total_api_calls,
