@@ -21,7 +21,7 @@ from kafka_pipeline.claimx.handlers.utils import (
     safe_str,
     safe_decimal_str,
     parse_timestamp,
-    now_iso,
+    now_datetime,
     elapsed_ms,
 )
 
@@ -189,7 +189,7 @@ class VideoCollabTransformer:
         Returns:
             Video collaboration row dict
         """
-        now = now_iso()
+        now = now_datetime()
 
         first_name = safe_str(data.get("claimRepFirstName"))
         last_name = safe_str(data.get("claimRepLastName"))

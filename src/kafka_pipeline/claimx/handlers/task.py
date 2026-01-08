@@ -20,9 +20,12 @@ from kafka_pipeline.claimx.handlers.base import (
 from kafka_pipeline.claimx.handlers.utils import (
     safe_int,
     safe_str,
+    safe_str_id,
     safe_bool,
     parse_timestamp,
     now_iso,
+    now_datetime,
+    today_date,
     elapsed_ms,
 )
 
@@ -52,14 +55,14 @@ class TaskTransformer:
         source_event_id: str,
     ) -> Dict[str, Any]:
         """Transform task assignment to row."""
-        now = now_iso()
+        now = now_datetime()
 
         return {
             "assignment_id": safe_int(data.get("assignmentId")),
             "task_id": safe_int(data.get("taskId")),
             "task_name": safe_str(data.get("taskName")),
             "form_id": safe_str(data.get("formId")),
-            "project_id": safe_int(data.get("projectId")),
+            "project_id": safe_str_id(data.get("projectId")),
             "assignee_id": safe_int(data.get("assigneeId")),
             "assignor_id": safe_int(data.get("assignorId")),
             "assignor_email": safe_str(data.get("assignor")),
@@ -94,7 +97,7 @@ class TaskTransformer:
         source_event_id: str,
     ) -> Dict[str, Any]:
         """Transform custom task template to row."""
-        now = now_iso()
+        now = now_datetime()
 
         return {
             "task_id": safe_int(template.get("taskId")),
@@ -136,7 +139,7 @@ class TaskTransformer:
     def to_link_row(
         link: Dict[str, Any],
         assignment_id: int,
-        project_id: int,
+        project_id: Any,
         source_event_id: str,
     ) -> Dict[str, Any]:
         """Transform external link data to row."""
@@ -145,7 +148,7 @@ class TaskTransformer:
         return {
             "link_id": safe_int(link.get("linkId")),
             "assignment_id": assignment_id,
-            "project_id": project_id,
+            "project_id": safe_str_id(project_id),
             "link_code": safe_str(link.get("linkCode")),
             "url": safe_str(link.get("url")),
             "notification_access_method": safe_str(
@@ -164,7 +167,7 @@ class TaskTransformer:
     @staticmethod
     def to_contact_from_link(
         link: Dict[str, Any],
-        project_id: int,
+        project_id: Any,
         assignment_id: int,
         source_event_id: str,
     ) -> Optional[Dict[str, Any]]:
@@ -173,10 +176,10 @@ class TaskTransformer:
         if not email:
             return None
 
-        now = now_iso()
-        today = datetime.now(timezone.utc).date().isoformat()
+        now = now_datetime()
+        today = today_date()
         return {
-            "project_id": project_id,
+            "project_id": safe_str_id(project_id),
             "contact_email": email,
             "contact_type": "POLICYHOLDER",
             "first_name": safe_str(link.get("firstName")),

@@ -15,7 +15,7 @@ from kafka_pipeline.claimx.handlers.base import (
     register_handler,
     with_api_error_handling,
 )
-from kafka_pipeline.claimx.handlers.utils import elapsed_ms
+from kafka_pipeline.claimx.handlers.utils import elapsed_ms, now_datetime
 
 from kafka_pipeline.common.logging import get_logger, log_with_context, extract_log_context
 
@@ -53,7 +53,7 @@ class PolicyholderHandler(EventHandler):
         )
 
         # Apply policyholder timestamp update to the project row
-        now = datetime.now(timezone.utc).isoformat()
+        now = now_datetime()
         if rows.projects:
             # Update the fetched project row with policyholder timestamp
             if event.event_type == "POLICYHOLDER_INVITED":

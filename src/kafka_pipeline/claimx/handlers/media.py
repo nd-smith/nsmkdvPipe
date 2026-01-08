@@ -19,6 +19,7 @@ from kafka_pipeline.claimx.handlers.base import (
 from kafka_pipeline.claimx.handlers.utils import (
     safe_int,
     safe_str,
+    safe_str_id,
     safe_float,
     now_iso,
     elapsed_ms,
@@ -54,7 +55,7 @@ class MediaTransformer:
     @staticmethod
     def to_media_row(
         media: Dict[str, Any],
-        project_id: int,
+        project_id: Any,
         source_event_id: str,
     ) -> Dict[str, Any]:
         """
@@ -62,7 +63,7 @@ class MediaTransformer:
 
         Args:
             media: Media dict from API
-            project_id: Project ID
+            project_id: Project ID (int or string)
             source_event_id: Event ID for traceability
 
         Returns:
@@ -72,8 +73,8 @@ class MediaTransformer:
         download_link = safe_str(media.get("fullDownloadLink"))
 
         return {
-            "media_id": safe_int(media.get("mediaID")),
-            "project_id": project_id,
+            "media_id": safe_str_id(media.get("mediaID")),
+            "project_id": safe_str_id(project_id),
             "task_assignment_id": safe_int(media.get("taskAssignmentID")),
             "file_type": safe_str(media.get("mediaType")),
             "file_name": safe_str(media.get("mediaName")),

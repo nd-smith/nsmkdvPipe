@@ -21,7 +21,8 @@ from kafka_pipeline.claimx.handlers.utils import (
     safe_str,
     safe_bool,
     parse_timestamp,
-    now_iso,
+    now_datetime,
+    today_date,
     elapsed_ms,
 )
 
@@ -80,7 +81,7 @@ class ProjectHandler(EventHandler):
                         {
                             "project_id": event.project_id,
                             "master_file_name": event.master_file_name,
-                            "updated_at": now_iso(),
+                            "updated_at": now_datetime(),
                             "source_event_id": event.event_id,
                         }
                     )
@@ -241,7 +242,7 @@ class ProjectTransformer:
         Returns:
             Project row dict
         """
-        now = now_iso()
+        now = now_datetime()
 
         # Navigate to project object
         inner = data.get("data", data)
@@ -349,8 +350,8 @@ class ProjectTransformer:
             List of contact row dicts
         """
         contacts = []
-        now = now_iso()
-        today = datetime.now(timezone.utc).date().isoformat()
+        now = now_datetime()
+        today = today_date()
 
         inner = data.get("data", data)
         project = inner.get("project", {})
