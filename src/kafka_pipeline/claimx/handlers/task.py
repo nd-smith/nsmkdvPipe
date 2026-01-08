@@ -295,7 +295,6 @@ class TaskHandler(EventHandler):
             logging.DEBUG,
             "Handler complete",
             handler_name="task",
-            event_type=event.event_type,
             task_assignment_id=event.task_assignment_id,
             tasks_count=len(rows.tasks),
             templates_count=len(rows.task_templates),
