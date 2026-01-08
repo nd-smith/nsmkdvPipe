@@ -157,7 +157,7 @@ Examples:
         "--worker",
         choices=[
             "xact-poller", "xact-event-ingester", "xact-local-ingester", "xact-delta-writer", "xact-delta-retry", "xact-download", "xact-upload", "xact-result-processor",
-            "claimx-poller", "claimx-ingester", "claimx-enricher", "claimx-downloader", "claimx-uploader", "claimx-result-processor",
+            "claimx-poller", "claimx-ingester", "claimx-delta-writer", "claimx-enricher", "claimx-downloader", "claimx-uploader", "claimx-result-processor",
             "all"
         ],
         default="all",
@@ -565,7 +565,7 @@ async def run_result_processor(
         producer=producer,
         inventory_table_path=inventory_table_path if enable_delta_writes else None,
         failed_table_path=failed_table_path if enable_delta_writes and failed_table_path else None,
-        batch_size=100,
+        batch_size=2000,
         batch_timeout_seconds=5.0,
     )
     shutdown_event = get_shutdown_event()

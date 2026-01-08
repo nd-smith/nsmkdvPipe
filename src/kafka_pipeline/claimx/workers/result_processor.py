@@ -61,7 +61,7 @@ class ClaimXResultProcessor:
     """
 
     # Batching configuration
-    BATCH_SIZE = 100
+    BATCH_SIZE = 2000
     BATCH_TIMEOUT_SECONDS = 5
 
     def __init__(
