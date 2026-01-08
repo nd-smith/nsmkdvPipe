@@ -27,7 +27,7 @@ from kafka_pipeline.claimx.handlers.utils import (
 )
 
 from kafka_pipeline.common.exceptions import ErrorCategory
-from kafka_pipeline.common.logging import get_logger, log_with_context
+from kafka_pipeline.common.logging import get_logger, extract_log_context, log_with_context
 
 logger = get_logger(__name__)
 
@@ -210,7 +210,7 @@ class TaskHandler(EventHandler):
     supports_batching = False
 
     @with_api_error_handling(
-        api_calls=1,
+        api_calls=2,  # Task + Project verification
         log_context=lambda e: {
             "event_id": e.event_id,
             "task_assignment_id": e.task_assignment_id,
@@ -231,6 +231,7 @@ class TaskHandler(EventHandler):
                 duration_ms=0,
             )
 
+        # 1. Fetch task details
         response = await self.client.get_custom_task(int(event.task_assignment_id))
 
         rows = EntityRowsMessage()
@@ -246,6 +247,16 @@ class TaskHandler(EventHandler):
         assignment_id = (
             safe_int(response.get("assignmentId")) or int(event.task_assignment_id)
         )
+        
+        # 2. In-flight Project Verification
+        from kafka_pipeline.claimx.handlers.project import ProjectHandler
+        
+        project_handler = ProjectHandler(self.client)
+        project_rows = await project_handler.fetch_project_data(
+            project_id, 
+            source_event_id=event.event_id
+        )
+        rows.merge(project_rows)
 
         custom_task = response.get("customTask")
         if custom_task:
@@ -287,12 +298,14 @@ class TaskHandler(EventHandler):
             templates_count=len(rows.task_templates),
             links_count=len(rows.external_links),
             contacts_count=len(rows.contacts),
+            project_verification=bool(project_rows.projects),
+            **extract_log_context(event),
         )
 
         return EnrichmentResult(
             event=event,
             success=True,
             rows=rows,
-            api_calls=1,
+            api_calls=2,
             duration_ms=elapsed_ms(start_time),
         )

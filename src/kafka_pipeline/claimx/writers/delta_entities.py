@@ -86,15 +86,21 @@ class ClaimXEntityWriter:
         self.logger = get_logger(self.__class__.__name__)
 
         # Create individual writers for each entity table
+        # Projects and Media are partitioned by project_id
+        # Contacts and others get default partitioning (likely event_date or None depending on base)
+        # Note: BaseDeltaWriter defaults to partition_column="event_date"
         self._writers: Dict[str, BaseDeltaWriter] = {
             "projects": BaseDeltaWriter(
                 table_path=projects_table_path,
+                partition_column="project_id",
             ),
             "contacts": BaseDeltaWriter(
                 table_path=contacts_table_path,
+                # Contacts not partitioned by project_id (user specified)
             ),
             "media": BaseDeltaWriter(
                 table_path=media_table_path,
+                partition_column="project_id",
             ),
             "tasks": BaseDeltaWriter(
                 table_path=tasks_table_path,

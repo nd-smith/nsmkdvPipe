@@ -670,6 +670,16 @@ class PipelineConfig:
     inventory_table_path: str = ""
     failed_table_path: str = ""  # Optional: for tracking permanent failures
 
+    # ClaimX entity table paths
+    claimx_projects_table_path: str = ""
+    claimx_contacts_table_path: str = ""
+    claimx_inventory_table_path: str = ""
+    claimx_media_table_path: str = ""
+    claimx_tasks_table_path: str = ""
+    claimx_task_templates_table_path: str = ""
+    claimx_external_links_table_path: str = ""
+    claimx_video_collab_table_path: str = ""
+
     @classmethod
     def load_config(cls, config_path: Optional[Path] = None) -> "PipelineConfig":
         """Load complete pipeline configuration from config.yaml and environment.
@@ -762,6 +772,15 @@ class PipelineConfig:
                 "DELTA_FAILED_TABLE_PATH",
                 domain_delta_config.get("failed_table_path", "")
             ),
+            # Load ClaimX table paths (only populated if domain is claimx or paths are explicitly set)
+            claimx_projects_table_path=delta_config.get("claimx", {}).get("projects_table_path", ""),
+            claimx_contacts_table_path=delta_config.get("claimx", {}).get("contacts_table_path", ""),
+            claimx_inventory_table_path=delta_config.get("claimx", {}).get("inventory_table_path", ""),
+            claimx_media_table_path=delta_config.get("claimx", {}).get("media_table_path", ""),
+            claimx_tasks_table_path=delta_config.get("claimx", {}).get("tasks_table_path", ""),
+            claimx_task_templates_table_path=delta_config.get("claimx", {}).get("task_templates_table_path", ""),
+            claimx_external_links_table_path=delta_config.get("claimx", {}).get("external_links_table_path", ""),
+            claimx_video_collab_table_path=delta_config.get("claimx", {}).get("video_collab_table_path", ""),
         )
 
     @property

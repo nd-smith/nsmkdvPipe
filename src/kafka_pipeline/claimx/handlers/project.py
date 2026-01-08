@@ -97,22 +97,9 @@ class ProjectHandler(EventHandler):
                 )
 
             # PROJECT_CREATED - fetch full project details
-            response = await self.client.get_project(int(event.project_id))
-
-            # Transform response to entity rows
-            project_row = ProjectTransformer.to_project_row(
-                response,
-                source_event_id=event.event_id,
+            rows = await self.fetch_project_data(
+                int(event.project_id), source_event_id=event.event_id
             )
-            if project_row.get("project_id") is not None:
-                rows.projects.append(project_row)
-
-            contact_rows = ProjectTransformer.to_contact_rows(
-                response,
-                project_id=event.project_id,
-                source_event_id=event.event_id,
-            )
-            rows.contacts.extend(contact_rows)
 
             duration_ms = elapsed_ms(start_time)
             log_with_context(
@@ -178,6 +165,36 @@ class ProjectHandler(EventHandler):
                 api_calls=1,
                 duration_ms=duration_ms,
             )
+
+    async def fetch_project_data(
+        self,
+        project_id: int,
+        source_event_id: Optional[str] = None,
+    ) -> EntityRowsMessage:
+        """
+        Fetch project details and transform to entity rows.
+        
+        Reusable by other handlers for in-flight verification.
+        """
+        response = await self.client.get_project(project_id)
+        rows = EntityRowsMessage()
+
+        # Transform response to entity rows
+        project_row = ProjectTransformer.to_project_row(
+            response,
+            source_event_id=source_event_id,
+        )
+        if project_row.get("project_id") is not None:
+            rows.projects.append(project_row)
+
+        contact_rows = ProjectTransformer.to_contact_rows(
+            response,
+            project_id=str(project_id),
+            source_event_id=source_event_id or "",
+        )
+        rows.contacts.extend(contact_rows)
+        
+        return rows
 
 
 class ProjectTransformer:

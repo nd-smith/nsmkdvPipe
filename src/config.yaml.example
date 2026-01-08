@@ -503,6 +503,32 @@ delta:
   claimx:
     # Path to claimx_events table
     events_table_path: ""
+    projects_table_path: ""
+    contacts_table_path: ""
+    media_table_path: ""
+    tasks_table_path: ""
+    task_templates_table_path: ""
+    external_links_table_path: ""
+    video_collab_table_path: ""
+
+
+# =============================================================================
+# CLAIMX API CONFIGURATION
+# =============================================================================
+claimx:
+  api:
+    # Base URL for ClaimX API
+    base_url: "https://api.claimx.com/v1"
+
+    # Timeout for API requests (seconds)
+    timeout_seconds: 30
+
+    # Maximum concurrent API requests
+    max_concurrent: 20
+
+    # Credentials are loaded from environment variables ONLY:
+    # - CLAIMX_API_USERNAME
+    # - CLAIMX_API_PASSWORD
 
 
 # =============================================================================

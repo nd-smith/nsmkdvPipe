@@ -25,7 +25,7 @@ from kafka_pipeline.claimx.handlers.utils import (
     elapsed_ms,
 )
 
-from kafka_pipeline.common.logging import get_logger, log_with_context
+from kafka_pipeline.common.logging import get_logger, extract_log_context, log_with_context
 
 logger = get_logger(__name__)
 
@@ -43,16 +43,30 @@ class VideoCollabHandler(EventHandler):
     supports_batching = False
 
     @with_api_error_handling(
-        api_calls=1,
+        api_calls=2,  # Video + Project verification
         log_context=lambda e: {"event_id": e.event_id, "project_id": e.project_id},
     )
     async def handle_event(
         self, event: ClaimXEventMessage, start_time: datetime
     ) -> EnrichmentResult:
         """Fetch video collaboration data and transform to entity rows."""
+        # 1. Fetch video collaboration report
         response = await self.client.get_video_collaboration(event.project_id)
 
         collab_data = self._extract_collab_data(response, event.project_id)
+        
+        rows = EntityRowsMessage()
+        
+        # 2. In-flight Project Verification
+        # We need to ensure the project exists in our warehouse
+        from kafka_pipeline.claimx.handlers.project import ProjectHandler
+        
+        project_handler = ProjectHandler(self.client)
+        project_rows = await project_handler.fetch_project_data(
+            int(event.project_id), 
+            source_event_id=event.event_id
+        )
+        rows.merge(project_rows)
 
         if not collab_data:
             log_with_context(
@@ -66,12 +80,10 @@ class VideoCollabHandler(EventHandler):
             return EnrichmentResult(
                 event=event,
                 success=True,
-                rows=EntityRowsMessage(),
-                api_calls=1,
+                rows=rows, # Return project rows even if video data missing
+                api_calls=2,
                 duration_ms=elapsed_ms(start_time),
             )
-
-        rows = EntityRowsMessage()
 
         video_row = VideoCollabTransformer.to_video_collab_row(
             collab_data,
@@ -87,13 +99,15 @@ class VideoCollabHandler(EventHandler):
             handler_name="video",
             project_id=event.project_id,
             video_collab_count=len(rows.video_collab),
+            project_verification=bool(project_rows.projects),
+            **extract_log_context(event),
         )
 
         return EnrichmentResult(
             event=event,
             success=True,
             rows=rows,
-            api_calls=1,
+            api_calls=2,
             duration_ms=elapsed_ms(start_time),
         )
 

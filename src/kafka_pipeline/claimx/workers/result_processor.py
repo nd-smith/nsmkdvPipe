@@ -24,6 +24,7 @@ from pydantic import ValidationError
 from core.logging.setup import get_logger
 from kafka_pipeline.config import KafkaConfig
 from kafka_pipeline.common.consumer import BaseKafkaConsumer
+from kafka_pipeline.common.writers.base import BaseDeltaWriter
 from kafka_pipeline.common.metrics import (
     record_message_consumed,
     record_processing_error,
@@ -58,6 +59,7 @@ class ClaimXResultProcessor:
         self,
         config: KafkaConfig,
         results_topic: str = "",
+        inventory_table_path: str = "",
     ):
         """
         Initialize ClaimX result processor.
@@ -65,6 +67,7 @@ class ClaimXResultProcessor:
         Args:
             config: Kafka configuration for consumer
             results_topic: Topic name for upload results (e.g., "claimx.downloads.results")
+            inventory_table_path: Full abfss:// path to claimx_attachments table (optional)
         """
         self.config = config
         self.domain = "claimx"
@@ -86,11 +89,20 @@ class ClaimXResultProcessor:
         self._cycle_count = 0
         self._cycle_task: Optional[asyncio.Task] = None
 
+        # Initialize Delta writer for inventory if path is provided
+        self.inventory_writer: Optional[BaseDeltaWriter] = None
+        if inventory_table_path:
+            self.inventory_writer = BaseDeltaWriter(
+                table_path=inventory_table_path,
+                partition_column="project_id",
+            )
+
         logger.info(
             "Initialized ClaimXResultProcessor",
             extra={
                 "consumer_group": self.consumer_group,
                 "results_topic": self.results_topic,
+                "inventory_table": inventory_table_path,
             },
         )
 
@@ -192,6 +204,34 @@ class ClaimXResultProcessor:
                     "source_event_id": result.source_event_id,
                 },
             )
+
+            # Write to inventory table
+            if self.inventory_writer:
+                # Prepare record for inventory
+                # Note: Schema should match table definition
+                # Flattening relevant fields for querying
+                import polars as pl
+                now = datetime.now(timezone.utc)
+                
+                inventory_row = {
+                    "media_id": result.media_id,
+                    "project_id": result.project_id,
+                    "file_name": result.file_name,
+                    "file_type": result.file_type,
+                    "blob_path": result.blob_path,
+                    "bytes": result.bytes_uploaded,
+                    "source_event_id": result.source_event_id,
+                    "created_at": now,
+                    "updated_at": now,
+                }
+                
+                df = pl.DataFrame([inventory_row])
+                # Using merge to prevent duplicates if reprocessing
+                await self.inventory_writer._async_merge(
+                    df,
+                    merge_keys=["media_id"],
+                    preserve_columns=["created_at"],
+                )
 
         elif result.status == "failed_permanent":
             self._records_failed += 1

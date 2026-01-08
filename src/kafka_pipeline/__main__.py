@@ -781,7 +781,10 @@ async def run_claimx_event_ingester(
         await worker.stop()
 
 
-async def run_claimx_enrichment_worker(kafka_config):
+async def run_claimx_enrichment_worker(
+    kafka_config,
+    pipeline_config,
+):
     """Run the ClaimX Enrichment Worker.
 
     Reads enrichment tasks from local Kafka, calls ClaimX API to fetch entity data,
@@ -791,11 +794,28 @@ async def run_claimx_enrichment_worker(kafka_config):
     finishes its current batch before exiting.
     """
     from kafka_pipeline.claimx.workers.enrichment_worker import ClaimXEnrichmentWorker
+    from kafka_pipeline.claimx.writers.delta_entities import ClaimXEntityWriter
 
     set_log_context(stage="claimx-enricher")
     logger.info("Starting ClaimX Enrichment worker...")
 
-    worker = ClaimXEnrichmentWorker(config=kafka_config, domain="claimx")
+    # Instantiate entity writer with paths from config
+    entity_writer = ClaimXEntityWriter(
+        projects_table_path=pipeline_config.claimx_projects_table_path,
+        contacts_table_path=pipeline_config.claimx_contacts_table_path,
+        media_table_path=pipeline_config.claimx_media_table_path,
+        tasks_table_path=pipeline_config.claimx_tasks_table_path,
+        task_templates_table_path=pipeline_config.claimx_task_templates_table_path,
+        external_links_table_path=pipeline_config.claimx_external_links_table_path,
+        video_collab_table_path=pipeline_config.claimx_video_collab_table_path,
+    )
+
+    worker = ClaimXEnrichmentWorker(
+        config=kafka_config,
+        domain="claimx",
+        entity_writer=entity_writer,
+        enable_delta_writes=pipeline_config.enable_delta_writes,
+    )
     shutdown_event = get_shutdown_event()
 
     async def shutdown_watcher():
@@ -901,7 +921,10 @@ async def run_claimx_upload_worker(kafka_config):
         await worker.stop()
 
 
-async def run_claimx_result_processor(kafka_config):
+async def run_claimx_result_processor(
+    kafka_config,
+    pipeline_config,
+):
     """Run ClaimX result processor.
 
     Consumes upload result messages from local Kafka broker,
@@ -914,7 +937,10 @@ async def run_claimx_result_processor(kafka_config):
     set_log_context(stage="claimx-result-processor")
     logger.info("Starting ClaimX Result Processor...")
 
-    processor = ClaimXResultProcessor(config=kafka_config)
+    processor = ClaimXResultProcessor(
+        config=kafka_config,
+        inventory_table_path=pipeline_config.claimx_inventory_table_path,
+    )
     shutdown_event = get_shutdown_event()
 
     async def shutdown_watcher():
@@ -1317,6 +1343,10 @@ def main():
         elif args.worker == "claimx-ingester":
             # ClaimX event ingester
             claimx_events_table_path = os.getenv("CLAIMX_EVENTS_TABLE_PATH", "")
+            # Fallback to pipeline config if not in env var
+            if not claimx_events_table_path and pipeline_config.claimx_eventhouse:
+                claimx_events_table_path = pipeline_config.claimx_eventhouse.claimx_events_table_path
+
             if args.count > 1:
                 loop.run_until_complete(
                     run_worker_pool(
@@ -1338,11 +1368,11 @@ def main():
                 loop.run_until_complete(
                     run_worker_pool(
                         run_claimx_enrichment_worker, args.count, "claimx-enricher",
-                        local_kafka_config,
+                        local_kafka_config, pipeline_config,
                     )
                 )
             else:
-                loop.run_until_complete(run_claimx_enrichment_worker(local_kafka_config))
+                loop.run_until_complete(run_claimx_enrichment_worker(local_kafka_config, pipeline_config))
         elif args.worker == "claimx-downloader":
             if args.count > 1:
                 loop.run_until_complete(
@@ -1368,11 +1398,11 @@ def main():
                 loop.run_until_complete(
                     run_worker_pool(
                         run_claimx_result_processor, args.count, "claimx-result-processor",
-                        local_kafka_config,
+                        local_kafka_config, pipeline_config,
                     )
                 )
             else:
-                loop.run_until_complete(run_claimx_result_processor(local_kafka_config))
+                loop.run_until_complete(run_claimx_result_processor(local_kafka_config, pipeline_config))
         else:  # all
             loop.run_until_complete(
                 run_all_workers(pipeline_config, enable_delta_writes)
