@@ -735,8 +735,6 @@ async def run_local_event_ingester(
 
 async def run_claimx_event_ingester(
     kafka_config,
-    enable_delta_writes: bool = True,
-    events_table_path: str = "",
 ):
     """Run the ClaimX Event Ingester worker.
 
@@ -753,8 +751,6 @@ async def run_claimx_event_ingester(
     worker = ClaimXEventIngesterWorker(
         config=kafka_config,
         domain="claimx",
-        enable_delta_writes=enable_delta_writes,
-        events_table_path=events_table_path,
     )
     shutdown_event = get_shutdown_event()
 
@@ -822,7 +818,7 @@ async def run_claimx_enrichment_worker(
         """Wait for shutdown signal and stop worker gracefully."""
         await shutdown_event.wait()
         logger.info("Shutdown signal received, stopping enrichment worker...")
-        await worker.stop()
+        await worker.request_shutdown()
 
     # Start shutdown watcher alongside worker
     watcher_task = asyncio.create_task(shutdown_watcher())
@@ -1340,27 +1336,40 @@ def main():
         elif args.worker == "claimx-poller":
             # ClaimX Eventhouse poller
             loop.run_until_complete(run_claimx_eventhouse_poller(pipeline_config))
-        elif args.worker == "claimx-ingester":
-            # ClaimX event ingester
+        elif args.worker == "claimx-delta-writer":
+            # ClaimX delta events writer
             claimx_events_table_path = os.getenv("CLAIMX_EVENTS_TABLE_PATH", "")
-            # Fallback to pipeline config if not in env var
             if not claimx_events_table_path and pipeline_config.claimx_eventhouse:
                 claimx_events_table_path = pipeline_config.claimx_eventhouse.claimx_events_table_path
+
+            if not claimx_events_table_path:
+                logger.error("CLAIMX_EVENTS_TABLE_PATH is required for claimx-delta-writer")
+                sys.exit(1)
 
             if args.count > 1:
                 loop.run_until_complete(
                     run_worker_pool(
+                        run_claimx_delta_events_worker, args.count, "claimx-delta-writer",
+                        local_kafka_config, claimx_events_table_path,
+                    )
+                )
+            else:
+                loop.run_until_complete(
+                    run_claimx_delta_events_worker(local_kafka_config, claimx_events_table_path)
+                )
+        elif args.worker == "claimx-ingester":
+            # ClaimX event ingester
+            if args.count > 1:
+                loop.run_until_complete(
+                    run_worker_pool(
                         run_claimx_event_ingester, args.count, "claimx-ingester",
-                        local_kafka_config, enable_delta_writes,
-                        events_table_path=claimx_events_table_path,
+                        local_kafka_config,
                     )
                 )
             else:
                 loop.run_until_complete(
                     run_claimx_event_ingester(
                         local_kafka_config,
-                        enable_delta_writes,
-                        events_table_path=claimx_events_table_path,
                     )
                 )
         elif args.worker == "claimx-enricher":
@@ -1416,6 +1425,66 @@ def main():
         # Clean up
         loop.close()
         logger.info("Pipeline shutdown complete")
+
+
+
+async def run_claimx_delta_events_worker(
+    kafka_config,
+    events_table_path: str,
+):
+    """Run the ClaimX Delta Events Worker.
+
+    Consumes events from the claimx events topic and writes them to the
+    claimx_events Delta table. Runs independently of ClaimXEventIngesterWorker
+    with its own consumer group.
+
+    Supports graceful shutdown: when shutdown event is set, the worker
+    waits for pending Delta writes before exiting.
+    """
+    from kafka_pipeline.common.producer import BaseKafkaProducer
+    from kafka_pipeline.claimx.workers.delta_events_worker import ClaimXDeltaEventsWorker
+
+    set_log_context(stage="claimx-delta-writer")
+    logger.info("Starting ClaimX Delta Events worker...")
+
+    # Create producer for retry topic routing
+    producer = BaseKafkaProducer(
+        config=kafka_config,
+        domain="claimx",
+        worker_name="delta_events_writer",
+    )
+    await producer.start()
+
+    worker = ClaimXDeltaEventsWorker(
+        config=kafka_config,
+        producer=producer,
+        events_table_path=events_table_path,
+        domain="claimx",
+    )
+    shutdown_event = get_shutdown_event()
+
+    async def shutdown_watcher():
+        """Wait for shutdown signal and stop worker gracefully."""
+        await shutdown_event.wait()
+        logger.info("Shutdown signal received, stopping claimx delta events worker...")
+        await worker.stop()
+
+    # Start shutdown watcher alongside worker
+    watcher_task = asyncio.create_task(shutdown_watcher())
+
+    try:
+        await worker.start()
+    finally:
+        # Guard against event loop being closed during shutdown
+        try:
+            watcher_task.cancel()
+            await watcher_task
+        except (asyncio.CancelledError, RuntimeError):
+            # RuntimeError occurs if event loop is closed
+            pass
+        # Clean up resources after worker exits
+        await worker.stop()
+        await producer.stop()
 
 
 if __name__ == "__main__":

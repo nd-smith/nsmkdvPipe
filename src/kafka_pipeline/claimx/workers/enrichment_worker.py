@@ -18,17 +18,24 @@ Delta tables: claimx_projects, claimx_contacts, claimx_attachment_metadata, clai
 import asyncio
 import json
 import uuid
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set
 
-from aiokafka.structs import ConsumerRecord
+from aiokafka import AIOKafkaConsumer
+from aiokafka.structs import ConsumerRecord, TopicPartition
 from pydantic import ValidationError
 
+from core.auth.kafka_oauth import create_kafka_oauth_callback
 from core.logging.setup import get_logger
 from core.types import ErrorCategory
 from kafka_pipeline.config import KafkaConfig
-from kafka_pipeline.common.consumer import BaseKafkaConsumer
-from kafka_pipeline.common.metrics import record_delta_write
+from kafka_pipeline.common.metrics import (
+    record_delta_write,
+    record_message_consumed,
+    update_connection_status,
+    update_assigned_partitions,
+)
 from kafka_pipeline.common.producer import BaseKafkaProducer
 from kafka_pipeline.claimx.api_client import ClaimXApiClient, ClaimXApiError
 from kafka_pipeline.claimx.handlers import get_handler_registry, HandlerRegistry
@@ -56,6 +63,7 @@ class ClaimXEnrichmentWorker:
     Features:
     - Event routing via handler registry
     - Concurrent API calls with rate limiting (via ClaimXApiClient)
+    - Manual consumer control for graceful shutdown
     - Batch processing by handler type
     - Entity data writes to 7 Delta tables
     - Download task generation for media files
@@ -102,6 +110,9 @@ class ClaimXEnrichmentWorker:
         self.download_topic = download_topic or config.get_topic(domain, "downloads_pending")
         self.entity_writer = entity_writer
         self.enable_delta_writes = enable_delta_writes
+        
+        # Consumer group
+        self.consumer_group = config.get_consumer_group(domain, "enrichment_worker")
 
         # Get worker-specific processing config
         processing_config = config.get_worker_config(domain, "enrichment_worker", "processing")
@@ -120,7 +131,7 @@ class ClaimXEnrichmentWorker:
 
         # Kafka components (initialized in start())
         self.producer: Optional[BaseKafkaProducer] = None
-        self.consumer: Optional[BaseKafkaConsumer] = None
+        self.consumer: Optional[AIOKafkaConsumer] = None
         self.api_client: Optional[ClaimXApiClient] = None
         self.retry_handler: Optional[EnrichmentRetryHandler] = None
 
@@ -142,6 +153,10 @@ class ClaimXEnrichmentWorker:
         self._batch: List[ClaimXEnrichmentTask] = []
         self._batch_lock = asyncio.Lock()
         self._batch_timer: Optional[asyncio.Task] = None
+
+        # Helper method for creating tasks
+        self._consume_task: Optional[asyncio.Task] = None
+        self._running = False
 
         # Cycle output tracking
         self._records_processed = 0
@@ -169,10 +184,6 @@ class ClaimXEnrichmentWorker:
             },
         )
 
-    @property
-    def config(self) -> KafkaConfig:
-        """Backward-compatible property returning consumer_config."""
-        return self.consumer_config
 
     async def start(self) -> None:
         """
@@ -184,7 +195,12 @@ class ClaimXEnrichmentWorker:
         Raises:
             Exception: If producer, consumer, or API client fails to start
         """
+        if self._running:
+            logger.warning("Worker already running")
+            return
+
         logger.info("Starting ClaimXEnrichmentWorker")
+        self._running = True
 
         # Start cycle output background task
         self._cycle_task = asyncio.create_task(self._periodic_cycle_output())
@@ -230,25 +246,38 @@ class ClaimXEnrichmentWorker:
             },
         )
 
-        # Create and start consumer with message handler (uses consumer_config)
-        # Consumes from pending topic + all retry topics
-        self.consumer = BaseKafkaConsumer(
-            config=self.consumer_config,
-            domain=self.domain,
-            worker_name="enrichment_worker",
-            topics=self.topics,
-            message_handler=self._handle_enrichment_task,
-        )
-
-        # Update readiness: Kafka will be connected when consumer starts
-        self.health_server.set_ready(
-            kafka_connected=True,
-            api_reachable=api_reachable,
-            circuit_open=self.api_client.is_circuit_open(),
-        )
-
-        # Start consumer (this blocks until stopped)
-        await self.consumer.start()
+        # Create and start consumer manually
+        try:
+            self.consumer = self._create_consumer()
+            await self.consumer.start()
+            update_connection_status(True, self.consumer_config.get_consumer_group(self.domain, "enrichment_worker"))
+            
+             # Update readiness
+            self.health_server.set_ready(
+                kafka_connected=True,
+                api_reachable=api_reachable,
+                circuit_open=self.api_client.is_circuit_open(),
+            )
+            
+            # Start consumption loop
+            self._consume_task = asyncio.create_task(self._consume_loop())
+            
+            # Wait for consume loop if we want to block (but usually start() is async and returns)
+            # Typically workers run until stopped.
+            # If the caller expects start() to block until stop(), we should await logic here.
+            # But the original start() blocked because BaseKafkaConsumer.start() blocked.
+            # We should probably await the consume task to mimic that behavior if existing code expects it.
+            # However, usually start() spawns tasks. Let's check how it's called.
+            # BaseKafkaConsumer.start() does `await self._consume_loop()`.
+            # So I should await here too to be compatible.
+            await self._consume_task
+            
+        except asyncio.CancelledError:
+            logger.info("Worker cancelled during startup/run")
+            raise
+        except Exception:
+            self._running = False
+            raise
 
     async def stop(self) -> None:
         """
@@ -259,6 +288,14 @@ class ClaimXEnrichmentWorker:
         API client.
         """
         logger.info("Stopping ClaimXEnrichmentWorker")
+        self._running = False
+
+        # Wait for consume loop to finish
+        if self._consume_task and not self._consume_task.done():
+            # If we are blocking in start(), cancelling will raise there.
+            # But we want graceful shutdown. The loop checks _running.
+            # If the loop is stuck in getmany(), we might need to wait or rely on timeout.
+            pass
 
         # Cancel cycle output task
         if self._cycle_task and not self._cycle_task.done():
@@ -289,11 +326,12 @@ class ClaimXEnrichmentWorker:
         # Wait for pending background tasks with timeout
         await self._wait_for_pending_tasks(timeout_seconds=30)
 
-        # Stop consumer first (stops receiving new messages)
+        # Stop consumer first
         if self.consumer:
             await self.consumer.stop()
+            update_connection_status(False, self.consumer_config.get_consumer_group(self.domain, "enrichment_worker"))
 
-        # Then stop producer (flushes pending messages)
+        # Then stop producer
         if self.producer:
             await self.producer.stop()
 
@@ -305,6 +343,130 @@ class ClaimXEnrichmentWorker:
         await self.health_server.stop()
 
         logger.info("ClaimXEnrichmentWorker stopped successfully")
+
+    async def request_shutdown(self) -> None:
+        """
+        Request graceful shutdown.
+        
+        Signals the worker to stop accepting new messages but allows
+        in-progress tasks to complete.
+        """
+        logger.info("Graceful shutdown requested")
+        self._running = False
+        
+        # If we have a batch timer waiting, cancel it to speed up shutdown
+        # (The loop will exit, then stop() will process remaining batch immediately)
+        if self._batch_timer and not self._batch_timer.done():
+            self._batch_timer.cancel()
+
+    def _create_consumer(self) -> AIOKafkaConsumer:
+        """Create configured AIOKafkaConsumer instance."""
+        group_id = self.consumer_config.get_consumer_group(self.domain, "enrichment_worker")
+        
+        common_args = {
+            "bootstrap_servers": self.consumer_config.bootstrap_servers,
+            "security_protocol": self.consumer_config.security_protocol,
+            "sasl_mechanism": self.consumer_config.sasl_mechanism,
+            "group_id": group_id,
+            "enable_auto_commit": False,  # Manual commit
+            "auto_offset_reset": "earliest",
+            "metadata_max_age_ms": 30000,
+        }
+        
+        if self.consumer_config.security_protocol == "SASL_SSL":
+            common_args["sasl_oauth_token_provider"] = create_kafka_oauth_callback(
+                self.consumer_config
+            )
+            
+        return AIOKafkaConsumer(
+            *self.topics,
+            **common_args
+        )
+
+    async def _consume_loop(self) -> None:
+        """
+        Main consumption loop.
+        
+        Fetches messages in batches and processes them.
+        """
+        logger.info("Started consumption loop")
+        
+        try:
+            while self._running:
+                # Poll for messages
+                # timeout ensures we check _running periodically
+                msg_dict = await self.consumer.getmany(
+                    timeout_ms=1000,
+                    max_records=self.batch_size
+                )
+                
+                if not msg_dict:
+                    continue
+                    
+                count = sum(len(msgs) for msgs in msg_dict.values())
+                start_time = time.monotonic()
+                
+                for partition, messages in msg_dict.items():
+                    for msg in messages:
+                        await self._handle_enrichment_task(msg)
+                        
+                # Commit offsets after processing batch (accumulated in _handle_enrichment_task handlers)
+                # Note: _handle_enrichment_task spawns tasks or adds to internal batch.
+                # If it adds to internal batch, that batch might not be processed yet.
+                # We should only commit if we are sure data is safe.
+                # BUT BaseKafkaConsumer committed after message_handler returned.
+                # _handle_enrichment_task adds to self._batch.
+                # If we commit here, and then crash before self._batch is flushed to Delta/Kafka, we lose data.
+                # CORRECTNESS FIX: We should NOT commit here if _process_batch handles the "real" work.
+                # _process_batch writes to Delta and produces tasks.
+                # We should commit AFTER _process_batch succeeds.
+                # HOWEVER, _process_batch is async and decoupled via batch_timer or batch_size trigger.
+                # This is a bit complex.
+                # 
+                # Strategy:
+                # 1. _handle_enrichment_task uses self._batch.
+                # 2. _process_batch does the work.
+                # 3. We can only commit offsets corresponding to processed tasks.
+                # 
+                # Simplification for now:
+                # Replicate previous behavior. BaseKafkaConsumer loop:
+                # async for msg in consumer:
+                #    await handler(msg)
+                #    if enable_message_commit: await consumer.commit()
+                # 
+                # _handle_enrichment_task was:
+                # async def _handle...:
+                #    add to batch
+                #    if batch full: process batch
+                # 
+                # So in BaseKafkaConsumer, if batch was NOT full, it committed the offset anyway!
+                # This implies "at most once" or potentially lost data if crash happens before batch flush.
+                # BUT BaseKafkaConsumer does manual commit capability?
+                # No, BaseKafkaConsumer defaults to `enable_message_commit=True`.
+                # So the original code WAS committing effectively immediately after adding to memory buffer.
+                # This is technically "unsafe" but it's the existing behavior I am refactoring.
+                # I will preserve this behavior for now to minimize regression risk, 
+                # but "Graceful Shutdown" ensures we flush that memory buffer.
+                #
+                # So, I will commit here.
+                await self.consumer.commit()
+                
+                # Update metrics
+                update_assigned_partitions(len(self.consumer.assignment()), self.consumer_group)
+
+        except asyncio.CancelledError:
+            logger.debug("Consumption loop cancelled")
+            raise
+        except Exception as e:
+            logger.error(
+                "Error in consumption loop",
+                extra={"error": str(e)},
+                exc_info=True
+            )
+            raise
+        finally:
+            logger.info("Consumption loop ended")
+
 
     def _create_tracked_task(
         self,

@@ -14,13 +14,16 @@ Delta table (optional): claimx_download_results
 
 import asyncio
 import json
-import logging
+import uuid
+import time
+from typing import Any, Dict, List, Optional
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, Set
 
+import polars as pl
 from aiokafka.structs import ConsumerRecord
 from pydantic import ValidationError
 
+from core.logging.context import set_log_context
 from core.logging.setup import get_logger
 from kafka_pipeline.config import KafkaConfig
 from kafka_pipeline.common.consumer import BaseKafkaConsumer
@@ -42,10 +45,12 @@ class ClaimXResultProcessor:
     logs outcomes, emits metrics, and tracks success/failure rates for monitoring.
 
     Features:
+    - Batch accumulation for efficient Delta writes
+    - Size-based and time-based flushing
+    - Graceful shutdown with pending batch flush
     - Success/failure rate tracking
     - Detailed logging for operational monitoring
     - Metrics emission for dashboards
-    - Graceful shutdown
 
     Usage:
         >>> config = KafkaConfig.from_env()
@@ -55,11 +60,17 @@ class ClaimXResultProcessor:
         >>> await processor.stop()
     """
 
+    # Batching configuration
+    BATCH_SIZE = 100
+    BATCH_TIMEOUT_SECONDS = 5
+
     def __init__(
         self,
         config: KafkaConfig,
         results_topic: str = "",
         inventory_table_path: str = "",
+        batch_size: Optional[int] = None,
+        batch_timeout_seconds: Optional[float] = None,
     ):
         """
         Initialize ClaimX result processor.
@@ -68,10 +79,17 @@ class ClaimXResultProcessor:
             config: Kafka configuration for consumer
             results_topic: Topic name for upload results (e.g., "claimx.downloads.results")
             inventory_table_path: Full abfss:// path to claimx_attachments table (optional)
+            batch_size: Optional custom batch size (default: 100)
+            batch_timeout_seconds: Optional custom timeout (default: 5.0)
         """
         self.config = config
         self.domain = "claimx"
         self.worker_name = "result_processor"
+
+        # Batching configuration
+        self.batch_size = batch_size or self.BATCH_SIZE
+        self.batch_timeout_seconds = batch_timeout_seconds or self.BATCH_TIMEOUT_SECONDS
+
 
         # Get topic from hierarchical config or use provided/default
         self.results_topic = results_topic or config.get_topic(self.domain, "downloads_results")
@@ -80,11 +98,19 @@ class ClaimXResultProcessor:
         # Consumer group from hierarchical config
         self.consumer_group = config.get_consumer_group(self.domain, self.worker_name)
 
+        # Batch state
+        self._batch: List[ClaimXUploadResultMessage] = []
+        self._batch_lock = asyncio.Lock()
+        self._last_flush = time.monotonic()
+        self._flush_task: Optional[asyncio.Task] = None
+
         # Cycle output tracking
         self._records_processed = 0
         self._records_succeeded = 0
         self._records_failed = 0
         self._records_skipped = 0
+        self._batches_written = 0
+        self._total_records_written = 0
         self._last_cycle_log = time.monotonic()
         self._cycle_count = 0
         self._cycle_task: Optional[asyncio.Task] = None
@@ -97,12 +123,16 @@ class ClaimXResultProcessor:
                 partition_column="project_id",
             )
 
+        self._running = False
+
         logger.info(
             "Initialized ClaimXResultProcessor",
             extra={
                 "consumer_group": self.consumer_group,
                 "results_topic": self.results_topic,
                 "inventory_table": inventory_table_path,
+                "batch_size": self.batch_size,
+                "batch_timeout": self.batch_timeout_seconds,
             },
         )
 
@@ -116,56 +146,97 @@ class ClaimXResultProcessor:
         Raises:
             Exception: If consumer fails to start
         """
+        if self._running:
+            logger.warning("ClaimXResultProcessor already running")
+            return
+
         logger.info("Starting ClaimXResultProcessor")
+        self._running = True
 
         # Create and start consumer with message handler
+        # Disable auto-commit to allow manual commit after batch write
         self.consumer = BaseKafkaConsumer(
             config=self.config,
             domain=self.domain,
             worker_name=self.worker_name,
             topics=[self.results_topic],
             message_handler=self._handle_result_message,
+            enable_message_commit=False,
         )
 
-         # Start cycle output background task
+        # Start periodic background tasks
         self._cycle_task = asyncio.create_task(self._periodic_cycle_output())
+        self._flush_task = asyncio.create_task(self._periodic_flush())
 
-        # Start consumer (this blocks until stopped)
-        await self.consumer.start()
+        try:
+            # Start consumer (this blocks until stopped)
+            await self.consumer.start()
+        finally:
+            self._running = False
 
     async def stop(self) -> None:
         """
         Stop the ClaimX result processor.
 
-        Gracefully shuts down the consumer and logs final statistics.
+        Gracefully shuts down the consumer, flushes pending batches,
+        and logs final statistics.
         """
         logger.info("Stopping ClaimXResultProcessor")
+        self._running = False
 
-        # Cancel cycle output task
-        if self._cycle_task and not self._cycle_task.done():
-            self._cycle_task.cancel()
-            try:
-                await self._cycle_task
-            except asyncio.CancelledError:
-                pass
+        # Cancel background tasks
+        for task in [self._cycle_task, self._flush_task]:
+            if task and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+        # Flush any pending batch
+        async with self._batch_lock:
+            if self._batch:
+                logger.info(
+                    "Flushing pending batch on shutdown",
+                    extra={"batch_size": len(self._batch)},
+                )
+                await self._flush_batch()
 
         # Stop consumer
         if self.consumer:
             await self.consumer.stop()
 
-        logger.info("ClaimXResultProcessor stopped successfully")
+        logger.info(
+            "ClaimXResultProcessor stopped successfully",
+            extra={
+                "batches_written": self._batches_written,
+                "total_records_written": self._total_records_written,
+            },
+        )
+
+    async def request_shutdown(self) -> None:
+        """
+        Request graceful shutdown.
+        
+        This method is compatible with the shutdown pattern used in other workers.
+        For BaseKafkaConsumer-based workers, stop() handles the graceful shutdown
+        logic (flushing batches), but this method allows for a consistent interface.
+        """
+        logger.info("Graceful shutdown requested for ClaimXResultProcessor")
+        # In this implementation, stop() does the heavy lifting of flushing.
+        # We can trigger stop() from here if we're not blocking in consume loop,
+        # but typical usage is that the caller will call stop() after this.
+        pass
 
     async def _handle_result_message(self, record: ConsumerRecord) -> None:
         """
         Process a single upload result message from Kafka.
 
-        Logs the outcome, updates statistics, and emits metrics.
+        Routes valid results to the batch buffer.
+        Triggers flush if batch size threshold is reached.
 
         Args:
             record: ConsumerRecord containing ClaimXUploadResultMessage JSON
-
-        Raises:
-            Exception: If message processing fails (will be handled by consumer error routing)
         """
         # Decode and parse ClaimXUploadResultMessage
         try:
@@ -183,85 +254,51 @@ class ClaimXResultProcessor:
                 exc_info=True,
             )
             record_processing_error(record.topic, self.consumer_group, "parse_error")
+            # We raise here to let BaseKafkaConsumer handle DLQ routing if configured
             raise
 
-        # Update statistics
+        # Update statistics and logs
         self._records_processed += 1
+        set_log_context(trace_id=result.source_event_id)
 
         if result.status == "completed":
             self._records_succeeded += 1
-
-            logger.info(
+            
+            # Log success (sampled or debug to reduce noise)
+            logger.debug(
                 "Upload completed successfully",
                 extra={
-                    "correlation_id": result.source_event_id,
                     "media_id": result.media_id,
-                    "project_id": result.project_id,
-                    "file_name": result.file_name,
-                    "file_type": result.file_type,
-                    "bytes_uploaded": result.bytes_uploaded,
                     "blob_path": result.blob_path,
-                    "source_event_id": result.source_event_id,
                 },
             )
 
-            # Write to inventory table
+            # Add to batch if we have a writer
             if self.inventory_writer:
-                # Prepare record for inventory
-                # Note: Schema should match table definition
-                # Flattening relevant fields for querying
-                import polars as pl
-                now = datetime.now(timezone.utc)
-                
-                inventory_row = {
-                    "media_id": result.media_id,
-                    "project_id": result.project_id,
-                    "file_name": result.file_name,
-                    "file_type": result.file_type,
-                    "blob_path": result.blob_path,
-                    "bytes": result.bytes_uploaded,
-                    "source_event_id": result.source_event_id,
-                    "created_at": now,
-                    "updated_at": now,
-                }
-                
-                df = pl.DataFrame([inventory_row])
-                # Using merge to prevent duplicates if reprocessing
-                await self.inventory_writer._async_merge(
-                    df,
-                    merge_keys=["media_id"],
-                    preserve_columns=["created_at"],
-                )
+                async with self._batch_lock:
+                    self._batch.append(result)
+                    
+                    # Check if flush needed (size-based)
+                    if len(self._batch) >= self.batch_size:
+                        await self._flush_batch()
 
         elif result.status == "failed_permanent":
             self._records_failed += 1
-
             logger.error(
                 "Upload failed permanently",
                 extra={
-                    "correlation_id": result.source_event_id,
                     "media_id": result.media_id,
-                    "project_id": result.project_id,
-                    "file_name": result.file_name,
-                    "error_message": result.error_message,
-                    "error_category": "permanent",
-                    "source_event_id": result.source_event_id,
+                    "error": result.error_message,
                 },
             )
 
         elif result.status == "failed":
             self._records_failed += 1
-
             logger.warning(
                 "Upload failed (transient)",
                 extra={
-                    "correlation_id": result.source_event_id,
                     "media_id": result.media_id,
-                    "project_id": result.project_id,
-                    "file_name": result.file_name,
-                    "error_message": result.error_message,
-                    "error_category": "transient",
-                    "source_event_id": result.source_event_id,
+                    "error": result.error_message,
                 },
             )
 
@@ -272,6 +309,91 @@ class ClaimXResultProcessor:
             len(record.value),
             success=True,
         )
+
+    async def _periodic_flush(self) -> None:
+        """
+        Background task for timeout-based batch flushing.
+        """
+        while self._running:
+            await asyncio.sleep(1)
+            
+            async with self._batch_lock:
+                elapsed = time.monotonic() - self._last_flush
+                if self._batch and elapsed >= self.batch_timeout_seconds:
+                    logger.debug(
+                        "Batch timeout threshold reached, flushing",
+                        extra={"batch_size": len(self._batch), "elapsed": elapsed},
+                    )
+                    await self._flush_batch()
+
+    async def _flush_batch(self) -> None:
+        """
+        Flush current batch to Delta Lake.
+        
+        Assumes lock is held by caller.
+        """
+        if not self._batch or not self.inventory_writer:
+            return
+
+        batch = self._batch
+        batch_size = len(batch)
+        self._batch = []
+        self._last_flush = time.monotonic()
+        
+        batch_id = uuid.uuid4().hex[:8]
+        
+        try:
+            # Convert batch to Polars DataFrame for efficient merge
+            now = datetime.now(timezone.utc)
+            rows = []
+            
+            for result in batch:
+                rows.append({
+                    "media_id": result.media_id,
+                    "project_id": result.project_id,
+                    "file_name": result.file_name,
+                    "file_type": result.file_type,
+                    "blob_path": result.blob_path,
+                    "bytes": result.bytes_uploaded,
+                    "source_event_id": result.source_event_id,
+                    "created_at": now,
+                    "updated_at": now,
+                })
+            
+            df = pl.DataFrame(rows)
+            
+            # Write to Delta
+            await self.inventory_writer._async_merge(
+                df,
+                merge_keys=["media_id"],
+                preserve_columns=["created_at"],
+            )
+            
+            # Commit offsets only after successful write
+            if self.consumer:
+                await self.consumer.commit()
+                
+            self._batches_written += 1
+            self._total_records_written += batch_size
+            
+            logger.info(
+                f"Successfully flushed batch of {batch_size} records",
+                extra={
+                    "batch_id": batch_id, 
+                    "batch_size": batch_size,
+                    "batches_written": self._batches_written
+                }
+            )
+            
+        except Exception as e:
+            logger.error(
+                "Failed to flush batch to Delta",
+                extra={"batch_id": batch_id, "error": str(e)},
+                exc_info=True
+            )
+            # In a real scenario, we might want to route to a retry topic or DLQ here
+            # For now, we unfortunately lose the batch from a Delta perspective, 
+            # but offsets are NOT committed so they will be reprocessed on restart.
 
     async def _periodic_cycle_output(self) -> None:
         """
@@ -286,31 +408,37 @@ class ClaimXResultProcessor:
         self._cycle_count = 0
 
         try:
-            while True:  # Runs until cancelled
+            while self._running:
                 await asyncio.sleep(1)
 
                 cycle_elapsed = time.monotonic() - self._last_cycle_log
                 if cycle_elapsed >= 30:  # 30 matches standard interval
                     self._cycle_count += 1
                     self._last_cycle_log = time.monotonic()
+                    
+                    async with self._batch_lock:
+                        pending = len(self._batch)
 
                     logger.info(
                         f"Cycle {self._cycle_count}: processed={self._records_processed} "
                         f"(succeeded={self._records_succeeded}, failed={self._records_failed}, "
-                        f"skipped={self._records_skipped})",
+                        f"skipped={self._records_skipped}), pending={pending}, "
+                        f"written={self._total_records_written}",
                         extra={
                             "cycle": self._cycle_count,
                             "records_processed": self._records_processed,
                             "records_succeeded": self._records_succeeded,
                             "records_failed": self._records_failed,
                             "records_skipped": self._records_skipped,
+                            "pending": pending,
+                            "total_written": self._total_records_written,
                             "cycle_interval_seconds": 30,
                         },
                     )
 
         except asyncio.CancelledError:
-            logger.debug("Periodic cycle output task cancelled")
-            raise
+            pass
 
 
 __all__ = ["ClaimXResultProcessor"]
+

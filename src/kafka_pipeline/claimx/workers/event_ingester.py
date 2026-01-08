@@ -31,12 +31,10 @@ from core.logging.context import set_log_context
 from core.logging.setup import get_logger
 from kafka_pipeline.config import KafkaConfig
 from kafka_pipeline.common.consumer import BaseKafkaConsumer
-from kafka_pipeline.common.metrics import record_delta_write
 from kafka_pipeline.common.producer import BaseKafkaProducer
 from kafka_pipeline.claimx.monitoring import HealthCheckServer
 from kafka_pipeline.claimx.schemas.events import ClaimXEventMessage
 from kafka_pipeline.claimx.schemas.tasks import ClaimXEnrichmentTask
-from kafka_pipeline.claimx.writers import ClaimXEventsDeltaWriter
 
 logger = get_logger(__name__)
 
@@ -57,7 +55,6 @@ class ClaimXEventIngesterWorker:
     Features:
     - Deterministic UUID5 event_id generation for consistent tracking
     - All events trigger enrichment (not just file events)
-    - Non-blocking Delta Lake writes for analytics
     - Graceful shutdown with background task tracking
 
     Usage:
@@ -79,8 +76,6 @@ class ClaimXEventIngesterWorker:
         self,
         config: KafkaConfig,
         domain: str = "claimx",
-        enable_delta_writes: bool = True,
-        events_table_path: str = "",
         enrichment_topic: str = "",
         producer_config: Optional[KafkaConfig] = None,
     ):
@@ -103,18 +98,6 @@ class ClaimXEventIngesterWorker:
         self.enrichment_topic = enrichment_topic or config.get_topic(domain, "enrichment_pending")
         self.producer: Optional[BaseKafkaProducer] = None
         self.consumer: Optional[BaseKafkaConsumer] = None
-        self.delta_writer: Optional[ClaimXEventsDeltaWriter] = None
-        self.enable_delta_writes = enable_delta_writes
-
-        # Initialize Delta writer if enabled and path provided
-        if self.enable_delta_writes and events_table_path:
-            self.delta_writer = ClaimXEventsDeltaWriter(
-                table_path=events_table_path,
-            )
-        elif self.enable_delta_writes:
-            logger.warning(
-                "Delta writes enabled but no events_table_path provided, skipping"
-            )
 
         # Background task tracking for graceful shutdown
         self._pending_tasks: Set[asyncio.Task] = set()
@@ -143,7 +126,6 @@ class ClaimXEventIngesterWorker:
                 "consumer_group": config.get_consumer_group(domain, "event_ingester"),
                 "events_topic": config.get_topic(domain, "events"),
                 "enrichment_topic": self.enrichment_topic,
-                "delta_writes_enabled": self.enable_delta_writes,
                 "separate_producer_config": producer_config is not None,
             },
         )
@@ -444,15 +426,6 @@ class ClaimXEventIngesterWorker:
             },
         )
 
-        # Write event to Delta Lake for analytics (non-blocking)
-        # Tracked for graceful shutdown
-        if self.delta_writer:
-            self._create_tracked_task(
-                self._write_event_to_delta(event),
-                task_name="delta_write",
-                context={"event_id": event.event_id},
-            )
-
         # Create enrichment task for this event
         # All events need enrichment (to fetch entity data from API)
         await self._create_enrichment_task(event)
@@ -513,49 +486,6 @@ class ClaimXEventIngesterWorker:
             )
             raise
 
-    async def _write_event_to_delta(self, event: ClaimXEventMessage) -> None:
-        """
-        Write ClaimX event to Delta Lake table (background task).
-
-        This method runs as a background task and doesn't block Kafka processing.
-        Failures are logged but don't affect the main event processing flow.
-
-        Args:
-            event: ClaimXEventMessage to write to Delta
-        """
-        try:
-            # Convert to dict for writer
-            event_dict = event.model_dump()
-
-            # Write using ClaimXEventsDeltaWriter
-            success = await self.delta_writer.write_events([event_dict])
-            record_delta_write(
-                table="claimx_events",
-                event_count=1,
-                success=success,
-            )
-
-            if not success:
-                logger.warning(
-                    "Delta write failed for ClaimX event",
-                    extra={"event_id": event.event_id},
-                )
-
-        except Exception as e:
-            # Catch all exceptions to prevent background task from crashing
-            logger.error(
-                "Unexpected error writing ClaimX event to Delta",
-                extra={
-                    "event_id": event.event_id,
-                    "error": str(e),
-                },
-                exc_info=True,
-            )
-            record_delta_write(
-                table="claimx_events",
-                event_count=1,
-                success=False,
-            )
 
     async def _periodic_cycle_output(self) -> None:
         """
