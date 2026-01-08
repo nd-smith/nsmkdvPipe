@@ -580,6 +580,10 @@ def load_config(
 
     # Load ClaimX API token from environment variables or YAML
     claimx_api_token = os.getenv("CLAIMX_API_TOKEN") or claimx_api.get("token", "")
+    if not claimx_api_token:
+        print("WARNING: CLAIMX_API_TOKEN not found in environment variables or config.yaml")
+    else:
+        print("INFO: CLAIMX_API_TOKEN loaded successfully")
 
     # Build KafkaConfig instance
     config = KafkaConfig(

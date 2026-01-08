@@ -58,9 +58,10 @@ class ClaimXEntityDeltaWorker(BaseKafkaConsumer):
         
         super().__init__(
             config=config,
-            topic=entity_rows_topic,
-            group_id_suffix="entity-delta-writer",
             domain=domain,
+            worker_name="entity_delta_writer",
+            topics=[entity_rows_topic],
+            message_handler=self._handle_message,
         )
 
         self.producer: Optional[BaseKafkaProducer] = None
