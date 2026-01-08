@@ -5,9 +5,9 @@ Consolidates type conversion, timestamp handling, and timing utilities
 used across handler modules.
 """
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 
 def safe_int(value: Any) -> Optional[int]:
@@ -40,6 +40,28 @@ def safe_str(value: Any) -> Optional[str]:
     """
     if value is None:
         return None
+    s = str(value).strip()
+    return s if s else None
+
+
+def safe_str_id(value: Any) -> Optional[str]:
+    """
+    Safely convert ID value to string.
+
+    Handles integers and strings. Use for ID columns
+    that are StringType in Delta schema (e.g., media_id, project_id).
+
+    Args:
+        value: ID value to convert
+
+    Returns:
+        String ID or None
+    """
+    if value is None:
+        return None
+    # Handle numeric values
+    if isinstance(value, (int, float)):
+        return str(int(value))
     s = str(value).strip()
     return s if s else None
 
@@ -128,10 +150,68 @@ def now_iso() -> str:
     """
     Return current UTC time as ISO format string.
 
+    Use for columns with StringType in Delta schema.
+
     Returns:
         Current UTC time in ISO format
     """
     return datetime.now(timezone.utc).isoformat()
+
+
+def now_datetime() -> datetime:
+    """
+    Return current UTC time as datetime object.
+
+    Use for columns with TimestampType in Delta schema
+    (e.g., created_at, updated_at, last_enriched_at).
+
+    Returns:
+        Current UTC datetime object
+    """
+    return datetime.now(timezone.utc)
+
+
+def today_date() -> date:
+    """
+    Return current UTC date as date object.
+
+    Use for columns with DateType in Delta schema
+    (e.g., created_date).
+
+    Returns:
+        Current UTC date object
+    """
+    return datetime.now(timezone.utc).date()
+
+
+def parse_timestamp_dt(value: Any) -> Optional[datetime]:
+    """
+    Parse timestamp to datetime object.
+
+    Handles datetime objects, ISO strings with timezone.
+    Use for columns with TimestampType in Delta schema.
+
+    Args:
+        value: Timestamp value to parse
+
+    Returns:
+        datetime object or None
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return None
+        try:
+            # Handle Z suffix
+            s = s.replace("Z", "+00:00")
+            return datetime.fromisoformat(s)
+        except ValueError:
+            return None
+    return None
 
 
 def elapsed_ms(start: datetime) -> int:
