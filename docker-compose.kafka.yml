@@ -13,6 +13,7 @@
 #   /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server localhost:9092 --topic claimx.downloads.pending.retry.10m --partitions 3 --replication-factor 1
 #   /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server localhost:9092 --topic claimx.downloads.pending.retry.20m --partitions 3 --replication-factor 1
 #   /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server localhost:9092 --topic claimx.downloads.pending.retry.40m --partitions 3 --replication-factor 1
+#   /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server localhost:9092 --topic claimx.entities.rows --partitions 6 --replication-factor 1
 # '
 
 services:
@@ -93,6 +94,11 @@ services:
         /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server kafka:9092 --topic claimx.downloads.pending.retry.10m --partitions 3 --replication-factor 1
         /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server kafka:9092 --topic claimx.downloads.pending.retry.20m --partitions 3 --replication-factor 1
         /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server kafka:9092 --topic claimx.downloads.pending.retry.40m --partitions 3 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server kafka:9092 --topic claimx.entities.rows --partitions 6 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server kafka:9092 --topic claimx.entities.rows.dlq --partitions 3 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server kafka:9092 --topic claimx.entities.rows.retry.60s --partitions 3 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server kafka:9092 --topic claimx.entities.rows.retry.300s --partitions 3 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server kafka:9092 --topic claimx.entities.rows.retry.900s --partitions 3 --replication-factor 1
         echo "Topics created successfully:"
         /opt/kafka/bin/kafka-topics.sh --list --bootstrap-server kafka:9092
 

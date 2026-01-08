@@ -579,9 +579,9 @@ def load_config(
     claimx_root = yaml_data.get("claimx", {})
     claimx_api = claimx_root.get("api", {})
 
-    # Load ClaimX API credentials from environment variables
-    claimx_api_username = os.getenv("CLAIMX_API_USERNAME", "")
-    claimx_api_password = os.getenv("CLAIMX_API_PASSWORD", "")
+    # Load ClaimX API credentials from environment variables or YAML
+    claimx_api_username = os.getenv("CLAIMX_API_USERNAME") or claimx_api.get("username", "")
+    claimx_api_password = os.getenv("CLAIMX_API_PASSWORD") or claimx_api.get("password", "")
 
     # Build KafkaConfig instance
     config = KafkaConfig(

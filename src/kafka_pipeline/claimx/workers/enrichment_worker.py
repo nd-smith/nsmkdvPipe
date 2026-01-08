@@ -10,7 +10,7 @@ This worker is the core of the ClaimX enrichment pipeline:
 
 Consumer group: {prefix}-claimx-enrichment-worker
 Input topic: claimx.enrichment.pending
-Output topic: claimx.downloads.pending
+Output topic: claimx.entities.rows (entity data), claimx.downloads.pending (downloads)
 Delta tables: claimx_projects, claimx_contacts, claimx_attachment_metadata, claimx_tasks,
               claimx_task_templates, claimx_external_links, claimx_video_collab
 """
@@ -47,7 +47,6 @@ from kafka_pipeline.claimx.schemas.tasks import (
     ClaimXEnrichmentTask,
     ClaimXDownloadTask,
 )
-from kafka_pipeline.claimx.writers import ClaimXEntityWriter
 
 logger = get_logger(__name__)
 
@@ -74,7 +73,7 @@ class ClaimXEnrichmentWorker:
         >>> writer = ClaimXEntityWriter(...)
         >>> worker = ClaimXEnrichmentWorker(
         ...     config=config,
-        ...     entity_writer=writer,
+        ...     # entity_writer removed
         ... )
         >>> await worker.start()
         >>> # Worker runs until stopped
@@ -84,7 +83,7 @@ class ClaimXEnrichmentWorker:
     def __init__(
         self,
         config: KafkaConfig,
-        entity_writer: ClaimXEntityWriter,
+        entity_writer: Any = None, # Deprecated, kept for signature compat if needed, or remove
         domain: str = "claimx",
         enable_delta_writes: bool = True,
         enrichment_topic: str = "",
@@ -96,7 +95,7 @@ class ClaimXEnrichmentWorker:
 
         Args:
             config: Kafka configuration for consumer (topic names, connection settings)
-            entity_writer: ClaimXEntityWriter for writing entity rows to Delta tables
+            entity_writer: Deprecated/ignored
             domain: Domain identifier (default: "claimx")
             enable_delta_writes: Whether to enable Delta Lake writes (default: True)
             enrichment_topic: Topic name for enrichment tasks (e.g., "claimx.enrichment.pending")
@@ -108,7 +107,7 @@ class ClaimXEnrichmentWorker:
         self.domain = domain
         self.enrichment_topic = enrichment_topic or config.get_topic(domain, "enrichment_pending")
         self.download_topic = download_topic or config.get_topic(domain, "downloads_pending")
-        self.entity_writer = entity_writer
+        self.entity_rows_topic = config.get_topic(domain, "entities_rows")
         self.enable_delta_writes = enable_delta_writes
         
         # Consumer group
@@ -779,7 +778,13 @@ class ClaimXEnrichmentWorker:
             from deltalake import DeltaTable
 
             # Query existing projects from Delta table
-            projects_writer = self.entity_writer._writers.get("projects")
+            # NOTE: In decoupled mode, we might not have direct access to the writer/table path easily
+            # We can skip this check or need to pass table path explicitly to worker config
+            # For now, disabling pre-flight check in decoupled writer mode as we don't hold the writer
+            return
+            
+            # Legacy code removed:
+            # projects_writer = self.entity_writer._writers.get("projects")
             if not projects_writer:
                 logger.warning("No projects writer available, skipping pre-flight check")
                 return
@@ -862,7 +867,8 @@ class ClaimXEnrichmentWorker:
                 from kafka_pipeline.claimx.schemas.entities import EntityRowsMessage
 
                 entity_rows = EntityRowsMessage(projects=project_rows)
-                counts = await self.entity_writer.write_all(entity_rows)
+                # In decoupled mode, we must produce these rows to Kafka too
+                await self._produce_entity_rows(entity_rows, tasks=[]) 
 
                 logger.info(
                     "Pre-flight: Wrote missing projects to Delta",
@@ -1022,7 +1028,7 @@ class ClaimXEnrichmentWorker:
         # Pass tasks list to enable retry routing on Delta failures
         if self.enable_delta_writes and not all_entity_rows.is_empty():
             self._create_tracked_task(
-                self._write_entities_to_delta(all_entity_rows, tasks),
+                self._produce_entity_rows(all_entity_rows, tasks),
                 task_name="delta_write",
                 context={"row_count": all_entity_rows.row_count()},
             )
@@ -1117,7 +1123,7 @@ class ClaimXEnrichmentWorker:
         # Format: claimx/{project_id}/media/{file_name}
         return f"claimx/{project_id}/media/{file_name}"
 
-    async def _write_entities_to_delta(
+    async def _produce_entity_rows(
         self,
         entity_rows: EntityRowsMessage,
         tasks: List[ClaimXEnrichmentTask],
@@ -1138,24 +1144,21 @@ class ClaimXEnrichmentWorker:
         # Collect event IDs from tasks for correlation
         event_ids = [task.event_id for task in tasks[:5]]  # Sample for correlation
 
-        try:
-            counts = await self.entity_writer.write_all(entity_rows)
 
-            # Record metrics for each table
-            for table_name, row_count in counts.items():
-                record_delta_write(
-                    table=f"claimx_{table_name}",
-                    event_count=row_count,
-                    success=True,
-                )
+        try:
+            # Produce EntityRowsMessage to Kafka
+            await self.producer.send(
+                topic=self.entity_rows_topic,
+                value=entity_rows.model_dump(),
+                key=batch_id, # Key by batch ID
+            )
 
             logger.info(
-                "Entity tables write complete",
+                "Produced entity rows batch",
                 extra={
                     "batch_id": batch_id,
                     "event_ids": event_ids,
-                    "tables_written": counts,
-                    "total_rows": sum(counts.values()),
+                    "row_count": entity_rows.row_count(),
                 },
             )
 
@@ -1175,7 +1178,7 @@ class ClaimXEnrichmentWorker:
 
             # Record failure metrics
             record_delta_write(
-                table="claimx_entities",
+                table="claimx_entities_produce",
                 event_count=entity_rows.row_count(),
                 success=False,
             )

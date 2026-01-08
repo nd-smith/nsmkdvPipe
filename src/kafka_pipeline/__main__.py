@@ -21,7 +21,10 @@ Usage:
     python -m kafka_pipeline --worker claimx-enricher
     python -m kafka_pipeline --worker claimx-downloader
     python -m kafka_pipeline --worker claimx-uploader
+    python -m kafka_pipeline --worker claimx-uploader
     python -m kafka_pipeline --worker claimx-result-processor
+    python -m kafka_pipeline --worker claimx-delta-writer
+    python -m kafka_pipeline --worker claimx-entity-writer
 
     # Run multiple worker instances (for horizontal scaling)
     python -m kafka_pipeline --worker xact-download --count 4
@@ -70,7 +73,8 @@ from core.logging.setup import get_logger, setup_logging, setup_multi_worker_log
 # Worker stages for multi-worker logging
 WORKER_STAGES = [
     "xact-poller", "xact-event-ingester", "xact-local-ingester", "xact-delta-writer", "xact-delta-retry", "xact-download", "xact-upload", "xact-result-processor",
-    "claimx-poller", "claimx-ingester", "claimx-enricher", "claimx-downloader", "claimx-uploader", "claimx-result-processor"
+    "claimx-poller", "claimx-ingester", "claimx-enricher", "claimx-downloader", "claimx-uploader", "claimx-result-processor",
+    "claimx-delta-writer", "claimx-entity-writer",
 ]
 
 # Placeholder logger until setup_logging() is called in main()
@@ -157,7 +161,7 @@ Examples:
         "--worker",
         choices=[
             "xact-poller", "xact-event-ingester", "xact-local-ingester", "xact-delta-writer", "xact-delta-retry", "xact-download", "xact-upload", "xact-result-processor",
-            "claimx-poller", "claimx-ingester", "claimx-delta-writer", "claimx-enricher", "claimx-downloader", "claimx-uploader", "claimx-result-processor",
+            "claimx-poller", "claimx-ingester", "claimx-delta-writer", "claimx-entity-writer", "claimx-enricher", "claimx-downloader", "claimx-uploader", "claimx-result-processor",
             "all"
         ],
         default="all",
@@ -790,26 +794,14 @@ async def run_claimx_enrichment_worker(
     finishes its current batch before exiting.
     """
     from kafka_pipeline.claimx.workers.enrichment_worker import ClaimXEnrichmentWorker
-    from kafka_pipeline.claimx.writers.delta_entities import ClaimXEntityWriter
 
     set_log_context(stage="claimx-enricher")
     logger.info("Starting ClaimX Enrichment worker...")
 
-    # Instantiate entity writer with paths from config
-    entity_writer = ClaimXEntityWriter(
-        projects_table_path=pipeline_config.claimx_projects_table_path,
-        contacts_table_path=pipeline_config.claimx_contacts_table_path,
-        media_table_path=pipeline_config.claimx_media_table_path,
-        tasks_table_path=pipeline_config.claimx_tasks_table_path,
-        task_templates_table_path=pipeline_config.claimx_task_templates_table_path,
-        external_links_table_path=pipeline_config.claimx_external_links_table_path,
-        video_collab_table_path=pipeline_config.claimx_video_collab_table_path,
-    )
 
     worker = ClaimXEnrichmentWorker(
         config=kafka_config,
         domain="claimx",
-        entity_writer=entity_writer,
         enable_delta_writes=pipeline_config.enable_delta_writes,
     )
     shutdown_event = get_shutdown_event()
@@ -1412,6 +1404,19 @@ def main():
                 )
             else:
                 loop.run_until_complete(run_claimx_result_processor(local_kafka_config, pipeline_config))
+        elif args.worker == "claimx-entity-writer":
+            # ClaimX entity delta writer
+            if args.count > 1:
+                loop.run_until_complete(
+                    run_worker_pool(
+                        run_claimx_entity_delta_worker, args.count, "claimx-entity-writer",
+                        local_kafka_config, pipeline_config,
+                    )
+                )
+            else:
+                loop.run_until_complete(
+                    run_claimx_entity_delta_worker(local_kafka_config, pipeline_config)
+                )
         else:  # all
             loop.run_until_complete(
                 run_all_workers(pipeline_config, enable_delta_writes)
@@ -1485,6 +1490,56 @@ async def run_claimx_delta_events_worker(
         # Clean up resources after worker exits
         await worker.stop()
         await producer.stop()
+
+
+async def run_claimx_entity_delta_worker(
+    kafka_config,
+    pipeline_config,
+):
+    """Run the ClaimX Entity Delta worker.
+
+    Consumes EntityRowsMessage from claimx.entities.rows topic and writes
+    batch updates to Delta tables (projects, contacts, media, etc.).
+
+    Supports graceful shutdown.
+    """
+    from kafka_pipeline.claimx.workers.entity_delta_worker import ClaimXEntityDeltaWorker
+
+    set_log_context(stage="claimx-entity-writer")
+    logger.info("Starting ClaimX Entity Delta worker...")
+
+    worker = ClaimXEntityDeltaWorker(
+        config=kafka_config,
+        domain="claimx",
+        projects_table_path=pipeline_config.claimx_projects_table_path,
+        contacts_table_path=pipeline_config.claimx_contacts_table_path,
+        media_table_path=pipeline_config.claimx_media_table_path,
+        tasks_table_path=pipeline_config.claimx_tasks_table_path,
+        task_templates_table_path=pipeline_config.claimx_task_templates_table_path,
+        external_links_table_path=pipeline_config.claimx_external_links_table_path,
+        video_collab_table_path=pipeline_config.claimx_video_collab_table_path,
+    )
+    shutdown_event = get_shutdown_event()
+
+    async def shutdown_watcher():
+        """Wait for shutdown signal and stop worker gracefully."""
+        await shutdown_event.wait()
+        logger.info("Shutdown signal received, stopping claimx entity delta worker...")
+        await worker.stop()
+
+    # Start shutdown watcher alongside worker
+    watcher_task = asyncio.create_task(shutdown_watcher())
+
+    try:
+        await worker.start()
+    finally:
+        # Guard against event loop being closed during shutdown
+        try:
+            watcher_task.cancel()
+            await watcher_task
+        except (asyncio.CancelledError, RuntimeError):
+            pass
+        await worker.stop()
 
 
 if __name__ == "__main__":
