@@ -208,10 +208,10 @@ class ClaimXEnrichmentWorker:
         await self.health_server.start()
 
         # Initialize API client
+        # Initialize API client
         self.api_client = ClaimXApiClient(
             base_url=self.consumer_config.claimx_api_url,
-            username=self.consumer_config.claimx_api_username,
-            password=self.consumer_config.claimx_api_password,
+            token=self.consumer_config.claimx_api_token,
             timeout_seconds=self.consumer_config.claimx_api_timeout_seconds,
             max_concurrent=self.consumer_config.claimx_api_concurrency,
         )

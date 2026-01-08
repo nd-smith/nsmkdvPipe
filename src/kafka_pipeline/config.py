@@ -91,8 +91,7 @@ class KafkaConfig:
     # CLAIMX API CONFIGURATION
     # =========================================================================
     claimx_api_url: str = ""
-    claimx_api_username: str = ""
-    claimx_api_password: str = ""
+    claimx_api_token: str = ""
     claimx_api_timeout_seconds: int = 30
     claimx_api_concurrency: int = 20
 
@@ -579,9 +578,8 @@ def load_config(
     claimx_root = yaml_data.get("claimx", {})
     claimx_api = claimx_root.get("api", {})
 
-    # Load ClaimX API credentials from environment variables or YAML
-    claimx_api_username = os.getenv("CLAIMX_API_USERNAME") or claimx_api.get("username", "")
-    claimx_api_password = os.getenv("CLAIMX_API_PASSWORD") or claimx_api.get("password", "")
+    # Load ClaimX API token from environment variables or YAML
+    claimx_api_token = os.getenv("CLAIMX_API_TOKEN") or claimx_api.get("token", "")
 
     # Build KafkaConfig instance
     config = KafkaConfig(
@@ -606,8 +604,7 @@ def load_config(
         cache_dir=storage.get("cache_dir") or _get_default_cache_dir(),
         # ClaimX API
         claimx_api_url=claimx_api.get("base_url", ""),
-        claimx_api_username=claimx_api_username,
-        claimx_api_password=claimx_api_password,
+        claimx_api_token=claimx_api_token,
         claimx_api_timeout_seconds=claimx_api.get("timeout_seconds", 30),
         claimx_api_concurrency=claimx_api.get("max_concurrent", 20),
     )

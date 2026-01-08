@@ -527,8 +527,7 @@ claimx:
     max_concurrent: 20
 
     # Credentials are loaded from environment variables ONLY:
-    # - CLAIMX_API_USERNAME
-    # - CLAIMX_API_PASSWORD
+    # - CLAIMX_API_TOKEN (Base64 encoded Basic auth token)
 
 
 # =============================================================================

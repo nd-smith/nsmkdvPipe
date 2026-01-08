@@ -17,7 +17,7 @@ from kafka_pipeline.config import KafkaConfig
 from kafka_pipeline.common.consumer import BaseKafkaConsumer
 from kafka_pipeline.common.metrics import record_delta_write
 from kafka_pipeline.common.producer import BaseKafkaProducer
-from kafka_pipeline.claimx.retry.handler import delta_retry_handler
+from kafka_pipeline.claimx.retry.handler import DeltaRetryHandler
 from kafka_pipeline.claimx.schemas.entities import EntityRowsMessage
 from kafka_pipeline.claimx.writers.delta_entities import ClaimXEntityWriter
 
@@ -107,8 +107,8 @@ class ClaimXEntityDeltaWorker(BaseKafkaConsumer):
         await self.producer.start()
         
         # Initialize retry handler
-        self.retry_handler = delta_retry_handler(
-            config=self.config,
+        self.retry_handler = DeltaRetryHandler(
+            config=self.producer_config,
             producer=self.producer,
             table_path="claimx_entities", # logical name for retry context
             retry_delays=self._retry_delays,
