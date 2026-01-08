@@ -9,6 +9,7 @@ Migrated from verisk_pipeline.storage.delta for kafka_pipeline reorganization (R
 
 from __future__ import annotations
 
+import inspect
 import logging
 import uuid
 from dataclasses import dataclass
@@ -16,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import polars as pl
-from deltalake import DeltaTable, write_deltalake
+from deltalake import DeltaTable, write_deltalake as _write_deltalake
 
 from kafka_pipeline.common.auth import get_storage_options
 from kafka_pipeline.common.retry import RetryConfig, with_retry
@@ -30,6 +31,24 @@ from kafka_pipeline.common.logging import (
 )
 
 logger = get_logger(__name__)
+
+
+# Check if deltalake supports schema_mode parameter (added in newer versions)
+_WRITE_DELTALAKE_SUPPORTS_SCHEMA_MODE = (
+    "schema_mode" in inspect.signature(_write_deltalake).parameters
+)
+
+
+def write_deltalake(*args: Any, **kwargs: Any) -> None:
+    """
+    Wrapper for deltalake.write_deltalake with backwards compatibility.
+
+    Older versions of deltalake don't support schema_mode parameter.
+    This wrapper removes it if not supported to maintain compatibility.
+    """
+    if not _WRITE_DELTALAKE_SUPPORTS_SCHEMA_MODE and "schema_mode" in kwargs:
+        kwargs.pop("schema_mode")
+    return _write_deltalake(*args, **kwargs)
 
 # Retry config for Delta operations
 DELTA_RETRY_CONFIG = RetryConfig(
