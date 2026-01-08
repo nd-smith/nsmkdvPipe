@@ -451,7 +451,7 @@ class ClaimXEnrichmentWorker:
                 await self.consumer.commit()
                 
                 # Update metrics
-                update_assigned_partitions(len(self.consumer.assignment()), self.consumer_group)
+                update_assigned_partitions(self.consumer_group, len(self.consumer.assignment()))
 
         except asyncio.CancelledError:
             logger.debug("Consumption loop cancelled")
@@ -1149,7 +1149,7 @@ class ClaimXEnrichmentWorker:
             # Produce EntityRowsMessage to Kafka
             await self.producer.send(
                 topic=self.entity_rows_topic,
-                value=entity_rows.model_dump(),
+                value=entity_rows,
                 key=batch_id, # Key by batch ID
             )
 

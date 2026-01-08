@@ -174,7 +174,7 @@ class EnrichmentRetryHandler:
 
         # Add error context to metadata (truncate to prevent huge messages)
         error_message = str(error)[:500]
-        if not hasattr(updated_task, 'metadata'):
+        if updated_task.metadata is None:
             updated_task.metadata = {}
         updated_task.metadata["last_error"] = error_message
         updated_task.metadata["error_category"] = error_category.value
