@@ -257,10 +257,9 @@ class KafkaConfig:
             domain: "xact" or "claimx"
 
         Returns:
-            Maximum number of retries
+            Maximum number of retries (derived from retry_delays length)
         """
-        domain_config = self.xact if domain == "xact" else self.claimx
-        return domain_config.get("max_retries", 4)
+        return len(self.get_retry_delays(domain))
 
     def validate(self) -> None:
         """Validate configuration for correctness and constraints.
