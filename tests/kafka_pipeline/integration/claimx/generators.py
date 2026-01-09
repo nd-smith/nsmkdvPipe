@@ -125,7 +125,8 @@ def create_download_task(
         ClaimXDownloadTask: Test download task
     """
     # Default blob_path if not provided
-    default_blob_path = f"claimx/project_{project_id}/media_{media_id}.jpg"
+    # Note: path is relative to OneLake domain base path (which includes 'claimx')
+    default_blob_path = f"project_{project_id}/media_{media_id}.jpg"
 
     task_data = {
         "media_id": str(media_id),  # Convert to string
@@ -199,7 +200,7 @@ def create_upload_result_message(
         "project_id": str(project_id),  # Convert to string
         "status": status,
         "download_url": kwargs.get("download_url", f"https://s3.amazonaws.com/claimx/media_{media_id}.jpg"),
-        "blob_path": kwargs.get("blob_path", f"claimx/project_{project_id}/media_{media_id}.jpg"),
+        "blob_path": kwargs.get("blob_path", f"project_{project_id}/media_{media_id}.jpg"),
         "file_type": kwargs.get("file_type", "jpg"),
         "file_name": kwargs.get("file_name", f"media_{media_id}.jpg"),
         "source_event_id": kwargs.get("source_event_id", ""),

@@ -572,7 +572,7 @@ def create_claimx_download_task(
 
     # Auto-generate destination path
     if destination_path is None:
-        destination_path = f"claimx/{project_id}/media/{file_name}"
+        destination_path = f"{project_id}/media/{file_name}"
 
     # Default creation timestamp
     if created_at is None:
@@ -650,7 +650,7 @@ def create_claimx_cached_download_message(
 
     # Auto-generate paths
     if destination_path is None:
-        destination_path = f"claimx/{project_id}/media/{file_name}"
+        destination_path = f"{project_id}/media/{file_name}"
 
     if local_cache_path is None:
         local_cache_path = f"/tmp/kafka_pipeline_cache/{media_id}/{file_name}"
@@ -739,7 +739,7 @@ def create_claimx_upload_result_message(
 
     # Auto-generate blob path
     if blob_path is None:
-        blob_path = f"claimx/{project_id}/media/{file_name}"
+        blob_path = f"{project_id}/media/{file_name}"
 
     # Default creation timestamp
     if created_at is None:

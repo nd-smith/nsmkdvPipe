@@ -944,18 +944,23 @@ class ClaimXEnrichmentWorker:
         """
         Generate blob storage path for media file.
 
+        The path is relative to the domain-specific OneLake base path,
+        which already includes the 'claimx' prefix.
+
         Args:
             media_row: Media entity row dict
 
         Returns:
-            Blob path string
+            Blob path string (relative to OneLake domain base path)
         """
         project_id = media_row.get("project_id", "unknown")
         media_id = media_row.get("media_id", "unknown")
         file_name = media_row.get("file_name", f"media_{media_id}")
 
-        # Format: claimx/{project_id}/media/{file_name}
-        return f"claimx/{project_id}/media/{file_name}"
+        # Format: {project_id}/media/{file_name}
+        # Note: 'claimx/' prefix is NOT included here because the OneLake
+        # domain-specific base path already contains it
+        return f"{project_id}/media/{file_name}"
 
     async def _produce_entity_rows(
         self,
