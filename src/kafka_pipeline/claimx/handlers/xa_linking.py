@@ -45,7 +45,7 @@ class XALinkingHandler(NoOpHandler):
             "xa_autolink_fail": True,
             "xa_autolink_fail_at": now,
             "updated_at": now,
-            "source_event_id": event.event_id,
+            "event_id": event.event_id,
         })
 
         log_with_context(

@@ -823,7 +823,7 @@ class ClaimXEnrichmentWorker:
                     # Transform to project row
                     project_row = ProjectTransformer.to_project_row(
                         response,
-                        source_event_id="pre-flight-check",
+                        event_id="pre-flight-check",
                     )
 
                     if project_row.get("project_id") is not None:
@@ -919,7 +919,7 @@ class ClaimXEnrichmentWorker:
                 blob_path=self._generate_blob_path(media_row),
                 file_type=media_row.get("file_type", ""),
                 file_name=media_row.get("file_name", ""),
-                source_event_id=media_row.get("source_event_id", ""),
+                source_event_id=media_row.get("event_id", ""),
                 retry_count=0,
                 expires_at=media_row.get("expires_at"),
                 refresh_count=0,

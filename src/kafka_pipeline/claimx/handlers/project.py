@@ -83,7 +83,7 @@ class ProjectHandler(EventHandler):
                             "project_id": event.project_id,
                             "master_file_name": event.master_file_name,
                             "updated_at": now_datetime(),
-                            "source_event_id": event.event_id,
+                            "event_id": event.event_id,
                         }
                     )
 
@@ -194,7 +194,7 @@ class ProjectHandler(EventHandler):
         # Transform response to entity rows
         project_row = ProjectTransformer.to_project_row(
             response,
-            source_event_id=source_event_id,
+            event_id=source_event_id,
         )
         if project_row.get("project_id") is not None:
             rows.projects.append(project_row)
@@ -202,7 +202,7 @@ class ProjectHandler(EventHandler):
         contact_rows = ProjectTransformer.to_contact_rows(
             response,
             project_id=str(project_id),
-            source_event_id=source_event_id or "",
+            event_id=source_event_id or "",
         )
         rows.contacts.extend(contact_rows)
         
@@ -231,14 +231,14 @@ class ProjectTransformer:
     @staticmethod
     def to_project_row(
         data: Dict[str, Any],
-        source_event_id: Optional[str],
+        event_id: Optional[str],
     ) -> Dict[str, Any]:
         """
         Transform API response to project row.
 
         Args:
             data: Full API response
-            source_event_id: Event ID for traceability
+            event_id: Event ID for traceability
 
         Returns:
             Project row dict
@@ -324,7 +324,7 @@ class ProjectTransformer:
                 project.get("customExternalUniqueId")
             ),
             "company_name": safe_str(inner.get("companyName")),
-            "source_event_id": source_event_id,
+            "event_id": event_id,
             "created_at": now,
             "updated_at": now,
         }
@@ -333,7 +333,7 @@ class ProjectTransformer:
     def to_contact_rows(
         data: Dict[str, Any],
         project_id: str,
-        source_event_id: str,
+        event_id: str,
     ) -> List[Dict[str, Any]]:
         """
         Extract contacts from project API response.
@@ -345,7 +345,7 @@ class ProjectTransformer:
         Args:
             data: Full API response
             project_id: Project ID
-            source_event_id: Event ID for traceability
+            event_id: Event ID for traceability
 
         Returns:
             List of contact row dicts
@@ -387,7 +387,7 @@ class ProjectTransformer:
                     "phone_country_code": phone_country_code,
                     "is_primary_contact": True,
                     "master_file_name": None,
-                    "source_event_id": source_event_id,
+                    "event_id": event_id,
                     "created_at": now,
                     "updated_at": now_iso(),
                     "created_date": today,
@@ -413,7 +413,7 @@ class ProjectTransformer:
                             member.get("primaryContact", False)
                         ),
                         "master_file_name": safe_str(member.get("mfn")),
-                        "source_event_id": source_event_id,
+                        "event_id": event_id,
                         "created_at": now,
                         "updated_at": now_iso(),
                         "created_date": today,

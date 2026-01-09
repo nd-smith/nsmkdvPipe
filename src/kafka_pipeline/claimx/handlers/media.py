@@ -56,7 +56,7 @@ class MediaTransformer:
     def to_media_row(
         media: Dict[str, Any],
         project_id: Any,
-        source_event_id: str,
+        event_id: str,
     ) -> Dict[str, Any]:
         """
         Transform media item to row.
@@ -64,7 +64,7 @@ class MediaTransformer:
         Args:
             media: Media dict from API
             project_id: Project ID (int or string)
-            source_event_id: Event ID for traceability
+            event_id: Event ID for traceability
 
         Returns:
             Media row dict
@@ -86,7 +86,7 @@ class MediaTransformer:
             "taken_date": safe_str(media.get("takenDate")),
             "full_download_link": download_link,
             "expires_at": safe_str(media.get("expiresAt")),
-            "source_event_id": source_event_id,
+            "event_id": event_id,
             "created_at": now,
             "updated_at": now,
             "last_enriched_at": now,
@@ -278,7 +278,7 @@ class MediaHandler(EventHandler):
             media_row = MediaTransformer.to_media_row(
                 media_data,
                 project_id=project_id,
-                source_event_id=event.event_id,
+                event_id=event.event_id,
             )
             if media_row.get("media_id") is not None:
                 rows.media.append(media_row)
