@@ -44,6 +44,28 @@ CONTACTS_SCHEMA = {
     "last_enriched_at": pl.Datetime("us", "UTC"),
 }
 
+# Schema definitions for media table to ensure proper type casting
+# This prevents schema inference issues when latitude/longitude values are mixed None/string
+MEDIA_SCHEMA = {
+    "media_id": pl.Utf8,
+    "project_id": pl.Utf8,
+    "task_assignment_id": pl.Int64,
+    "file_type": pl.Utf8,
+    "file_name": pl.Utf8,
+    "media_description": pl.Utf8,
+    "media_comment": pl.Utf8,
+    "latitude": pl.Utf8,
+    "longitude": pl.Utf8,
+    "gps_source": pl.Utf8,
+    "taken_date": pl.Utf8,
+    "full_download_link": pl.Utf8,
+    "expires_at": pl.Utf8,
+    "source_event_id": pl.Utf8,
+    "created_at": pl.Utf8,
+    "updated_at": pl.Utf8,
+    "last_enriched_at": pl.Utf8,
+}
+
 
 # Merge keys for each entity table (from verisk_pipeline)
 MERGE_KEYS: Dict[str, List[str]] = {
@@ -268,8 +290,14 @@ class ClaimXEntityWriter:
             return None
 
         try:
-            # Create DataFrame from rows
-            df = pl.DataFrame(rows)
+            # Create DataFrame from rows with explicit schema for contacts and media
+            # to prevent Polars schema inference issues with mixed None/value columns
+            if table_name == "contacts":
+                df = self._create_contacts_dataframe(rows)
+            elif table_name == "media":
+                df = self._create_media_dataframe(rows)
+            else:
+                df = pl.DataFrame(rows)
 
             # Add created_at and updated_at timestamps if not present
             now = datetime.now(timezone.utc)
@@ -400,6 +428,72 @@ class ClaimXEntityWriter:
             df = df.with_columns(cast_exprs)
 
         return df
+
+    def _create_contacts_dataframe(
+        self, rows: List[Dict[str, Any]]
+    ) -> pl.DataFrame:
+        """
+        Create contacts DataFrame with explicit schema to prevent type inference issues.
+
+        Polars infers schema from first N rows. If phone_number is None in early rows
+        and then a numeric-looking string like "8143227531" appears, schema inference
+        can fail. Using explicit schema avoids this.
+
+        Args:
+            rows: List of contact row dicts
+
+        Returns:
+            DataFrame with correct schema
+        """
+        # Build schema dict for columns that exist in the rows
+        if not rows:
+            return pl.DataFrame(rows)
+
+        # Get all column names from the rows
+        all_columns = set()
+        for row in rows:
+            all_columns.update(row.keys())
+
+        # Build schema for columns that exist and have a defined type
+        schema = {}
+        for col in all_columns:
+            if col in CONTACTS_SCHEMA:
+                schema[col] = CONTACTS_SCHEMA[col]
+
+        return pl.DataFrame(rows, schema=schema)
+
+    def _create_media_dataframe(
+        self, rows: List[Dict[str, Any]]
+    ) -> pl.DataFrame:
+        """
+        Create media DataFrame with explicit schema to prevent type inference issues.
+
+        Polars infers schema from first N rows. If latitude/longitude are None in
+        early rows and then string values appear, Polars may infer wrong types.
+        Using explicit schema ensures latitude/longitude are always Utf8 (string).
+
+        Args:
+            rows: List of media row dicts
+
+        Returns:
+            DataFrame with correct schema
+        """
+        # Build schema dict for columns that exist in the rows
+        if not rows:
+            return pl.DataFrame(rows)
+
+        # Get all column names from the rows
+        all_columns = set()
+        for row in rows:
+            all_columns.update(row.keys())
+
+        # Build schema for columns that exist and have a defined type
+        schema = {}
+        for col in all_columns:
+            if col in MEDIA_SCHEMA:
+                schema[col] = MEDIA_SCHEMA[col]
+
+        return pl.DataFrame(rows, schema=schema)
 
 
 __all__ = ["ClaimXEntityWriter", "MERGE_KEYS"]
