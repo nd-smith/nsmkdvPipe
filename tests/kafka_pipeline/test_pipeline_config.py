@@ -108,25 +108,25 @@ class TestEventhouseSourceConfig:
         assert config.eventhouse_query_window_hours == 3
         assert config.overlap_minutes == 8
 
-    def test_load_config_missing_cluster_url(self):
+    def test_load_config_missing_cluster_url(self, tmp_path):
         """Test error when cluster URL is missing."""
-        env = {
-            "EVENTHOUSE_DATABASE": "testdb",
-        }
+        # Create empty config file without cluster_url
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("xact_eventhouse:\n  database: testdb\n")
 
-        with patch.dict(os.environ, env, clear=True):
+        with patch.dict(os.environ, {"EVENTHOUSE_DATABASE": "testdb"}, clear=True):
             with pytest.raises(ValueError, match="cluster_url is required"):
-                EventhouseSourceConfig.load_config()
+                EventhouseSourceConfig.load_config(config_path=config_file)
 
-    def test_load_config_missing_database(self):
+    def test_load_config_missing_database(self, tmp_path):
         """Test error when database is missing."""
-        env = {
-            "EVENTHOUSE_CLUSTER_URL": "https://test.kusto.windows.net",
-        }
+        # Create config file without database
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("xact_eventhouse:\n  cluster_url: https://test.kusto.windows.net\n")
 
-        with patch.dict(os.environ, env, clear=True):
+        with patch.dict(os.environ, {"EVENTHOUSE_CLUSTER_URL": "https://test.kusto.windows.net"}, clear=True):
             with pytest.raises(ValueError, match="database is required"):
-                EventhouseSourceConfig.load_config()
+                EventhouseSourceConfig.load_config(config_path=config_file)
 
 
 class TestPipelineConfig:
@@ -149,7 +149,7 @@ class TestPipelineConfig:
         """Test helper properties for Eventhouse source."""
         config = PipelineConfig(
             event_source=EventSourceType.EVENTHOUSE,
-            eventhouse=EventhouseSourceConfig(
+            xact_eventhouse=EventhouseSourceConfig(
                 cluster_url="https://test.kusto.windows.net",
                 database="testdb",
             ),
@@ -158,8 +158,11 @@ class TestPipelineConfig:
         assert config.is_eventhub_source is False
         assert config.is_eventhouse_source is True
 
-    def test_load_config_eventhub_default(self):
-        """Test loading Event Hub config (default)."""
+    def test_load_config_eventhub_default(self, tmp_path):
+        """Test loading Event Hub config (when configured)."""
+        # Create config file with eventhub as source
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("event_source: eventhub\n")
         env = {
             "EVENTHUB_BOOTSTRAP_SERVERS": "namespace.servicebus.windows.net:9093",
             "EVENTHUB_CONNECTION_STRING": "Endpoint=sb://...",
@@ -167,11 +170,11 @@ class TestPipelineConfig:
         }
 
         with patch.dict(os.environ, env, clear=True):
-            config = PipelineConfig.load_config()
+            config = PipelineConfig.load_config(config_path=config_file)
 
         assert config.event_source == EventSourceType.EVENTHUB
         assert config.eventhub is not None
-        assert config.eventhouse is None
+        assert config.xact_eventhouse is None
         assert config.is_eventhub_source is True
 
     def test_load_config_eventhub_explicit(self):
@@ -201,7 +204,7 @@ class TestPipelineConfig:
 
         assert config.event_source == EventSourceType.EVENTHOUSE
         assert config.eventhub is None
-        assert config.eventhouse is not None
+        assert config.xact_eventhouse is not None
         assert config.is_eventhouse_source is True
 
     def test_load_config_invalid_source(self):
@@ -231,24 +234,36 @@ class TestPipelineConfig:
 class TestGetEventSourceType:
     """Tests for get_event_source_type helper."""
 
-    def test_default_is_eventhub(self):
-        """Test default event source type."""
+    def test_default_from_config_file(self, tmp_path):
+        """Test default event source from config file."""
+        # Create config file with eventhub (the original default)
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("event_source: eventhub\n")
+
         with patch.dict(os.environ, {}, clear=True):
-            source = get_event_source_type()
+            source = get_event_source_type(config_path=config_file)
 
         assert source == EventSourceType.EVENTHUB
 
-    def test_eventhouse(self):
-        """Test eventhouse event source."""
-        with patch.dict(os.environ, {"EVENT_SOURCE": "eventhouse"}, clear=True):
-            source = get_event_source_type()
+    def test_eventhouse_from_config_file(self, tmp_path):
+        """Test eventhouse event source from config file."""
+        # Create config file with eventhouse
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("event_source: eventhouse\n")
+
+        with patch.dict(os.environ, {}, clear=True):
+            source = get_event_source_type(config_path=config_file)
 
         assert source == EventSourceType.EVENTHOUSE
 
-    def test_case_insensitive(self):
-        """Test case insensitivity."""
-        with patch.dict(os.environ, {"EVENT_SOURCE": "EVENTHUB"}, clear=True):
-            source = get_event_source_type()
+    def test_env_var_override(self, tmp_path):
+        """Test environment variable override."""
+        # Create config file with eventhouse
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("event_source: eventhouse\n")
+
+        with patch.dict(os.environ, {"EVENT_SOURCE": "EVENTHUB"}, clear=False):
+            source = get_event_source_type(config_path=config_file)
 
         assert source == EventSourceType.EVENTHUB
 
@@ -273,10 +288,16 @@ class TestLocalKafkaConfig:
 
         assert kafka_config.bootstrap_servers == "localhost:9092"
         assert kafka_config.security_protocol == "PLAINTEXT"
-        assert kafka_config.downloads_pending_topic == "xact.downloads.pending"
-        assert kafka_config.delta_events_batch_size == 1000
+        # New API: topics are accessed via get_topic(domain, topic_key)
+        assert kafka_config.get_topic("xact", "downloads_pending") == "xact.downloads.pending"
+        # batch_size is in the delta_events_writer section
+        delta_writer = kafka_config.xact.get("delta_events_writer", {})
+        delta_processing = delta_writer.get("processing", {})
+        assert delta_processing.get("batch_size", 1000) == 1000
 
         # Test custom batch size
         config_custom = LocalKafkaConfig(delta_events_batch_size=5000)
         kafka_config_custom = config_custom.to_kafka_config()
-        assert kafka_config_custom.delta_events_batch_size == 5000
+        delta_writer_custom = kafka_config_custom.xact.get("delta_events_writer", {})
+        delta_processing_custom = delta_writer_custom.get("processing", {})
+        assert delta_processing_custom.get("batch_size") == 5000
