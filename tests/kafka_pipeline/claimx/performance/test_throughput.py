@@ -115,7 +115,7 @@ def create_download_task(
     **kwargs
 ) -> ClaimXDownloadTask:
     """Create a ClaimX download task for testing."""
-    default_blob_path = f"claimx/project_{project_id}/media_{media_id}.jpg"
+    default_blob_path = f"project_{project_id}/media_{media_id}.jpg"
     return ClaimXDownloadTask(
         media_id=str(media_id),
         project_id=str(project_id),

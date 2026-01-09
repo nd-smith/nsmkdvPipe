@@ -55,7 +55,7 @@ class TestClaimXResultProcessingIntegration:
                 file_name="test_image.jpg",
                 file_type="image/jpeg",
                 bytes_uploaded=2048,
-                blob_path="claimx/project_98765/media_12345.jpg",
+                blob_path="project_98765/media_12345.jpg",
                 source_event_id="evt-001",
             )
 
@@ -295,7 +295,7 @@ class TestClaimXResultProcessingIntegration:
                     status="completed",
                     file_name="metric_test.jpg",
                     bytes_uploaded=512,
-                    blob_path="claimx/project_98765/media_5000.jpg",
+                    blob_path="project_98765/media_5000.jpg",
                 )
 
                 await kafka_producer.send(
