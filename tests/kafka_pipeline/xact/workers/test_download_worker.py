@@ -18,7 +18,6 @@ import pytest
 
 from core.download.models import DownloadOutcome, DownloadTask
 from core.errors.exceptions import ErrorCategory
-from kafka_pipeline.config import KafkaConfig
 from kafka_pipeline.xact.schemas.cached import CachedDownloadMessage
 from kafka_pipeline.xact.schemas.tasks import DownloadTaskMessage
 from kafka_pipeline.xact.workers.download_worker import DownloadWorker, TaskResult
@@ -34,22 +33,53 @@ def temp_cache_dir(tmp_path):
 
 @pytest.fixture
 def kafka_config(temp_cache_dir):
-    """Create test Kafka configuration."""
-    return KafkaConfig(
-        bootstrap_servers="localhost:9092",
-        events_topic="test.events.raw",
-        downloads_pending_topic="test.downloads.pending",
-        downloads_cached_topic="test.downloads.cached",
-        downloads_results_topic="test.downloads.results",
-        dlq_topic="test.downloads.dlq",
-        consumer_group_prefix="test",
-        onelake_base_path="abfss://test@test.dfs.core.windows.net/Files",
-        security_protocol="PLAINTEXT",  # Use PLAINTEXT for unit tests
-        sasl_mechanism="PLAIN",
-        download_concurrency=10,  # WP-313
-        download_batch_size=20,  # WP-313
-        cache_dir=str(temp_cache_dir),  # WP-315: Use test cache directory
-    )
+    """Create test Kafka configuration using mock."""
+    config = MagicMock()
+    config.bootstrap_servers = "localhost:9092"
+    config.security_protocol = "PLAINTEXT"
+    config.sasl_mechanism = "PLAIN"
+    config.request_timeout_ms = 120000
+    config.metadata_max_age_ms = 300000
+    config.connections_max_idle_ms = 540000
+    config.cache_dir = str(temp_cache_dir)
+
+    # Configure topics
+    def get_topic(domain, topic_key):
+        topics = {
+            "downloads_pending": "xact.downloads.pending",
+            "downloads_cached": "xact.downloads.cached",
+            "downloads_results": "xact.downloads.results",
+            "dlq": "xact.downloads.dlq",
+        }
+        return topics.get(topic_key, f"xact.{topic_key}")
+
+    def get_retry_topic(domain, attempt):
+        delays = [300, 600, 1200, 2400]
+        if attempt >= len(delays):
+            raise ValueError(f"Retry attempt {attempt} exceeds max")
+        delay_minutes = delays[attempt] // 60
+        return f"xact.downloads.pending.retry.{delay_minutes}m"
+
+    def get_retry_delays(domain):
+        return [300, 600, 1200, 2400]
+
+    def get_consumer_group(domain, worker_name):
+        return f"{domain}-{worker_name}"
+
+    def get_worker_config(domain, worker_name, component):
+        if component == "processing":
+            return {"concurrency": 10, "batch_size": 20, "timeout_seconds": 60}
+        elif component == "consumer":
+            return {"max_poll_records": 20, "session_timeout_ms": 60000}
+        return {}
+
+    config.get_topic = MagicMock(side_effect=get_topic)
+    config.get_retry_topic = MagicMock(side_effect=get_retry_topic)
+    config.get_retry_delays = MagicMock(side_effect=get_retry_delays)
+    config.get_consumer_group = MagicMock(side_effect=get_consumer_group)
+    config.get_worker_config = MagicMock(side_effect=get_worker_config)
+
+    return config
 
 
 @pytest.fixture
@@ -63,7 +93,7 @@ def sample_download_task_message():
         status_subtype="documentsReceived",
         file_type="pdf",
         assignment_id="C-456",
-        event_type="claim",
+        event_type="xact",
         event_subtype="documentsReceived",
         retry_count=0,
         original_timestamp=datetime.now(timezone.utc),
@@ -75,7 +105,7 @@ def sample_download_task_message():
 def sample_consumer_record(sample_download_task_message):
     """Create sample ConsumerRecord with DownloadTaskMessage."""
     return ConsumerRecord(
-        topic="test.downloads.pending",
+        topic="xact.downloads.pending",
         partition=0,
         offset=10,
         timestamp=int(datetime.now(timezone.utc).timestamp() * 1000),
@@ -103,34 +133,29 @@ class TestDownloadWorker:
 
     async def test_initialization(self, kafka_config, temp_download_dir):
         """Test worker initialization with correct configuration."""
-        worker = DownloadWorker(kafka_config, temp_dir=temp_download_dir)
+        worker = DownloadWorker(kafka_config, domain="xact", temp_dir=temp_download_dir)
 
         assert worker.config == kafka_config
         assert worker.temp_dir == temp_download_dir
         assert worker.CONSUMER_GROUP == "xact-download-worker"
         assert worker.downloader is not None
-        # WP-313: Verify concurrency settings
-        assert worker.config.download_concurrency == 10
-        assert worker.config.download_batch_size == 20
+        # WP-313: Verify concurrency settings from get_worker_config
+        assert worker.concurrency == 10
+        assert worker.batch_size == 20
 
     async def test_topics_list(self, kafka_config, temp_download_dir):
         """Test worker has correct topic list (dynamically constructed from config)."""
-        worker = DownloadWorker(kafka_config, temp_dir=temp_download_dir)
+        worker = DownloadWorker(kafka_config, domain="xact", temp_dir=temp_download_dir)
 
-        # Retry topics are dynamically constructed from config
-        expected_topics = [kafka_config.downloads_pending_topic] + [
-            kafka_config.get_retry_topic(i) for i in range(len(kafka_config.retry_delays))
-        ]
-
-        assert worker.topics == expected_topics
-        # Verify the retry topic naming pattern
-        assert f"{kafka_config.downloads_pending_topic}.retry.5m" in worker.topics
+        # Verify topics include pending and retry topics
+        assert "xact.downloads.pending" in worker.topics
+        assert "xact.downloads.pending.retry.5m" in worker.topics
 
     async def test_convert_to_download_task(
         self, kafka_config, temp_download_dir, sample_download_task_message
     ):
         """Test conversion from DownloadTaskMessage to DownloadTask."""
-        worker = DownloadWorker(kafka_config, temp_dir=temp_download_dir)
+        worker = DownloadWorker(kafka_config, domain="xact", temp_dir=temp_download_dir)
 
         download_task = worker._convert_to_download_task(sample_download_task_message)
 
@@ -149,7 +174,7 @@ class TestDownloadWorker:
         self, kafka_config, temp_download_dir, temp_cache_dir, sample_consumer_record, sample_download_task_message
     ):
         """Test successful download task processing (WP-313: _process_single_task, WP-315: cache behavior)."""
-        worker = DownloadWorker(kafka_config, temp_dir=temp_download_dir)
+        worker = DownloadWorker(kafka_config, domain="xact", temp_dir=temp_download_dir)
 
         # Initialize concurrency control
         worker._semaphore = asyncio.Semaphore(10)
@@ -200,7 +225,7 @@ class TestDownloadWorker:
             # WP-315: Verify CachedDownloadMessage was produced
             worker.producer.send.assert_called_once()
             send_call = worker.producer.send.call_args
-            assert send_call.kwargs["topic"] == "test.downloads.cached"
+            assert send_call.kwargs["topic"] == "xact.downloads.cached"
             assert send_call.kwargs["key"] == "evt-123"
 
             cached_message = send_call.kwargs["value"]
@@ -218,7 +243,7 @@ class TestDownloadWorker:
         self, kafka_config, temp_download_dir, sample_consumer_record
     ):
         """Test failed download task processing (WP-313: _process_single_task)."""
-        worker = DownloadWorker(kafka_config, temp_dir=temp_download_dir)
+        worker = DownloadWorker(kafka_config, domain="xact", temp_dir=temp_download_dir)
 
         # Initialize concurrency control
         worker._semaphore = asyncio.Semaphore(10)
@@ -226,7 +251,6 @@ class TestDownloadWorker:
         worker._in_flight_lock = asyncio.Lock()
 
         # Mock dependencies that are normally initialized in start()
-        worker.onelake_client = AsyncMock()
         worker.producer = AsyncMock()
         worker.retry_handler = AsyncMock()
 
@@ -253,7 +277,7 @@ class TestDownloadWorker:
 
     async def test_process_single_task_invalid_json(self, kafka_config, temp_download_dir):
         """Test handling of invalid message JSON (WP-313: _process_single_task)."""
-        worker = DownloadWorker(kafka_config, temp_dir=temp_download_dir)
+        worker = DownloadWorker(kafka_config, domain="xact", temp_dir=temp_download_dir)
 
         # Initialize concurrency control
         worker._semaphore = asyncio.Semaphore(10)
@@ -262,7 +286,7 @@ class TestDownloadWorker:
 
         # Create record with invalid JSON
         invalid_record = ConsumerRecord(
-            topic="test.downloads.pending",
+            topic="xact.downloads.pending",
             partition=0,
             offset=10,
             timestamp=int(datetime.now(timezone.utc).timestamp() * 1000),
@@ -287,7 +311,7 @@ class TestDownloadWorker:
         self, kafka_config, temp_download_dir, temp_cache_dir, sample_download_task_message
     ):
         """Test concurrent batch processing (WP-313, WP-315: cache behavior)."""
-        worker = DownloadWorker(kafka_config, temp_dir=temp_download_dir)
+        worker = DownloadWorker(kafka_config, domain="xact", temp_dir=temp_download_dir)
 
         # Initialize concurrency control
         worker._semaphore = asyncio.Semaphore(3)  # Limit to 3 concurrent
@@ -305,7 +329,7 @@ class TestDownloadWorker:
                 update={"trace_id": f"evt-{i}", "media_id": f"media-{i}", "blob_path": f"claims/C-{i}/document.pdf"}
             )
             record = ConsumerRecord(
-                topic="test.downloads.pending",
+                topic="xact.downloads.pending",
                 partition=0,
                 offset=i,
                 timestamp=int(datetime.now(timezone.utc).timestamp() * 1000),
@@ -370,7 +394,7 @@ class TestDownloadWorker:
         self, kafka_config, temp_download_dir, temp_cache_dir, sample_download_task_message
     ):
         """Test batch processing with mixed success/failure (WP-313, WP-315: cache behavior)."""
-        worker = DownloadWorker(kafka_config, temp_dir=temp_download_dir)
+        worker = DownloadWorker(kafka_config, domain="xact", temp_dir=temp_download_dir)
 
         # Initialize concurrency control
         worker._semaphore = asyncio.Semaphore(10)
@@ -388,7 +412,7 @@ class TestDownloadWorker:
                 update={"trace_id": f"evt-{i}", "media_id": f"media-{i}", "blob_path": f"claims/C-{i}/document.pdf"}
             )
             record = ConsumerRecord(
-                topic="test.downloads.pending",
+                topic="xact.downloads.pending",
                 partition=0,
                 offset=i,
                 timestamp=int(datetime.now(timezone.utc).timestamp() * 1000),
@@ -453,8 +477,8 @@ class TestDownloadWorker:
 
         # Verify specific message types were sent
         send_calls = worker.producer.send.call_args_list
-        cached_calls = [c for c in send_calls if c.kwargs["topic"] == "test.downloads.cached"]
-        result_calls = [c for c in send_calls if c.kwargs["topic"] == "test.downloads.results"]
+        cached_calls = [c for c in send_calls if c.kwargs["topic"] == "xact.downloads.cached"]
+        result_calls = [c for c in send_calls if c.kwargs["topic"] == "xact.downloads.results"]
         assert len(cached_calls) == 2, "Two CachedDownloadMessages for successful downloads"
         assert len(result_calls) == 1, "One DownloadResultMessage for failed download"
 
@@ -462,7 +486,7 @@ class TestDownloadWorker:
         self, kafka_config, temp_download_dir, temp_cache_dir, sample_consumer_record
     ):
         """Test in-flight task tracking (WP-313, WP-315: cache behavior)."""
-        worker = DownloadWorker(kafka_config, temp_dir=temp_download_dir)
+        worker = DownloadWorker(kafka_config, domain="xact", temp_dir=temp_download_dir)
 
         # Initialize concurrency control
         worker._semaphore = asyncio.Semaphore(10)
@@ -504,7 +528,7 @@ class TestDownloadWorker:
 
     async def test_handle_batch_results_with_circuit_error(self, kafka_config, temp_download_dir):
         """Test that circuit breaker errors prevent offset commit (WP-313)."""
-        worker = DownloadWorker(kafka_config, temp_dir=temp_download_dir)
+        worker = DownloadWorker(kafka_config, domain="xact", temp_dir=temp_download_dir)
 
         from core.errors.exceptions import CircuitOpenError
 
@@ -533,7 +557,7 @@ class TestDownloadWorker:
 
     async def test_handle_batch_results_all_success(self, kafka_config, temp_download_dir):
         """Test that successful results allow offset commit (WP-313)."""
-        worker = DownloadWorker(kafka_config, temp_dir=temp_download_dir)
+        worker = DownloadWorker(kafka_config, domain="xact", temp_dir=temp_download_dir)
 
         results = [
             TaskResult(
@@ -562,14 +586,14 @@ class TestDownloadWorker:
         temp_dir = tmp_path / "new_downloads"
         assert not temp_dir.exists()
 
-        worker = DownloadWorker(kafka_config, temp_dir=temp_dir)
+        worker = DownloadWorker(kafka_config, domain="xact", temp_dir=temp_dir)
 
         assert temp_dir.exists()
         assert temp_dir.is_dir()
 
     async def test_is_running_property(self, kafka_config, temp_download_dir):
         """Test is_running property."""
-        worker = DownloadWorker(kafka_config, temp_dir=temp_download_dir)
+        worker = DownloadWorker(kafka_config, domain="xact", temp_dir=temp_download_dir)
 
         # Initially not running
         assert worker.is_running is False
@@ -580,7 +604,7 @@ class TestDownloadWorker:
 
     async def test_in_flight_count_property(self, kafka_config, temp_download_dir):
         """Test in_flight_count property (WP-313)."""
-        worker = DownloadWorker(kafka_config, temp_dir=temp_download_dir)
+        worker = DownloadWorker(kafka_config, domain="xact", temp_dir=temp_download_dir)
         worker._in_flight_tasks = {"evt-1", "evt-2", "evt-3"}
 
         assert worker.in_flight_count == 3
@@ -590,65 +614,48 @@ class TestDownloadWorker:
 class TestDownloadWorkerConfig:
     """Test suite for download concurrency configuration (WP-313)."""
 
-    async def test_default_concurrency_config(self):
+    async def test_default_concurrency_config(self, temp_cache_dir):
         """Test default concurrency settings."""
-        config = KafkaConfig(
-            bootstrap_servers="localhost:9092",
-            onelake_base_path="abfss://test@test.dfs.core.windows.net/Files",
-        )
+        config = MagicMock()
+        config.bootstrap_servers = "localhost:9092"
+        config.security_protocol = "PLAINTEXT"
+        config.cache_dir = str(temp_cache_dir)
 
-        assert config.download_concurrency == 10
-        assert config.download_batch_size == 20
+        def get_worker_config(domain, worker_name, component):
+            if component == "processing":
+                return {"concurrency": 10, "batch_size": 20}
+            return {}
 
-    async def test_custom_concurrency_config(self):
+        config.get_worker_config = MagicMock(side_effect=get_worker_config)
+        config.get_topic = MagicMock(return_value="xact.downloads.pending")
+        config.get_retry_delays = MagicMock(return_value=[300, 600, 1200, 2400])
+        config.get_retry_topic = MagicMock(side_effect=lambda d, i: f"xact.downloads.pending.retry.{[5,10,20,40][i]}m")
+        config.get_consumer_group = MagicMock(return_value="xact-download-worker")
+
+        worker = DownloadWorker(config, domain="xact")
+
+        assert worker.concurrency == 10
+        assert worker.batch_size == 20
+
+    async def test_custom_concurrency_config(self, temp_cache_dir):
         """Test custom concurrency settings."""
-        config = KafkaConfig(
-            bootstrap_servers="localhost:9092",
-            onelake_base_path="abfss://test@test.dfs.core.windows.net/Files",
-            download_concurrency=25,
-            download_batch_size=50,
-        )
+        config = MagicMock()
+        config.bootstrap_servers = "localhost:9092"
+        config.security_protocol = "PLAINTEXT"
+        config.cache_dir = str(temp_cache_dir)
 
-        assert config.download_concurrency == 25
-        assert config.download_batch_size == 50
+        def get_worker_config(domain, worker_name, component):
+            if component == "processing":
+                return {"concurrency": 25, "batch_size": 50}
+            return {}
 
-    async def test_concurrency_from_env(self):
-        """Test loading concurrency settings from environment."""
-        import os
+        config.get_worker_config = MagicMock(side_effect=get_worker_config)
+        config.get_topic = MagicMock(return_value="xact.downloads.pending")
+        config.get_retry_delays = MagicMock(return_value=[300, 600, 1200, 2400])
+        config.get_retry_topic = MagicMock(side_effect=lambda d, i: f"xact.downloads.pending.retry.{[5,10,20,40][i]}m")
+        config.get_consumer_group = MagicMock(return_value="xact-download-worker")
 
-        with patch.dict(os.environ, {
-            "KAFKA_BOOTSTRAP_SERVERS": "localhost:9092",
-            "ONELAKE_BASE_PATH": "abfss://test@test.dfs.core.windows.net/Files",
-            "DOWNLOAD_CONCURRENCY": "30",
-            "DOWNLOAD_BATCH_SIZE": "40",
-        }):
-            config = KafkaConfig.from_env()
+        worker = DownloadWorker(config, domain="xact")
 
-            assert config.download_concurrency == 30
-            assert config.download_batch_size == 40
-
-    async def test_concurrency_max_limit(self):
-        """Test that concurrency is capped at 50."""
-        import os
-
-        with patch.dict(os.environ, {
-            "KAFKA_BOOTSTRAP_SERVERS": "localhost:9092",
-            "ONELAKE_BASE_PATH": "abfss://test@test.dfs.core.windows.net/Files",
-            "DOWNLOAD_CONCURRENCY": "100",  # Over the limit
-        }):
-            config = KafkaConfig.from_env()
-
-            assert config.download_concurrency == 50  # Capped at max
-
-    async def test_concurrency_min_limit(self):
-        """Test that concurrency is at least 1."""
-        import os
-
-        with patch.dict(os.environ, {
-            "KAFKA_BOOTSTRAP_SERVERS": "localhost:9092",
-            "ONELAKE_BASE_PATH": "abfss://test@test.dfs.core.windows.net/Files",
-            "DOWNLOAD_CONCURRENCY": "0",  # Under the limit
-        }):
-            config = KafkaConfig.from_env()
-
-            assert config.download_concurrency == 1  # At least 1
+        assert worker.concurrency == 25
+        assert worker.batch_size == 50

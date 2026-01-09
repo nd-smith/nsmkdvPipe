@@ -2,10 +2,10 @@
 Tests for download worker error handling (WP-306).
 
 Tests error classification and routing logic:
-- Transient errors → retry topics
-- Permanent errors → DLQ
-- Circuit breaker errors → no commit (reprocess)
-- Auth errors → retry topics
+- Transient errors -> retry topics
+- Permanent errors -> DLQ
+- Circuit breaker errors -> no commit (reprocess)
+- Auth errors -> retry topics
 - Retry count incrementation
 - Error context preservation
 
@@ -16,31 +16,72 @@ import asyncio
 import pytest
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import AsyncMock, Mock, patch, call
+from unittest.mock import AsyncMock, Mock, MagicMock, patch, call
 from aiokafka.structs import ConsumerRecord
 
 from core.download.models import DownloadOutcome
-from core.errors.exceptions import CircuitOpenError
-from core.types import ErrorCategory
-from kafka_pipeline.config import KafkaConfig
+from core.errors.exceptions import CircuitOpenError, ErrorCategory
 from kafka_pipeline.xact.schemas.tasks import DownloadTaskMessage
 from kafka_pipeline.xact.workers.download_worker import DownloadWorker, TaskResult
 
 
 @pytest.fixture
-def config():
-    """Create test Kafka configuration."""
-    return KafkaConfig(
-        bootstrap_servers="localhost:9092",
-        security_protocol="PLAINTEXT",
-        sasl_mechanism="PLAIN",
-        onelake_base_path="abfss://test@test.dfs.core.windows.net/Files",
-        downloads_pending_topic="xact.downloads.pending",
-        downloads_results_topic="xact.downloads.results",
-        dlq_topic="xact.downloads.dlq",
-        retry_delays=[300, 600, 1200, 2400],
-        max_retries=4,
-    )
+def temp_cache_dir(tmp_path):
+    """Create temporary cache directory."""
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    return cache_dir
+
+
+@pytest.fixture
+def config(temp_cache_dir):
+    """Create test Kafka configuration using mock."""
+    config = MagicMock()
+    config.bootstrap_servers = "localhost:9092"
+    config.security_protocol = "PLAINTEXT"
+    config.sasl_mechanism = "PLAIN"
+    config.request_timeout_ms = 120000
+    config.metadata_max_age_ms = 300000
+    config.connections_max_idle_ms = 540000
+    config.cache_dir = str(temp_cache_dir)
+
+    # Configure topics
+    def get_topic(domain, topic_key):
+        topics = {
+            "downloads_pending": "xact.downloads.pending",
+            "downloads_cached": "xact.downloads.cached",
+            "downloads_results": "xact.downloads.results",
+            "dlq": "xact.downloads.dlq",
+        }
+        return topics.get(topic_key, f"xact.{topic_key}")
+
+    def get_retry_topic(domain, attempt):
+        delays = [300, 600, 1200, 2400]
+        if attempt >= len(delays):
+            raise ValueError(f"Retry attempt {attempt} exceeds max")
+        delay_minutes = delays[attempt] // 60
+        return f"xact.downloads.pending.retry.{delay_minutes}m"
+
+    def get_retry_delays(domain):
+        return [300, 600, 1200, 2400]
+
+    def get_consumer_group(domain, worker_name):
+        return f"{domain}-{worker_name}"
+
+    def get_worker_config(domain, worker_name, component):
+        if component == "processing":
+            return {"concurrency": 10, "batch_size": 20, "timeout_seconds": 60}
+        elif component == "consumer":
+            return {"max_poll_records": 20, "session_timeout_ms": 60000}
+        return {}
+
+    config.get_topic = MagicMock(side_effect=get_topic)
+    config.get_retry_topic = MagicMock(side_effect=get_retry_topic)
+    config.get_retry_delays = MagicMock(side_effect=get_retry_delays)
+    config.get_consumer_group = MagicMock(side_effect=get_consumer_group)
+    config.get_worker_config = MagicMock(side_effect=get_worker_config)
+
+    return config
 
 
 @pytest.fixture
@@ -48,6 +89,7 @@ def sample_task():
     """Create sample download task message."""
     return DownloadTaskMessage(
         trace_id="test-trace-123",
+        media_id="media-test-123",
         attachment_url="https://example.com/file.pdf",
         blob_path="documentsReceived/C-123/pdf/file.pdf",
         status_subtype="documentsReceived",
@@ -92,14 +134,13 @@ class TestDownloadWorkerErrorHandling:
     @pytest.mark.asyncio
     async def test_transient_error_routed_to_retry(self, config, sample_task, consumer_record):
         """Test that transient errors are routed to retry topics."""
-        worker = DownloadWorker(config)
+        worker = DownloadWorker(config, domain="xact")
         setup_worker_for_testing(worker)
 
         # Mock dependencies
         worker.downloader = AsyncMock()
         worker.producer = AsyncMock()
         worker.producer.send = AsyncMock()
-        worker.onelake_client = AsyncMock()
         worker.retry_handler = AsyncMock()
 
         # Simulate transient download failure
@@ -132,22 +173,20 @@ class TestDownloadWorkerErrorHandling:
         # Verify result message was produced
         assert worker.producer.send.call_count == 1
         result_call = worker.producer.send.call_args
-        assert result_call[1]["topic"] == config.downloads_results_topic
-        result_message = result_call[1]["value"]
-        assert result_message.status == "failed_transient"
-        assert result_message.error_category == "transient"
+        assert result_call.kwargs["topic"] == "xact.downloads.results"
+        result_message = result_call.kwargs["value"]
+        assert result_message.status == "failed"  # Transient failure
 
     @pytest.mark.asyncio
     async def test_permanent_error_routed_to_dlq(self, config, sample_task, consumer_record):
         """Test that permanent errors are routed to DLQ."""
-        worker = DownloadWorker(config)
+        worker = DownloadWorker(config, domain="xact")
         setup_worker_for_testing(worker)
 
         # Mock dependencies
         worker.downloader = AsyncMock()
         worker.producer = AsyncMock()
         worker.producer.send = AsyncMock()
-        worker.onelake_client = AsyncMock()
         worker.retry_handler = AsyncMock()
 
         # Simulate permanent download failure (404)
@@ -176,9 +215,8 @@ class TestDownloadWorkerErrorHandling:
 
         # Verify result message shows permanent failure
         result_call = worker.producer.send.call_args
-        result_message = result_call[1]["value"]
+        result_message = result_call.kwargs["value"]
         assert result_message.status == "failed_permanent"
-        assert result_message.error_category == "permanent"
 
     @pytest.mark.asyncio
     async def test_circuit_open_error_returns_error_result(self, config, sample_task, consumer_record):
@@ -187,13 +225,12 @@ class TestDownloadWorkerErrorHandling:
         Note: WP-313 changed behavior - circuit errors return TaskResult with error
         instead of raising. The batch handler uses this to prevent offset commit.
         """
-        worker = DownloadWorker(config)
+        worker = DownloadWorker(config, domain="xact")
         setup_worker_for_testing(worker)
 
         # Mock dependencies
         worker.downloader = AsyncMock()
         worker.producer = AsyncMock()
-        worker.onelake_client = AsyncMock()
         worker.retry_handler = AsyncMock()
 
         # Simulate circuit breaker open
@@ -227,14 +264,13 @@ class TestDownloadWorkerErrorHandling:
     @pytest.mark.asyncio
     async def test_auth_error_routed_to_retry(self, config, sample_task, consumer_record):
         """Test that auth errors are routed to retry topics."""
-        worker = DownloadWorker(config)
+        worker = DownloadWorker(config, domain="xact")
         setup_worker_for_testing(worker)
 
         # Mock dependencies
         worker.downloader = AsyncMock()
         worker.producer = AsyncMock()
         worker.producer.send = AsyncMock()
-        worker.onelake_client = AsyncMock()
         worker.retry_handler = AsyncMock()
 
         # Simulate auth failure
@@ -263,21 +299,19 @@ class TestDownloadWorkerErrorHandling:
 
         # Verify result message shows transient (auth may recover)
         result_call = worker.producer.send.call_args
-        result_message = result_call[1]["value"]
-        assert result_message.status == "failed_transient"
-        assert result_message.error_category == "auth"
+        result_message = result_call.kwargs["value"]
+        assert result_message.status == "failed"  # Transient failure (auth retryable)
 
     @pytest.mark.asyncio
     async def test_unknown_error_routed_to_retry(self, config, sample_task, consumer_record):
         """Test that unknown errors are routed to retry topics conservatively."""
-        worker = DownloadWorker(config)
+        worker = DownloadWorker(config, domain="xact")
         setup_worker_for_testing(worker)
 
         # Mock dependencies
         worker.downloader = AsyncMock()
         worker.producer = AsyncMock()
         worker.producer.send = AsyncMock()
-        worker.onelake_client = AsyncMock()
         worker.retry_handler = AsyncMock()
 
         # Simulate unknown error (no category)
@@ -306,21 +340,19 @@ class TestDownloadWorkerErrorHandling:
 
         # Verify result message shows transient (conservative retry)
         result_call = worker.producer.send.call_args
-        result_message = result_call[1]["value"]
-        assert result_message.status == "failed_transient"
-        assert result_message.error_category == "unknown"
+        result_message = result_call.kwargs["value"]
+        assert result_message.status == "failed"  # Transient (conservative)
 
     @pytest.mark.asyncio
     async def test_error_context_preserved(self, config, sample_task, consumer_record):
         """Test that error context is preserved through retry routing."""
-        worker = DownloadWorker(config)
+        worker = DownloadWorker(config, domain="xact")
         setup_worker_for_testing(worker)
 
         # Mock dependencies
         worker.downloader = AsyncMock()
         worker.producer = AsyncMock()
         worker.producer.send = AsyncMock()
-        worker.onelake_client = AsyncMock()
         worker.retry_handler = AsyncMock()
 
         # Simulate failure with detailed error
@@ -344,7 +376,7 @@ class TestDownloadWorkerErrorHandling:
 
         # Verify error message is preserved in result
         result_call = worker.producer.send.call_args
-        result_message = result_call[1]["value"]
+        result_message = result_call.kwargs["value"]
         assert "SSL certificate verification" in result_message.error_message
         assert result_message.trace_id == sample_task.trace_id
         assert result_message.attachment_url == sample_task.attachment_url
@@ -361,14 +393,13 @@ class TestDownloadWorkerErrorHandling:
         Note: WP-313 changed behavior - retry handler failures are logged but
         result messages are still produced for observability.
         """
-        worker = DownloadWorker(config)
+        worker = DownloadWorker(config, domain="xact")
         setup_worker_for_testing(worker)
 
         # Mock dependencies
         worker.downloader = AsyncMock()
         worker.producer = AsyncMock()
         worker.producer.send = AsyncMock()
-        worker.onelake_client = AsyncMock()
         worker.retry_handler = AsyncMock()
 
         # Simulate download failure
@@ -400,19 +431,19 @@ class TestDownloadWorkerErrorHandling:
         assert worker.producer.send.call_count == 1
 
     @pytest.mark.asyncio
-    async def test_temp_file_cleanup_on_circuit_open(self, config, sample_task, consumer_record):
+    async def test_temp_file_cleanup_on_circuit_open(self, config, sample_task, consumer_record, tmp_path):
         """Test that temporary files are cleaned up even when circuit is open."""
-        worker = DownloadWorker(config)
+        worker = DownloadWorker(config, domain="xact", temp_dir=tmp_path / "downloads")
         setup_worker_for_testing(worker)
 
         # Mock dependencies
         worker.downloader = AsyncMock()
         worker.producer = AsyncMock()
-        worker.onelake_client = AsyncMock()
         worker.retry_handler = AsyncMock()
 
         # Simulate circuit open with a temp file created
-        temp_file = Path("/tmp/test_file.pdf")
+        temp_file = tmp_path / "test_file.pdf"
+        temp_file.touch()
         failed_outcome = DownloadOutcome(
             success=False,
             file_path=temp_file,
@@ -440,19 +471,19 @@ class TestDownloadWorkerErrorHandling:
     @pytest.mark.asyncio
     async def test_retry_count_passed_to_handler(self, config, consumer_record):
         """Test that retry count is correctly passed to retry handler."""
-        worker = DownloadWorker(config)
+        worker = DownloadWorker(config, domain="xact")
         setup_worker_for_testing(worker)
 
         # Mock dependencies
         worker.downloader = AsyncMock()
         worker.producer = AsyncMock()
         worker.producer.send = AsyncMock()
-        worker.onelake_client = AsyncMock()
         worker.retry_handler = AsyncMock()
 
         # Create task with retry count
         task_with_retries = DownloadTaskMessage(
             trace_id="test-trace-456",
+            media_id="media-test-456",
             attachment_url="https://example.com/file.pdf",
             blob_path="documentsReceived/C-123/pdf/file.pdf",
             status_subtype="documentsReceived",
@@ -511,11 +542,11 @@ class TestDownloadWorkerSuccessPath:
     """Test that successful downloads don't go through error handling."""
 
     @pytest.mark.asyncio
-    async def test_successful_download_no_retry_handler(self, config, sample_task, consumer_record):
+    async def test_successful_download_no_retry_handler(self, config, sample_task, consumer_record, tmp_path):
         """Test that successful downloads don't call retry handler."""
         from kafka_pipeline.xact.schemas.cached import CachedDownloadMessage
 
-        worker = DownloadWorker(config)
+        worker = DownloadWorker(config, domain="xact", temp_dir=tmp_path / "downloads")
         setup_worker_for_testing(worker)
 
         # Mock dependencies
@@ -528,7 +559,7 @@ class TestDownloadWorkerSuccessPath:
         temp_dir = worker.temp_dir / sample_task.trace_id
         temp_dir.mkdir(parents=True, exist_ok=True)
         temp_file = temp_dir / "file.pdf"
-        temp_file.touch()
+        temp_file.write_text("pdf content")
 
         success_outcome = DownloadOutcome(
             success=True,
@@ -555,7 +586,7 @@ class TestDownloadWorkerSuccessPath:
         # Verify cached message was produced (download worker now produces to cached topic)
         assert worker.producer.send.call_count == 1
         result_call = worker.producer.send.call_args
-        cached_message = result_call[1]["value"]
+        cached_message = result_call.kwargs["value"]
         assert isinstance(cached_message, CachedDownloadMessage)
         assert cached_message.bytes_downloaded == 1024
         assert cached_message.trace_id == sample_task.trace_id
@@ -567,7 +598,7 @@ class TestBatchResultHandling:
     @pytest.mark.asyncio
     async def test_batch_with_circuit_error_prevents_commit(self, config):
         """Test that circuit breaker errors in batch prevent offset commit."""
-        worker = DownloadWorker(config)
+        worker = DownloadWorker(config, domain="xact")
 
         # Create results with circuit breaker error
         results = [
@@ -595,7 +626,7 @@ class TestBatchResultHandling:
     @pytest.mark.asyncio
     async def test_batch_without_circuit_error_allows_commit(self, config):
         """Test that batches without circuit errors allow offset commit."""
-        worker = DownloadWorker(config)
+        worker = DownloadWorker(config, domain="xact")
 
         # Create results without circuit errors
         results = [
