@@ -111,11 +111,15 @@ class ClaimXEventIngesterWorker:
         self._cycle_task: Optional[asyncio.Task] = None
 
         # Health check server - use worker-specific port from config
+        # Use port=0 by default for dynamic port assignment (avoids conflicts with multiple workers)
+        # Set health_enabled=False to disable health checks entirely
         processing_config = config.get_worker_config(domain, "event_ingester", "processing")
-        health_port = processing_config.get("health_port", 8084)
+        health_port = processing_config.get("health_port", 0)
+        health_enabled = processing_config.get("health_enabled", True)
         self.health_server = HealthCheckServer(
             port=health_port,
             worker_name="claimx-event-ingester",
+            enabled=health_enabled,
         )
 
         logger.info(
