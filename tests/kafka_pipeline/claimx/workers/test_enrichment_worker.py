@@ -1,4 +1,5 @@
-"""Unit tests for ClaimXEnrichmentWorker.
+"""
+Unit tests for ClaimXEnrichmentWorker.
 
 Tests enrichment task processing, API client integration, entity row production,
 and download task generation.

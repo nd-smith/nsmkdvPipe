@@ -10,8 +10,8 @@ This worker is decoupled from the Download Worker to allow:
 - Cache buffer if OneLake has temporary issues
 
 Architecture:
-- Download Worker: downloads -> local cache -> ClaimXCachedDownloadMessage
-- Upload Worker: ClaimXCachedDownloadMessage -> OneLake -> ClaimXUploadResultMessage
+- Download Worker: downloads → local cache → ClaimXCachedDownloadMessage
+- Upload Worker: ClaimXCachedDownloadMessage → OneLake → ClaimXUploadResultMessage
 """
 
 import asyncio

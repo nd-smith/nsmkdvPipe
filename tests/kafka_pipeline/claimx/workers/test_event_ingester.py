@@ -1,4 +1,5 @@
-"""Unit tests for ClaimXEventIngesterWorker.
+"""
+Unit tests for ClaimXEventIngesterWorker.
 
 Tests event consumption, enrichment task production, and UUID5 event_id generation.
 """
