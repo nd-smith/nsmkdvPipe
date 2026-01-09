@@ -8,8 +8,8 @@ The test suite is organized into three categories:
 
 | Category | Count | Duration | Requirements |
 |----------|-------|----------|--------------|
-| Unit Tests | ~898 | ~40s | None |
-| Integration Tests | ~87 | ~3-5 min | Docker |
+| Unit Tests | ~1347 | ~60s | None |
+| Integration Tests | ~88 | ~3-5 min | Docker |
 | Performance Tests | ~22 | 10min - 4hrs | Docker |
 
 ## Prerequisites
@@ -112,6 +112,8 @@ asyncio_mode = auto
 markers =
     integration: Integration tests requiring Docker and Kafka testcontainers
     performance: Performance/load tests (may be long-running)
+    slow: Slow tests that may take several minutes
+    extended: Extended tests that may take hours
 ```
 
 ## Test Architecture
@@ -193,16 +195,16 @@ This is expected behavior when Kafka creates topics on first use. Tests handle t
 
 As of the last run:
 
-- **Unit Tests**: 898 passed
-- **Integration Tests**: 84 passed, 3 failed (see Known Issues)
-- **Performance Tests**: Require extended run time
+- **Unit Tests**: 1347 passed, 4 skipped
+- **Integration Tests**: 88 tests (require Docker)
+- **Performance Tests**: 22 tests (require Docker)
 
-### Known Issues
+### Test Architecture Changes (January 2025)
 
-3 integration tests in `test_download_flow.py` are failing:
+The test suite was redesigned to:
 
-1. `test_transient_failure_routes_to_retry` - Topic name mismatch between test and code
-2. `test_permanent_failure_routes_to_dlq` - Schema mismatch (`failure_reason` attribute missing)
-3. `test_retry_exhaustion_routes_to_dlq` - DLQ routing issue
-
-These require code fixes, not test setup changes.
+1. **Separate unit tests from integration tests**: Unit tests no longer depend on Docker fixtures
+2. **Update to new KafkaConfig API**: Tests use the new hierarchical domain-based configuration
+3. **Add required schema fields**: All message schemas now include required `media_id` field
+4. **Fix mock fixtures**: Mock classes are defined separately from Docker-dependent fixtures
+5. **Remove outdated tests**: Tests for non-existent modules (e.g., `eventhouse.dedup`) were removed
