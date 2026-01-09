@@ -28,6 +28,31 @@ def safe_int(value: Any) -> Optional[int]:
         return None
 
 
+def safe_int32(value: Any) -> Optional[int]:
+    """
+    Safely convert to 32-bit int, return None on failure or overflow.
+
+    Use for columns that require Int32 in the Delta table schema.
+    Values outside int32 range (-2147483648 to 2147483647) return None.
+
+    Args:
+        value: Value to convert
+
+    Returns:
+        Integer value within int32 range or None
+    """
+    if value is None:
+        return None
+    try:
+        v = int(value)
+        # Check int32 bounds
+        if -2147483648 <= v <= 2147483647:
+            return v
+        return None
+    except (ValueError, TypeError):
+        return None
+
+
 def safe_str(value: Any) -> Optional[str]:
     """
     Safely convert to string, return None for empty.

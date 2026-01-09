@@ -22,6 +22,7 @@ from kafka_pipeline.claimx.handlers.utils import (
     safe_bool,
     parse_timestamp,
     now_datetime,
+    now_iso,
     today_date,
     elapsed_ms,
 )
@@ -388,8 +389,9 @@ class ProjectTransformer:
                     "master_file_name": None,
                     "source_event_id": source_event_id,
                     "created_at": now,
-                    "updated_at": now,
+                    "updated_at": now_iso(),
                     "created_date": today,
+                    "last_enriched_at": now,
                     "task_assignment_id": None,
                     "video_collaboration_id": None,
                 }
@@ -413,8 +415,9 @@ class ProjectTransformer:
                         "master_file_name": safe_str(member.get("mfn")),
                         "source_event_id": source_event_id,
                         "created_at": now,
-                        "updated_at": now,
+                        "updated_at": now_iso(),
                         "created_date": today,
+                        "last_enriched_at": now,
                         "task_assignment_id": None,
                         "video_collaboration_id": None,
                     }
