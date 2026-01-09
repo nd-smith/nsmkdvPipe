@@ -584,6 +584,10 @@ class ClaimXEntityWriter:
         phone numbers or zip codes), schema inference can fail. Using explicit
         schema avoids this class of errors for all entity tables.
 
+        Also handles conversion of ISO format timestamp strings to native datetime/date
+        objects. This is necessary because data arrives as strings after Kafka/JSON
+        serialization, but the schema expects native Polars datetime/date types.
+
         Args:
             table_name: Name of the entity table
             rows: List of row dicts
@@ -611,7 +615,35 @@ class ClaimXEntityWriter:
             if col in table_schema:
                 schema[col] = table_schema[col]
 
-        return pl.DataFrame(rows, schema=schema)
+        # Pre-convert ISO timestamp/date strings to native Python types
+        # This is required because Polars cannot coerce strings to datetime/date
+        # when using explicit schemas, and data arrives as strings after Kafka
+        # JSON serialization (datetime objects become ISO format strings)
+        converted_rows = []
+        for row in rows:
+            converted_row = dict(row)
+            for col_name, col_type in schema.items():
+                if col_name in converted_row and converted_row[col_name] is not None:
+                    val = converted_row[col_name]
+                    if col_type == pl.Datetime("us", "UTC") and isinstance(val, str):
+                        # Parse ISO timestamp string (e.g., "2026-01-09T01:58:32.556819Z")
+                        # Handle both "Z" suffix and "+00:00" timezone formats
+                        converted_row[col_name] = datetime.fromisoformat(
+                            val.replace("Z", "+00:00")
+                        )
+                    elif col_type == pl.Date and isinstance(val, str):
+                        # Parse date string (e.g., "2026-01-09" or from ISO timestamp)
+                        if "T" in val:
+                            # ISO timestamp string - extract date part
+                            converted_row[col_name] = datetime.fromisoformat(
+                                val.replace("Z", "+00:00")
+                            ).date()
+                        else:
+                            # Plain date string
+                            converted_row[col_name] = date.fromisoformat(val)
+            converted_rows.append(converted_row)
+
+        return pl.DataFrame(converted_rows, schema=schema)
 
 
 __all__ = ["ClaimXEntityWriter", "MERGE_KEYS", "TABLE_SCHEMAS"]
