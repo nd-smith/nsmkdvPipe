@@ -376,9 +376,45 @@ class DeltaTableWriter(LoggedClass):
                             mismatches.append(
                                 f"{col}: {source_dtype} -> {polars_type}"
                             )
-                            cast_exprs.append(
-                                pl.col(col).cast(polars_type, strict=False).alias(col)
-                            )
+                            # Special handling for datetime timezone conversions
+                            # Polars cast() doesn't handle timezone conversion properly
+                            if (
+                                isinstance(source_dtype, pl.Datetime)
+                                and isinstance(polars_type, pl.Datetime)
+                            ):
+                                # Handle timezone differences
+                                source_tz = source_dtype.time_zone
+                                target_tz = polars_type.time_zone
+                                if source_tz != target_tz:
+                                    if target_tz is None:
+                                        # Remove timezone
+                                        cast_exprs.append(
+                                            pl.col(col)
+                                            .dt.replace_time_zone(None)
+                                            .alias(col)
+                                        )
+                                    elif source_tz is None:
+                                        # Add timezone
+                                        cast_exprs.append(
+                                            pl.col(col)
+                                            .dt.replace_time_zone(target_tz)
+                                            .alias(col)
+                                        )
+                                    else:
+                                        # Convert between timezones
+                                        cast_exprs.append(
+                                            pl.col(col)
+                                            .dt.convert_time_zone(target_tz)
+                                            .alias(col)
+                                        )
+                                else:
+                                    cast_exprs.append(
+                                        pl.col(col).cast(polars_type, strict=False).alias(col)
+                                    )
+                            else:
+                                cast_exprs.append(
+                                    pl.col(col).cast(polars_type, strict=False).alias(col)
+                                )
                         else:
                             cast_exprs.append(pl.col(col))
                     except Exception as e:
@@ -435,14 +471,10 @@ class DeltaTableWriter(LoggedClass):
 
         type_str = str(arrow_type).lower()
 
-        # Timestamp types - preserve timezone info if present
-        # Use PyArrow's tz attribute for proper timezone detection
+        # Timestamp types - always use UTC for consistency across all tables
+        # All timestamps in the pipeline should be timezone-aware UTC
         if "timestamp" in type_str:
-            # Check if the Arrow type has a timezone attribute
-            tz = getattr(arrow_type, "tz", None)
-            if tz is not None:
-                return pl.Datetime("us", "UTC")
-            return pl.Datetime("us")
+            return pl.Datetime("us", "UTC")
 
         # String types - check by string representation for flexibility
         # Handles: string, large_string, utf8, large_utf8
