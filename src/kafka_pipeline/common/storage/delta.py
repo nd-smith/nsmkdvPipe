@@ -332,9 +332,9 @@ class DeltaTableWriter(LoggedClass):
         This prevents type coercion errors during Delta merge operations.
         When Delta builds CASE WHEN expressions for merge, it needs compatible
         types between source and target columns. This method:
-        1. Casts source columns to match target types
-        2. Adds missing target columns as nulls with correct types
-        3. Removes source columns not in target (schema evolution handles adds)
+        1. Reorders columns to match target table column order
+        2. Casts source columns to match target types
+        3. Adds extra source columns at the end (schema evolution handles adds)
 
         Args:
             df: Source DataFrame to align
@@ -347,15 +347,19 @@ class DeltaTableWriter(LoggedClass):
             dt = DeltaTable(self.table_path, storage_options=opts)
             target_schema = dt.schema()
 
-            # Build mapping of target column names to Arrow types
+            # Build ordered list of target column names and mapping to Arrow types
+            target_column_order: List[str] = []
             target_types: Dict[str, Any] = {}
             for field in target_schema.fields:
+                target_column_order.append(field.name)
                 target_types[field.name] = field.type
 
-            # Cast existing columns to match target types
+            source_columns = set(df.columns)
+
+            # Build expressions in TARGET column order first
             cast_exprs = []
-            for col in df.columns:
-                if col in target_types:
+            for col in target_column_order:
+                if col in source_columns:
                     target_arrow_type = target_types[col]
                     # Convert Arrow type to Polars type and cast
                     try:
@@ -369,8 +373,11 @@ class DeltaTableWriter(LoggedClass):
                     except Exception:
                         # If cast fails, keep original column
                         cast_exprs.append(pl.col(col))
-                else:
-                    # Column not in target - keep it (schema evolution will handle)
+
+            # Add any extra source columns not in target (at the end)
+            # Schema evolution will handle adding these to the table
+            for col in df.columns:
+                if col not in target_types:
                     cast_exprs.append(pl.col(col))
 
             if cast_exprs:
@@ -472,6 +479,11 @@ class DeltaTableWriter(LoggedClass):
 
         # Write to Delta - convert to Arrow for write_deltalake
         opts = get_storage_options()
+
+        # Align source schema with target to ensure column order matches
+        if self._table_exists(opts):
+            df = self._align_schema_with_target(df, opts)
+
         write_deltalake(
             self.table_path,
             df.to_arrow(),
