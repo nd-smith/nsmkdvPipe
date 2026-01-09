@@ -147,6 +147,7 @@ class UploadWorker:
         self._bytes_uploaded = 0
         self._last_cycle_log = time.monotonic()
         self._cycle_count = 0
+        self._cycle_task: Optional[asyncio.Task] = None
 
         # Log configured domains
         configured_domains = list(config.onelake_domain_paths.keys())
@@ -223,6 +224,9 @@ class UploadWorker:
 
         self._running = True
 
+        # Start cycle output background task
+        self._cycle_task = asyncio.create_task(self._periodic_cycle_output())
+
         # Update connection status
         update_connection_status("consumer", connected=True)
 
@@ -273,6 +277,14 @@ class UploadWorker:
 
         logger.info("Stopping upload worker...")
         self._running = False
+
+        # Cancel cycle output task
+        if self._cycle_task and not self._cycle_task.done():
+            self._cycle_task.cancel()
+            try:
+                await self._cycle_task
+            except asyncio.CancelledError:
+                pass
 
         # Signal shutdown
         if self._shutdown_event:
@@ -375,14 +387,6 @@ class UploadWorker:
         _logged_waiting_for_assignment = False
         _logged_assignment_received = False
 
-        # Log initial cycle 0
-        logger.info(
-            "Cycle 0: processed=0 (succeeded=0, failed=0), bytes=0, in_flight=0 "
-            "[cycle output every %ds]",
-            self.CYCLE_LOG_INTERVAL_SECONDS,
-        )
-        self._last_cycle_log = time.monotonic()
-
         while self._running:
             try:
                 # Check partition assignment before fetching
@@ -426,27 +430,6 @@ class UploadWorker:
                     timeout_ms=1000,
                     max_records=self.batch_size,
                 )
-
-                # Log cycle output at regular intervals
-                cycle_elapsed = time.monotonic() - self._last_cycle_log
-                if cycle_elapsed >= self.CYCLE_LOG_INTERVAL_SECONDS:
-                    self._cycle_count += 1
-                    self._last_cycle_log = time.monotonic()
-                    in_flight = len(self._in_flight_tasks)
-                    logger.info(
-                        f"Cycle {self._cycle_count}: processed={self._records_processed} "
-                        f"(succeeded={self._records_succeeded}, failed={self._records_failed}), "
-                        f"bytes={self._bytes_uploaded}, in_flight={in_flight}",
-                        extra={
-                            "cycle": self._cycle_count,
-                            "records_processed": self._records_processed,
-                            "records_succeeded": self._records_succeeded,
-                            "records_failed": self._records_failed,
-                            "bytes_uploaded": self._bytes_uploaded,
-                            "in_flight": in_flight,
-                            "cycle_interval_seconds": self.CYCLE_LOG_INTERVAL_SECONDS,
-                        },
-                    )
 
                 if not batch:
                     continue
@@ -691,6 +674,47 @@ class UploadWorker:
             # Remove from in-flight tracking
             async with self._in_flight_lock:
                 self._in_flight_tasks.discard(trace_id)
+
+    async def _periodic_cycle_output(self) -> None:
+        """
+        Background task for periodic cycle logging.
+        """
+        logger.info(
+            "Cycle 0: processed=0 (succeeded=0, failed=0), bytes=0, in_flight=0 "
+            "[cycle output every %ds]",
+            self.CYCLE_LOG_INTERVAL_SECONDS,
+        )
+        self._last_cycle_log = time.monotonic()
+        self._cycle_count = 0
+
+        try:
+            while True:  # Runs until cancelled
+                await asyncio.sleep(1)
+
+                cycle_elapsed = time.monotonic() - self._last_cycle_log
+                if cycle_elapsed >= self.CYCLE_LOG_INTERVAL_SECONDS:
+                    self._cycle_count += 1
+                    self._last_cycle_log = time.monotonic()
+                    in_flight = len(self._in_flight_tasks)
+
+                    logger.info(
+                        f"Cycle {self._cycle_count}: processed={self._records_processed} "
+                        f"(succeeded={self._records_succeeded}, failed={self._records_failed}), "
+                        f"bytes={self._bytes_uploaded}, in_flight={in_flight}",
+                        extra={
+                            "cycle": self._cycle_count,
+                            "records_processed": self._records_processed,
+                            "records_succeeded": self._records_succeeded,
+                            "records_failed": self._records_failed,
+                            "bytes_uploaded": self._bytes_uploaded,
+                            "in_flight": in_flight,
+                            "cycle_interval_seconds": self.CYCLE_LOG_INTERVAL_SECONDS,
+                        },
+                    )
+
+        except asyncio.CancelledError:
+            logger.debug("Periodic cycle output task cancelled")
+            raise
 
     async def _cleanup_cache_file(self, cache_path: Path) -> None:
         """Clean up cached file and its parent directory if empty."""
