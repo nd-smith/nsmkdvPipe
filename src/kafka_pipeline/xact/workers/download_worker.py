@@ -182,6 +182,7 @@ class DownloadWorker:
         self._bytes_downloaded = 0
         self._last_cycle_log = time.monotonic()
         self._cycle_count = 0
+        self._cycle_task: Optional[asyncio.Task] = None
 
         logger.info(
             "Initialized download worker with concurrent processing",
@@ -245,6 +246,9 @@ class DownloadWorker:
         await self._create_consumer()
 
         self._running = True
+
+        # Start cycle output background task
+        self._cycle_task = asyncio.create_task(self._periodic_cycle_output())
 
         # Update connection status
         update_connection_status("consumer", connected=True)
@@ -359,6 +363,14 @@ class DownloadWorker:
         logger.info("Stopping download worker, waiting for in-flight downloads")
         self._running = False
 
+        # Cancel cycle output task
+        if self._cycle_task and not self._cycle_task.done():
+            self._cycle_task.cancel()
+            try:
+                await self._cycle_task
+            except asyncio.CancelledError:
+                pass
+
         # Signal shutdown
         if self._shutdown_event:
             self._shutdown_event.set()
@@ -446,14 +458,6 @@ class DownloadWorker:
         _logged_waiting_for_assignment = False
         _logged_assignment_received = False
 
-        # Log initial cycle 0
-        logger.info(
-            "Cycle 0: processed=0 (succeeded=0, failed=0), bytes=0, in_flight=0 "
-            "[cycle output every %ds]",
-            self.CYCLE_LOG_INTERVAL_SECONDS,
-        )
-        self._last_cycle_log = time.monotonic()
-
         while self._running and self._consumer:
             try:
                 # Check partition assignment before fetching
@@ -497,27 +501,6 @@ class DownloadWorker:
                     timeout_ms=1000,
                     max_records=self.batch_size,
                 )
-
-                # Log cycle output at regular intervals
-                cycle_elapsed = time.monotonic() - self._last_cycle_log
-                if cycle_elapsed >= self.CYCLE_LOG_INTERVAL_SECONDS:
-                    self._cycle_count += 1
-                    self._last_cycle_log = time.monotonic()
-                    in_flight = len(self._in_flight_tasks)
-                    logger.info(
-                        f"Cycle {self._cycle_count}: processed={self._records_processed} "
-                        f"(succeeded={self._records_succeeded}, failed={self._records_failed}), "
-                        f"bytes={self._bytes_downloaded}, in_flight={in_flight}",
-                        extra={
-                            "cycle": self._cycle_count,
-                            "records_processed": self._records_processed,
-                            "records_succeeded": self._records_succeeded,
-                            "records_failed": self._records_failed,
-                            "bytes_downloaded": self._bytes_downloaded,
-                            "in_flight": in_flight,
-                            "cycle_interval_seconds": self.CYCLE_LOG_INTERVAL_SECONDS,
-                        },
-                    )
 
                 if not data:
                     continue
@@ -680,6 +663,9 @@ class DownloadWorker:
 
         # Set logging context for this request
         set_log_context(trace_id=task_message.trace_id)
+
+        # Track records processed
+        self._records_processed += 1
 
         # Track in-flight task by media_id (unique per attachment)
         async with self._in_flight_lock:
@@ -1124,6 +1110,46 @@ class DownloadWorker:
                 },
             )
 
+    async def _periodic_cycle_output(self) -> None:
+        """
+        Background task for periodic cycle logging.
+        """
+        logger.info(
+            "Cycle 0: processed=0 (succeeded=0, failed=0), bytes=0, in_flight=0 "
+            "[cycle output every %ds]",
+            self.CYCLE_LOG_INTERVAL_SECONDS,
+        )
+        self._last_cycle_log = time.monotonic()
+        self._cycle_count = 0
+
+        try:
+            while True:  # Runs until cancelled
+                await asyncio.sleep(1)
+
+                cycle_elapsed = time.monotonic() - self._last_cycle_log
+                if cycle_elapsed >= self.CYCLE_LOG_INTERVAL_SECONDS:
+                    self._cycle_count += 1
+                    self._last_cycle_log = time.monotonic()
+                    in_flight = len(self._in_flight_tasks)
+
+                    logger.info(
+                        f"Cycle {self._cycle_count}: processed={self._records_processed} "
+                        f"(succeeded={self._records_succeeded}, failed={self._records_failed}), "
+                        f"bytes={self._bytes_downloaded}, in_flight={in_flight}",
+                        extra={
+                            "cycle": self._cycle_count,
+                            "records_processed": self._records_processed,
+                            "records_succeeded": self._records_succeeded,
+                            "records_failed": self._records_failed,
+                            "bytes_downloaded": self._bytes_downloaded,
+                            "in_flight": in_flight,
+                            "cycle_interval_seconds": self.CYCLE_LOG_INTERVAL_SECONDS,
+                        },
+                    )
+
+        except asyncio.CancelledError:
+            logger.debug("Periodic cycle output task cancelled")
+            raise
 
     def _is_duplicate(self, media_id: str) -> bool:
         """
