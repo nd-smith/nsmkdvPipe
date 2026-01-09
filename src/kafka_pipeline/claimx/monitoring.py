@@ -220,15 +220,49 @@ class HealthCheckServer:
         app.router.add_get("/health/ready", self.handle_readiness)
         return app
 
+    async def _try_start_on_port(self, port: int) -> bool:
+        """Try to start the health server on a specific port.
+
+        Args:
+            port: Port to bind to (0 for dynamic assignment)
+
+        Returns:
+            True if successful, False if port is in use
+        """
+        try:
+            self._app = self.create_app()
+            self._runner = web.AppRunner(self._app)
+            await self._runner.setup()
+            self._site = web.TCPSite(self._runner, "0.0.0.0", port)
+            await self._site.start()
+
+            # Capture actual port (important when using port=0 for dynamic assignment)
+            if self._site._server and self._site._server.sockets:
+                self._actual_port = self._site._server.sockets[0].getsockname()[1]
+            else:
+                self._actual_port = port
+
+            return True
+        except OSError as e:
+            # Port in use: errno 98 (Linux) or 10048 (Windows)
+            if e.errno in (98, 10048):
+                # Clean up partial setup
+                if self._runner:
+                    await self._runner.cleanup()
+                    self._runner = None
+                    self._site = None
+                    self._app = None
+                return False
+            raise
+
     async def start(self) -> None:
         """
         Start the health check HTTP server.
 
         Starts listening on the configured port for health check requests.
         If port is 0, an available port will be dynamically assigned.
-
-        Raises:
-            Exception: If server fails to start
+        If the configured port is in use, falls back to dynamic port assignment.
+        If all attempts fail, logs a warning and continues without health checks.
         """
         if not self._enabled:
             logger.debug(
@@ -238,34 +272,56 @@ class HealthCheckServer:
             return
 
         try:
-            self._app = self.create_app()
-            self._runner = web.AppRunner(self._app)
-            await self._runner.setup()
-            self._site = web.TCPSite(self._runner, "0.0.0.0", self.port)
-            await self._site.start()
+            # Try the configured port first
+            if await self._try_start_on_port(self.port):
+                logger.info(
+                    "Health check server started",
+                    extra={
+                        "worker_name": self.worker_name,
+                        "port": self._actual_port,
+                        "liveness_endpoint": f"http://localhost:{self._actual_port}/health/live",
+                        "readiness_endpoint": f"http://localhost:{self._actual_port}/health/ready",
+                    },
+                )
+                return
 
-            # Capture actual port (important when using port=0 for dynamic assignment)
-            if self._site._server and self._site._server.sockets:
-                self._actual_port = self._site._server.sockets[0].getsockname()[1]
-            else:
-                self._actual_port = self.port
+            # Port was in use - try dynamic port if we weren't already using it
+            if self.port != 0:
+                logger.warning(
+                    f"Port {self.port} in use, falling back to dynamic port assignment",
+                    extra={"worker_name": self.worker_name, "original_port": self.port},
+                )
+                if await self._try_start_on_port(0):
+                    logger.info(
+                        "Health check server started on dynamic port",
+                        extra={
+                            "worker_name": self.worker_name,
+                            "port": self._actual_port,
+                            "liveness_endpoint": f"http://localhost:{self._actual_port}/health/live",
+                            "readiness_endpoint": f"http://localhost:{self._actual_port}/health/ready",
+                        },
+                    )
+                    return
 
-            logger.info(
-                f"Health check server started",
-                extra={
-                    "worker_name": self.worker_name,
-                    "port": self._actual_port,
-                    "liveness_endpoint": f"http://localhost:{self._actual_port}/health/live",
-                    "readiness_endpoint": f"http://localhost:{self._actual_port}/health/ready",
-                },
+            # All attempts failed - disable health checks but don't crash
+            logger.warning(
+                "Could not start health check server, continuing without health checks",
+                extra={"worker_name": self.worker_name},
             )
+            self._enabled = False
+
         except Exception as e:
             logger.error(
                 f"Failed to start health check server: {e}",
                 extra={"worker_name": self.worker_name, "port": self.port},
                 exc_info=True,
             )
-            raise
+            # Don't crash the worker - just disable health checks
+            logger.warning(
+                "Continuing without health checks due to startup error",
+                extra={"worker_name": self.worker_name},
+            )
+            self._enabled = False
 
     async def stop(self) -> None:
         """
