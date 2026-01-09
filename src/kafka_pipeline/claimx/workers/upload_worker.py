@@ -10,8 +10,8 @@ This worker is decoupled from the Download Worker to allow:
 - Cache buffer if OneLake has temporary issues
 
 Architecture:
-- Download Worker: downloads → local cache → ClaimXCachedDownloadMessage
-- Upload Worker: ClaimXCachedDownloadMessage → OneLake → ClaimXUploadResultMessage
+- Download Worker: downloads -> local cache -> ClaimXCachedDownloadMessage
+- Upload Worker: ClaimXCachedDownloadMessage -> OneLake -> ClaimXUploadResultMessage
 """
 
 import asyncio
@@ -503,49 +503,6 @@ class ClaimXUploadWorker:
         """
         Process a single cached download message.
         """
-
-    async def _periodic_cycle_output(self) -> None:
-        """
-        Background task for periodic cycle logging.
-        """
-        logger.info(
-            "Cycle 0: processed=0 (succeeded=0, failed=0, skipped=0), pending=0 "
-            "[cycle output every %ds]",
-            30,
-        )
-        self._last_cycle_log = time.monotonic()
-        self._cycle_count = 0
-
-        try:
-            while True:  # Runs until cancelled
-                await asyncio.sleep(1)
-
-                cycle_elapsed = time.monotonic() - self._last_cycle_log
-                if cycle_elapsed >= 30:  # 30 matches standard interval
-                    self._cycle_count += 1
-                    self._last_cycle_log = time.monotonic()
-                    
-                    async with self._in_flight_lock:
-                         in_flight = len(self._in_flight_tasks)
-
-                    logger.info(
-                        f"Cycle {self._cycle_count}: processed={self._records_processed} "
-                        f"(succeeded={self._records_succeeded}, failed={self._records_failed}, "
-                        f"skipped={self._records_skipped}), in_flight={in_flight}",
-                        extra={
-                            "cycle": self._cycle_count,
-                            "records_processed": self._records_processed,
-                            "records_succeeded": self._records_succeeded,
-                            "records_failed": self._records_failed,
-                            "records_skipped": self._records_skipped,
-                            "in_flight": in_flight,
-                            "cycle_interval_seconds": 30,
-                        },
-                    )
-
-        except asyncio.CancelledError:
-            logger.debug("Periodic cycle output task cancelled")
-            raise
         start_time = time.time()
         media_id = "unknown"
 
@@ -591,13 +548,12 @@ class ClaimXUploadWorker:
                     "domain": self.domain,
                     "destination_path": cached_message.destination_path,
                     "blob_path": blob_path,
-                    "blob_path": blob_path,
                     "bytes_uploaded": cached_message.bytes_downloaded,
                     "processing_time_ms": processing_time_ms,
                     "records_succeeded": self._records_succeeded,
                 },
             )
-            
+
             self._records_succeeded += 1
 
             # Produce success result
@@ -695,6 +651,49 @@ class ClaimXUploadWorker:
             # Remove from in-flight tracking
             async with self._in_flight_lock:
                 self._in_flight_tasks.discard(media_id)
+
+    async def _periodic_cycle_output(self) -> None:
+        """
+        Background task for periodic cycle logging.
+        """
+        logger.info(
+            "Cycle 0: processed=0 (succeeded=0, failed=0, skipped=0), pending=0 "
+            "[cycle output every %ds]",
+            30,
+        )
+        self._last_cycle_log = time.monotonic()
+        self._cycle_count = 0
+
+        try:
+            while True:  # Runs until cancelled
+                await asyncio.sleep(1)
+
+                cycle_elapsed = time.monotonic() - self._last_cycle_log
+                if cycle_elapsed >= 30:  # 30 matches standard interval
+                    self._cycle_count += 1
+                    self._last_cycle_log = time.monotonic()
+
+                    async with self._in_flight_lock:
+                         in_flight = len(self._in_flight_tasks)
+
+                    logger.info(
+                        f"Cycle {self._cycle_count}: processed={self._records_processed} "
+                        f"(succeeded={self._records_succeeded}, failed={self._records_failed}, "
+                        f"skipped={self._records_skipped}), in_flight={in_flight}",
+                        extra={
+                            "cycle": self._cycle_count,
+                            "records_processed": self._records_processed,
+                            "records_succeeded": self._records_succeeded,
+                            "records_failed": self._records_failed,
+                            "records_skipped": self._records_skipped,
+                            "in_flight": in_flight,
+                            "cycle_interval_seconds": 30,
+                        },
+                    )
+
+        except asyncio.CancelledError:
+            logger.debug("Periodic cycle output task cancelled")
+            raise
 
     async def _cleanup_cache_file(self, cache_path: Path) -> None:
         """Clean up cached file and its parent directory if empty."""
