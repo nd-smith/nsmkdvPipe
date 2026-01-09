@@ -435,12 +435,17 @@ class ClaimXEntityWriter:
             # schema inference issues with mixed None/value columns
             df = self._create_dataframe_with_schema(table_name, rows)
 
-            # Add created_at and updated_at timestamps if not present
+            # Ensure created_at and updated_at have values (fill nulls with current time)
+            # Delta tables declare these as non-nullable, so we must provide values
             now = datetime.now(timezone.utc)
             if "created_at" not in df.columns:
                 df = df.with_columns(pl.lit(now).alias("created_at"))
+            else:
+                df = df.with_columns(pl.col("created_at").fill_null(now))
             if "updated_at" not in df.columns:
                 df = df.with_columns(pl.lit(now).alias("updated_at"))
+            else:
+                df = df.with_columns(pl.col("updated_at").fill_null(now))
 
             # Contacts: append-only (new contacts from new projects/events)
             # Media: append-only (new media from new events)
