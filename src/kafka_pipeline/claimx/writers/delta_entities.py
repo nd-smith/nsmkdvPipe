@@ -44,6 +44,193 @@ CONTACTS_SCHEMA = {
     "last_enriched_at": pl.Datetime("us", "UTC"),
 }
 
+# Schema definitions for media table to ensure proper type casting
+# This prevents schema inference issues when latitude/longitude values are mixed None/string
+MEDIA_SCHEMA = {
+    "media_id": pl.Utf8,
+    "project_id": pl.Utf8,
+    "task_assignment_id": pl.Int64,
+    "file_type": pl.Utf8,
+    "file_name": pl.Utf8,
+    "media_description": pl.Utf8,
+    "media_comment": pl.Utf8,
+    "latitude": pl.Utf8,
+    "longitude": pl.Utf8,
+    "gps_source": pl.Utf8,
+    "taken_date": pl.Utf8,
+    "full_download_link": pl.Utf8,
+    "expires_at": pl.Utf8,
+    "source_event_id": pl.Utf8,
+    "created_at": pl.Utf8,
+    "updated_at": pl.Utf8,
+    "last_enriched_at": pl.Utf8,
+}
+
+# Schema definitions for projects table
+# Prevents issues with primary_phone, zip_postcode, and other numeric-looking strings
+PROJECTS_SCHEMA = {
+    "project_id": pl.Utf8,
+    "project_number": pl.Utf8,
+    "master_file_name": pl.Utf8,
+    "secondary_number": pl.Utf8,
+    "created_date": pl.Utf8,
+    "status": pl.Utf8,
+    "date_of_loss": pl.Utf8,
+    "type_of_loss": pl.Utf8,
+    "cause_of_loss": pl.Utf8,
+    "loss_description": pl.Utf8,
+    "customer_first_name": pl.Utf8,
+    "customer_last_name": pl.Utf8,
+    "custom_business_name": pl.Utf8,
+    "business_line_type": pl.Utf8,
+    "year_built": pl.Int64,
+    "square_footage": pl.Int64,
+    "street1": pl.Utf8,
+    "street2": pl.Utf8,
+    "city": pl.Utf8,
+    "state_province": pl.Utf8,
+    "zip_postcode": pl.Utf8,
+    "county": pl.Utf8,
+    "country": pl.Utf8,
+    "primary_email": pl.Utf8,
+    "primary_phone": pl.Utf8,
+    "primary_phone_country_code": pl.Int64,
+    "date_received": pl.Utf8,
+    "date_contacted": pl.Utf8,
+    "planned_inspection_date": pl.Utf8,
+    "date_inspected": pl.Utf8,
+    "appointment_date": pl.Utf8,
+    "custom_attribute1": pl.Utf8,
+    "custom_attribute2": pl.Utf8,
+    "custom_attribute3": pl.Utf8,
+    "custom_external_unique_id": pl.Utf8,
+    "company_name": pl.Utf8,
+    "source_event_id": pl.Utf8,
+    "created_at": pl.Datetime("us", "UTC"),
+    "updated_at": pl.Datetime("us", "UTC"),
+    "policyholder_invited_at": pl.Datetime("us", "UTC"),
+    "policyholder_joined_at": pl.Datetime("us", "UTC"),
+}
+
+# Schema definitions for tasks table
+TASKS_SCHEMA = {
+    "assignment_id": pl.Int64,
+    "task_id": pl.Int64,
+    "task_name": pl.Utf8,
+    "form_id": pl.Utf8,
+    "project_id": pl.Utf8,
+    "assignee_id": pl.Int64,
+    "assignor_id": pl.Int64,
+    "assignor_email": pl.Utf8,
+    "date_assigned": pl.Utf8,
+    "date_completed": pl.Utf8,
+    "cancelled_date": pl.Utf8,
+    "cancelled_by_resource_id": pl.Int64,
+    "status": pl.Utf8,
+    "pdf_project_media_id": pl.Int64,
+    "date_exported": pl.Utf8,
+    "form_response_id": pl.Utf8,
+    "stp_enabled": pl.Boolean,
+    "stp_started_date": pl.Utf8,
+    "mfn": pl.Utf8,
+    "xactimate_exportable": pl.Boolean,
+    "fraud_language_accepted_date": pl.Utf8,
+    "resubmit_task_assignment_id": pl.Int64,
+    "task_url": pl.Utf8,
+    "source_event_id": pl.Utf8,
+    "created_at": pl.Datetime("us", "UTC"),
+    "updated_at": pl.Datetime("us", "UTC"),
+    "last_enriched_at": pl.Datetime("us", "UTC"),
+}
+
+# Schema definitions for task_templates table
+TASK_TEMPLATES_SCHEMA = {
+    "task_id": pl.Int64,
+    "comp_id": pl.Int64,
+    "name": pl.Utf8,
+    "description": pl.Utf8,
+    "form_id": pl.Utf8,
+    "form_name": pl.Utf8,
+    "enabled": pl.Boolean,
+    "is_default": pl.Boolean,
+    "is_manual_delivery": pl.Boolean,
+    "is_external_link_delivery": pl.Boolean,
+    "provide_portal_access": pl.Boolean,
+    "notify_assigned_send_recipient": pl.Boolean,
+    "notify_assigned_send_recipient_sms": pl.Boolean,
+    "notify_assigned_subject": pl.Utf8,
+    "notify_task_completed": pl.Boolean,
+    "notify_completed_subject": pl.Utf8,
+    "allow_resubmit": pl.Boolean,
+    "auto_generate_pdf": pl.Boolean,
+    "modified_by": pl.Utf8,
+    "modified_by_id": pl.Int64,
+    "modified_date": pl.Utf8,
+    "source_event_id": pl.Utf8,
+    "created_at": pl.Datetime("us", "UTC"),
+    "updated_at": pl.Datetime("us", "UTC"),
+    "last_enriched_at": pl.Datetime("us", "UTC"),
+}
+
+# Schema definitions for external_links table
+EXTERNAL_LINKS_SCHEMA = {
+    "link_id": pl.Int64,
+    "assignment_id": pl.Int64,
+    "project_id": pl.Utf8,
+    "link_code": pl.Utf8,
+    "url": pl.Utf8,
+    "notification_access_method": pl.Utf8,
+    "country_id": pl.Int64,
+    "state_id": pl.Int64,
+    "created_date": pl.Utf8,
+    "accessed_count": pl.Int64,
+    "last_accessed": pl.Utf8,
+    "source_event_id": pl.Utf8,
+    "created_at": pl.Utf8,
+    "updated_at": pl.Utf8,
+}
+
+# Schema definitions for video_collab table
+# Prevents issues with mfn, claim_number, policy_number (numeric-looking strings)
+VIDEO_COLLAB_SCHEMA = {
+    "video_collaboration_id": pl.Int64,
+    "claim_id": pl.Int64,
+    "mfn": pl.Utf8,
+    "claim_number": pl.Utf8,
+    "policy_number": pl.Utf8,
+    "email_user_name": pl.Utf8,
+    "claim_rep_first_name": pl.Utf8,
+    "claim_rep_last_name": pl.Utf8,
+    "claim_rep_full_name": pl.Utf8,
+    "number_of_videos": pl.Int64,
+    "number_of_photos": pl.Int64,
+    "number_of_viewers": pl.Int64,
+    "session_count": pl.Int64,
+    "total_time_seconds": pl.Utf8,
+    "total_time": pl.Utf8,
+    "created_date": pl.Utf8,
+    "live_call_first_session": pl.Utf8,
+    "live_call_last_session": pl.Utf8,
+    "company_id": pl.Int64,
+    "company_name": pl.Utf8,
+    "guid": pl.Utf8,
+    "source_event_id": pl.Utf8,
+    "created_at": pl.Datetime("us", "UTC"),
+    "updated_at": pl.Datetime("us", "UTC"),
+    "last_enriched_at": pl.Datetime("us", "UTC"),
+}
+
+# Map table names to their schema definitions
+TABLE_SCHEMAS: Dict[str, Dict[str, pl.DataType]] = {
+    "contacts": CONTACTS_SCHEMA,
+    "media": MEDIA_SCHEMA,
+    "projects": PROJECTS_SCHEMA,
+    "tasks": TASKS_SCHEMA,
+    "task_templates": TASK_TEMPLATES_SCHEMA,
+    "external_links": EXTERNAL_LINKS_SCHEMA,
+    "video_collab": VIDEO_COLLAB_SCHEMA,
+}
+
 
 # Merge keys for each entity table (from verisk_pipeline)
 MERGE_KEYS: Dict[str, List[str]] = {
@@ -268,8 +455,9 @@ class ClaimXEntityWriter:
             return None
 
         try:
-            # Create DataFrame from rows
-            df = pl.DataFrame(rows)
+            # Create DataFrame from rows with explicit schema to prevent Polars
+            # schema inference issues with mixed None/value columns
+            df = self._create_dataframe_with_schema(table_name, rows)
 
             # Add created_at and updated_at timestamps if not present
             now = datetime.now(timezone.utc)
@@ -401,5 +589,45 @@ class ClaimXEntityWriter:
 
         return df
 
+    def _create_dataframe_with_schema(
+        self, table_name: str, rows: List[Dict[str, Any]]
+    ) -> pl.DataFrame:
+        """
+        Create DataFrame with explicit schema to prevent type inference issues.
 
-__all__ = ["ClaimXEntityWriter", "MERGE_KEYS"]
+        Polars infers schema from first N rows. If columns are None in early rows
+        and then actual values appear (especially numeric-looking strings like
+        phone numbers or zip codes), schema inference can fail. Using explicit
+        schema avoids this class of errors for all entity tables.
+
+        Args:
+            table_name: Name of the entity table
+            rows: List of row dicts
+
+        Returns:
+            DataFrame with correct schema
+        """
+        if not rows:
+            return pl.DataFrame(rows)
+
+        # Get schema definition for this table
+        table_schema = TABLE_SCHEMAS.get(table_name)
+        if not table_schema:
+            # No schema defined, use default Polars inference
+            return pl.DataFrame(rows)
+
+        # Get all column names from the rows
+        all_columns = set()
+        for row in rows:
+            all_columns.update(row.keys())
+
+        # Build schema for columns that exist and have a defined type
+        schema = {}
+        for col in all_columns:
+            if col in table_schema:
+                schema[col] = table_schema[col]
+
+        return pl.DataFrame(rows, schema=schema)
+
+
+__all__ = ["ClaimXEntityWriter", "MERGE_KEYS", "TABLE_SCHEMAS"]
