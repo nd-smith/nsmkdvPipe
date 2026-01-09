@@ -6,7 +6,7 @@ Supports validation by file extension and Content-Type header.
 """
 
 from typing import Optional, Set, Tuple
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
 
 
 # Allowed file extensions (case-insensitive)
@@ -72,6 +72,10 @@ def extract_extension(filename_or_url: str) -> Optional[str]:
     """
     Extract file extension from filename or URL.
 
+    Checks URL path first, then falls back to 'filename' query parameter
+    for URLs where the filename is passed as a parameter (common pattern
+    for file service APIs like ClaimX cxfileservice).
+
     Args:
         filename_or_url: Filename or URL to extract extension from
 
@@ -83,6 +87,8 @@ def extract_extension(filename_or_url: str) -> Optional[str]:
         "pdf"
         >>> extract_extension("https://example.com/file.XML")
         "xml"
+        >>> extract_extension("https://example.com/get/uuid?filename=doc.pdf")
+        "pdf"
         >>> extract_extension("no_extension")
         None
     """
@@ -90,6 +96,7 @@ def extract_extension(filename_or_url: str) -> Optional[str]:
         return None
 
     # Try to parse as URL first
+    parsed = None
     try:
         parsed = urlparse(filename_or_url)
         path = parsed.path if parsed.path else filename_or_url
@@ -101,7 +108,24 @@ def extract_extension(filename_or_url: str) -> Optional[str]:
         extension = path.rsplit(".", 1)[-1].lower()
         # Remove query parameters if present
         extension = extension.split("?")[0].split("#")[0]
-        return extension if extension else None
+        if extension:
+            return extension
+
+    # Fallback: check query parameters for filename
+    # Common pattern for file service APIs (e.g., ?filename=document.pdf)
+    if parsed and parsed.query:
+        try:
+            query_params = parse_qs(parsed.query)
+            # Check common filename parameter names
+            for param_name in ("filename", "file", "name"):
+                if param_name in query_params and query_params[param_name]:
+                    filename = query_params[param_name][0]
+                    if "." in filename:
+                        extension = filename.rsplit(".", 1)[-1].lower()
+                        if extension:
+                            return extension
+        except Exception:
+            pass
 
     return None
 
