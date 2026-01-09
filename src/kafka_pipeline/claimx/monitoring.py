@@ -61,31 +61,47 @@ class HealthCheckServer:
         >>> await health_server.stop()
     """
 
-    def __init__(self, port: int = 8080, worker_name: str = "claimx-worker"):
+    def __init__(
+        self,
+        port: Optional[int] = 8080,
+        worker_name: str = "claimx-worker",
+        enabled: bool = True,
+    ):
         """
         Initialize health check server.
 
         Args:
-            port: HTTP port to listen on (default: 8080)
+            port: HTTP port to listen on. Use 0 for dynamic port assignment,
+                  or None to disable the server (default: 8080)
             worker_name: Name of the worker for logging
+            enabled: Whether to enable the health check server (default: True).
+                     If False, start() and stop() become no-ops.
         """
         self.port = port
         self.worker_name = worker_name
+        self._enabled = enabled and port is not None
         self._ready = False
         self._kafka_connected = False
         self._api_reachable = True  # Default true for workers without API dependency
         self._circuit_open = False
         self._started_at = datetime.now(timezone.utc)
+        self._actual_port: Optional[int] = None
 
         # aiohttp components
         self._app: Optional[web.Application] = None
         self._runner: Optional[web.AppRunner] = None
         self._site: Optional[web.TCPSite] = None
 
-        logger.info(
-            f"Initialized HealthCheckServer for {worker_name}",
-            extra={"port": port, "worker_name": worker_name},
-        )
+        if self._enabled:
+            logger.info(
+                f"Initialized HealthCheckServer for {worker_name}",
+                extra={"port": port, "worker_name": worker_name},
+            )
+        else:
+            logger.info(
+                f"HealthCheckServer disabled for {worker_name}",
+                extra={"worker_name": worker_name},
+            )
 
     def set_ready(
         self,
@@ -209,10 +225,18 @@ class HealthCheckServer:
         Start the health check HTTP server.
 
         Starts listening on the configured port for health check requests.
+        If port is 0, an available port will be dynamically assigned.
 
         Raises:
             Exception: If server fails to start
         """
+        if not self._enabled:
+            logger.debug(
+                "Health check server is disabled, skipping start",
+                extra={"worker_name": self.worker_name},
+            )
+            return
+
         try:
             self._app = self.create_app()
             self._runner = web.AppRunner(self._app)
@@ -220,13 +244,19 @@ class HealthCheckServer:
             self._site = web.TCPSite(self._runner, "0.0.0.0", self.port)
             await self._site.start()
 
+            # Capture actual port (important when using port=0 for dynamic assignment)
+            if self._site._server and self._site._server.sockets:
+                self._actual_port = self._site._server.sockets[0].getsockname()[1]
+            else:
+                self._actual_port = self.port
+
             logger.info(
                 f"Health check server started",
                 extra={
                     "worker_name": self.worker_name,
-                    "port": self.port,
-                    "liveness_endpoint": f"http://localhost:{self.port}/health/live",
-                    "readiness_endpoint": f"http://localhost:{self.port}/health/ready",
+                    "port": self._actual_port,
+                    "liveness_endpoint": f"http://localhost:{self._actual_port}/health/live",
+                    "readiness_endpoint": f"http://localhost:{self._actual_port}/health/ready",
                 },
             )
         except Exception as e:
@@ -243,6 +273,9 @@ class HealthCheckServer:
 
         Cleans up resources and stops listening for requests.
         """
+        if not self._enabled:
+            return
+
         if self._runner:
             try:
                 await self._runner.cleanup()
@@ -260,11 +293,26 @@ class HealthCheckServer:
                 self._runner = None
                 self._site = None
                 self._app = None
+                self._actual_port = None
 
     @property
     def is_ready(self) -> bool:
         """Check if worker is currently ready."""
         return self._ready
+
+    @property
+    def actual_port(self) -> Optional[int]:
+        """Get the actual port the server is listening on.
+
+        This is particularly useful when using port=0 for dynamic assignment.
+        Returns None if the server is not running or is disabled.
+        """
+        return self._actual_port
+
+    @property
+    def is_enabled(self) -> bool:
+        """Check if health check server is enabled."""
+        return self._enabled
 
 
 __all__ = ["HealthCheckServer"]
