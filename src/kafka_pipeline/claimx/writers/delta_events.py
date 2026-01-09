@@ -103,10 +103,20 @@ class ClaimXEventsDeltaWriter(BaseDeltaWriter):
             # Create DataFrame from events
             df = pl.DataFrame(events)
 
-            # Ensure ingested_at is datetime type (may be string from JSON serialization)
+            # Ensure ingested_at is datetime type with UTC timezone
+            # (may be string from JSON serialization, or datetime without timezone)
             if df.schema.get("ingested_at") == pl.Utf8:
                 df = df.with_columns(
-                    pl.col("ingested_at").str.to_datetime().alias("ingested_at")
+                    pl.col("ingested_at")
+                    .str.to_datetime(time_zone="UTC")
+                    .alias("ingested_at")
+                )
+            elif df.schema.get("ingested_at") == pl.Datetime("us"):
+                # Datetime without timezone - add UTC
+                df = df.with_columns(
+                    pl.col("ingested_at")
+                    .dt.replace_time_zone("UTC")
+                    .alias("ingested_at")
                 )
 
             # Add event_date partition column (from ingested_at)
