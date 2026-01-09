@@ -424,26 +424,27 @@ class DeltaTableWriter(LoggedClass):
                         )
                         cast_exprs.append(pl.col(col))
 
-            # Add any extra source columns not in target (at the end)
-            # Schema evolution will handle adding these to the table
+            # Drop any extra source columns not in target table
+            # Schema evolution with schema_mode="merge" doesn't always work reliably
+            # so we drop extra columns to ensure write succeeds
             extra_cols = []
             for col in df.columns:
                 if col not in target_types:
                     extra_cols.append(col)
-                    cast_exprs.append(pl.col(col))
+                    # Don't include these columns in the output
 
             if cast_exprs:
                 df = df.select(cast_exprs)
 
             # Log detailed info for debugging schema issues
-            log_level = logging.WARNING if mismatches else logging.DEBUG
+            log_level = logging.WARNING if (mismatches or extra_cols) else logging.DEBUG
             self._log(
                 log_level,
                 "Aligned source schema with target",
                 source_columns=len(source_columns),
                 target_columns=len(target_types),
                 casts_applied=len(mismatches),
-                extra_source_cols=extra_cols if extra_cols else None,
+                dropped_cols=extra_cols if extra_cols else None,
                 type_changes=mismatches if mismatches else None,
             )
 
