@@ -496,13 +496,28 @@ class DeltaTableWriter(LoggedClass):
             if df[col].dtype == pl.Null:
                 df = df.with_columns(pl.col(col).cast(pl.Utf8))
 
+        # Determine partition columns - use existing table's partitions if table exists,
+        # otherwise use configured partition column. This prevents partition mismatch
+        # errors when appending to tables with different/no partitioning.
+        partition_by = None
+        if self._table_exists(opts):
+            try:
+                dt = DeltaTable(self.table_path, storage_options=opts)
+                existing_partitions = dt.metadata().partition_columns
+                partition_by = existing_partitions if existing_partitions else None
+            except Exception:
+                # Fall back to configured partition column
+                partition_by = [self.partition_column] if self.partition_column else None
+        else:
+            partition_by = [self.partition_column] if self.partition_column else None
+
         write_deltalake(
             self.table_path,
             df.to_arrow(),
             mode="append",
             schema_mode="merge",
             storage_options=opts,
-            partition_by=[self.partition_column] if self.partition_column else None,
+            partition_by=partition_by,
         )  # type: ignore[call-overload]
 
         return len(df)
