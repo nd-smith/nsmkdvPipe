@@ -10,6 +10,7 @@ Handler Types:
     - TaskHandler: Handles CUSTOM_TASK_ASSIGNED, CUSTOM_TASK_COMPLETED events
     - PolicyholderHandler: Handles POLICYHOLDER_INVITED, POLICYHOLDER_JOINED events
     - VideoCollabHandler: Handles VIDEO_COLLABORATION_INVITE_SENT, VIDEO_COLLABORATION_COMPLETED events
+    - XALinkingHandler: Handles PROJECT_AUTO_XA_LINKING_UNSUCCESSFUL events
 
 Base Classes:
     - EventHandler: Abstract base class for all handlers
@@ -44,6 +45,7 @@ from kafka_pipeline.claimx.handlers.media import MediaHandler
 from kafka_pipeline.claimx.handlers.task import TaskHandler
 from kafka_pipeline.claimx.handlers.contact import PolicyholderHandler
 from kafka_pipeline.claimx.handlers.video import VideoCollabHandler
+from kafka_pipeline.claimx.handlers.xa_linking import XALinkingHandler
 
 __all__ = [
     # Base classes
@@ -61,4 +63,5 @@ __all__ = [
     "TaskHandler",
     "PolicyholderHandler",
     "VideoCollabHandler",
+    "XALinkingHandler",
 ]
