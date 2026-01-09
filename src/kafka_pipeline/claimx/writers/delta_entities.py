@@ -25,6 +25,7 @@ from kafka_pipeline.common.writers.base import BaseDeltaWriter
 
 # Schema definitions for contacts table to ensure proper type casting
 # This prevents null type inference when all values in a column are None
+# Note: Use pl.Utf8 for timestamp/date fields as handlers produce ISO strings
 CONTACTS_SCHEMA = {
     "project_id": pl.Utf8,
     "contact_email": pl.Utf8,
@@ -35,21 +36,22 @@ CONTACTS_SCHEMA = {
     "phone_country_code": pl.Int64,
     "is_primary_contact": pl.Boolean,
     "master_file_name": pl.Utf8,
-    "task_assignment_id": pl.Int32,
+    "task_assignment_id": pl.Int64,
     "video_collaboration_id": pl.Utf8,
     "source_event_id": pl.Utf8,
-    "created_at": pl.Datetime("us", "UTC"),
+    "created_at": pl.Utf8,
     "updated_at": pl.Utf8,
-    "created_date": pl.Date,
-    "last_enriched_at": pl.Datetime("us", "UTC"),
+    "created_date": pl.Utf8,
+    "last_enriched_at": pl.Utf8,
 }
 
 # Schema definitions for media table to ensure proper type casting
 # This prevents schema inference issues when latitude/longitude values are mixed None/string
+# Note: task_assignment_id is Utf8 to match Delta table schema
 MEDIA_SCHEMA = {
     "media_id": pl.Utf8,
     "project_id": pl.Utf8,
-    "task_assignment_id": pl.Int64,
+    "task_assignment_id": pl.Utf8,
     "file_type": pl.Utf8,
     "file_name": pl.Utf8,
     "media_description": pl.Utf8,
@@ -106,10 +108,10 @@ PROJECTS_SCHEMA = {
     "custom_external_unique_id": pl.Utf8,
     "company_name": pl.Utf8,
     "source_event_id": pl.Utf8,
-    "created_at": pl.Datetime("us", "UTC"),
-    "updated_at": pl.Datetime("us", "UTC"),
-    "policyholder_invited_at": pl.Datetime("us", "UTC"),
-    "policyholder_joined_at": pl.Datetime("us", "UTC"),
+    "created_at": pl.Utf8,
+    "updated_at": pl.Utf8,
+    "policyholder_invited_at": pl.Utf8,
+    "policyholder_joined_at": pl.Utf8,
 }
 
 # Schema definitions for tasks table
@@ -138,9 +140,9 @@ TASKS_SCHEMA = {
     "resubmit_task_assignment_id": pl.Int64,
     "task_url": pl.Utf8,
     "source_event_id": pl.Utf8,
-    "created_at": pl.Datetime("us", "UTC"),
-    "updated_at": pl.Datetime("us", "UTC"),
-    "last_enriched_at": pl.Datetime("us", "UTC"),
+    "created_at": pl.Utf8,
+    "updated_at": pl.Utf8,
+    "last_enriched_at": pl.Utf8,
 }
 
 # Schema definitions for task_templates table
@@ -167,9 +169,9 @@ TASK_TEMPLATES_SCHEMA = {
     "modified_by_id": pl.Int64,
     "modified_date": pl.Utf8,
     "source_event_id": pl.Utf8,
-    "created_at": pl.Datetime("us", "UTC"),
-    "updated_at": pl.Datetime("us", "UTC"),
-    "last_enriched_at": pl.Datetime("us", "UTC"),
+    "created_at": pl.Utf8,
+    "updated_at": pl.Utf8,
+    "last_enriched_at": pl.Utf8,
 }
 
 # Schema definitions for external_links table
@@ -215,9 +217,9 @@ VIDEO_COLLAB_SCHEMA = {
     "company_name": pl.Utf8,
     "guid": pl.Utf8,
     "source_event_id": pl.Utf8,
-    "created_at": pl.Datetime("us", "UTC"),
-    "updated_at": pl.Datetime("us", "UTC"),
-    "last_enriched_at": pl.Datetime("us", "UTC"),
+    "created_at": pl.Utf8,
+    "updated_at": pl.Utf8,
+    "last_enriched_at": pl.Utf8,
 }
 
 # Map table names to their schema definitions

@@ -74,7 +74,7 @@ class MediaTransformer:
         return {
             "media_id": safe_str_id(media.get("mediaID")),
             "project_id": safe_str_id(project_id),
-            "task_assignment_id": safe_int(media.get("taskAssignmentID")),
+            "task_assignment_id": safe_str_id(media.get("taskAssignmentID")),
             "file_type": safe_str(media.get("mediaType")),
             "file_name": safe_str(media.get("mediaName")),
             "media_description": safe_str(media.get("mediaDescription")),
