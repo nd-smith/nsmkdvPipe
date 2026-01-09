@@ -471,14 +471,10 @@ class DeltaTableWriter(LoggedClass):
 
         type_str = str(arrow_type).lower()
 
-        # Timestamp types - preserve timezone info if present
-        # Use PyArrow's tz attribute for proper timezone detection
+        # Timestamp types - always use UTC for consistency across all tables
+        # All timestamps in the pipeline should be timezone-aware UTC
         if "timestamp" in type_str:
-            # Check if the Arrow type has a timezone attribute
-            tz = getattr(arrow_type, "tz", None)
-            if tz is not None:
-                return pl.Datetime("us", "UTC")
-            return pl.Datetime("us")
+            return pl.Datetime("us", "UTC")
 
         # String types - check by string representation for flexibility
         # Handles: string, large_string, utf8, large_utf8
