@@ -440,10 +440,6 @@ class ClaimXEntityWriter:
             if "updated_at" not in df.columns:
                 df = df.with_columns(pl.lit(now).alias("updated_at"))
 
-            # Apply schema casting for contacts table to avoid null type inference
-            if table_name == "contacts":
-                df = self._cast_contacts_schema(df, now)
-
             # Contacts: append-only (new contacts from new projects/events)
             # Media: append-only (new media from new events)
             # Other tables: merge (upsert)
@@ -506,72 +502,6 @@ class ClaimXEntityWriter:
                 exc_info=True,
             )
             return None
-
-    def _cast_contacts_schema(
-        self, df: pl.DataFrame, now: datetime
-    ) -> pl.DataFrame:
-        """
-        Cast contacts DataFrame columns to match Delta table schema.
-
-        Ensures proper type casting to avoid null type inference when
-        columns contain only None values. Also adds missing required columns.
-
-        Args:
-            df: Input DataFrame with contact rows
-            now: Current timestamp for last_enriched_at
-
-        Returns:
-            DataFrame with properly typed columns
-        """
-        # Add last_enriched_at if not present (required by table schema)
-        if "last_enriched_at" not in df.columns:
-            df = df.with_columns(pl.lit(now).alias("last_enriched_at"))
-
-        # Convert updated_at to string if it's a datetime (table expects string)
-        if "updated_at" in df.columns and df["updated_at"].dtype != pl.Utf8:
-            df = df.with_columns(
-                pl.col("updated_at").cast(pl.Utf8)
-            )
-
-        # Cast columns to their expected types to avoid null type inference
-        cast_exprs = []
-        for col_name, col_type in CONTACTS_SCHEMA.items():
-            if col_name in df.columns:
-                current_dtype = df[col_name].dtype
-                # Only cast if needed (skip if already correct type or if it's a datetime)
-                if current_dtype == pl.Null:
-                    # Column is all nulls - cast to expected type
-                    cast_exprs.append(pl.col(col_name).cast(col_type))
-                elif current_dtype != col_type:
-                    # Handle string -> datetime conversion (ISO format timestamps)
-                    if col_type == pl.Datetime("us", "UTC") and current_dtype == pl.Utf8:
-                        # Parse ISO format string to datetime
-                        cast_exprs.append(
-                            pl.col(col_name)
-                            .str.to_datetime(format="%Y-%m-%dT%H:%M:%S%.fZ", time_zone="UTC", strict=False)
-                            .alias(col_name)
-                        )
-                    # Handle datetime -> timestamp conversion
-                    elif col_type == pl.Datetime("us", "UTC") and current_dtype in (
-                        pl.Datetime,
-                        pl.Datetime("us"),
-                        pl.Datetime("us", "UTC"),
-                    ):
-                        # Already a datetime, just ensure proper timezone
-                        if current_dtype != pl.Datetime("us", "UTC"):
-                            cast_exprs.append(
-                                pl.col(col_name).dt.replace_time_zone("UTC").alias(col_name)
-                            )
-                    elif col_type == pl.Date and current_dtype == pl.Date:
-                        # Already date type
-                        pass
-                    else:
-                        cast_exprs.append(pl.col(col_name).cast(col_type))
-
-        if cast_exprs:
-            df = df.with_columns(cast_exprs)
-
-        return df
 
     def _create_dataframe_with_schema(
         self, table_name: str, rows: List[Dict[str, Any]]
