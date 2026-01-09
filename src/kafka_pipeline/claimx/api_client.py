@@ -490,20 +490,17 @@ class ClaimXApiClient(LoggedClass):
         Raises:
             ClaimXApiError: On API errors
         """
-        response = await self._request(
-            "GET",
-            f"/export/project/{project_id}/tasks",
-        )
+        body = {
+            "reportType": "CUSTOM_TASK_HIGH_LEVEL",
+            "projectId": project_id,
+            "senderUsername": self.sender_username,
+        }
 
-        # Normalize response to list
-        if isinstance(response, list):
-            return response
-        elif isinstance(response, dict):
-            if "data" in response:
-                return response["data"]
-            if "tasks" in response:
-                return response["tasks"]
-            return [response]
+        response = await self._request("POST", "/data", json_body=body)
+
+        # Response contains success, data, etc. - extract the data list
+        if isinstance(response, dict) and "data" in response:
+            return response["data"]
         return []
 
     # =========================================================================
