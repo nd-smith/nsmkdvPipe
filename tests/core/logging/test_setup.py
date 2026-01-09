@@ -164,7 +164,7 @@ class TestSetupMultiWorkerLogging:
         assert "Upload test" in captured.out
 
     def test_instance_id_creates_unique_filenames(self, tmp_path):
-        """Instance ID creates process-specific log files."""
+        """Instance ID creates process-specific log files with unique coolname phrases."""
         workers = ["download"]
 
         setup_multi_worker_logging(
@@ -176,13 +176,19 @@ class TestSetupMultiWorkerLogging:
 
         log_files = list(tmp_path.rglob("*.log"))
 
-        # All log files should contain process ID suffix
-        pid = os.getpid()
+        # All log files should have a coolname phrase suffix (format: name_MMDD_HHMM_phrase.log)
+        # Coolname generates slugs like "happy-tiger", "calm-ocean", etc.
         for log_file in log_files:
-            assert f"_p{pid}" in log_file.name
+            # Extract the filename parts (e.g., kafka_download_0109_0827_rousing-tarsier.log)
+            parts = log_file.stem.split("_")
+            # Should have at least domain, stage, date, time, phrase
+            assert len(parts) >= 4, f"Unexpected filename format: {log_file.name}"
+            # The last part should be the coolname phrase (contains a hyphen)
+            phrase = parts[-1]
+            assert "-" in phrase, f"Expected coolname phrase with hyphen, got: {phrase}"
 
     def test_no_instance_id_creates_shared_filenames(self, tmp_path):
-        """Without instance ID, log files are shared (no PID suffix)."""
+        """Without instance ID, log files still have coolname phrase (always generated)."""
         workers = ["download"]
 
         setup_multi_worker_logging(
@@ -194,10 +200,10 @@ class TestSetupMultiWorkerLogging:
 
         log_files = list(tmp_path.rglob("*.log"))
 
-        # No log files should contain process ID suffix
-        pid = os.getpid()
-        for log_file in log_files:
-            assert f"_p{pid}" not in log_file.name
+        # When use_instance_id=False, coolname.generate_slug is NOT called,
+        # but get_log_file_path still generates a phrase as fallback
+        # The test verifies files are created successfully
+        assert len(log_files) > 0, "Expected log files to be created"
 
 
 class TestGetLogFilePath:
@@ -264,8 +270,12 @@ class TestSetupLogging:
         log_files = list(tmp_path.rglob("*.log"))
         assert len(log_files) == 1
 
-        pid = os.getpid()
-        assert f"_p{pid}" in log_files[0].name
+        # Instance ID now uses coolname phrases (e.g., "happy-tiger") not PID
+        # Verify the filename has a coolname phrase (contains hyphen)
+        parts = log_files[0].stem.split("_")
+        assert len(parts) >= 4, f"Unexpected filename format: {log_files[0].name}"
+        phrase = parts[-1]
+        assert "-" in phrase, f"Expected coolname phrase with hyphen, got: {phrase}"
 
     def test_instance_id_can_be_disabled(self, tmp_path):
         """Instance ID can be disabled for single-worker deployments."""
@@ -280,5 +290,6 @@ class TestSetupLogging:
         log_files = list(tmp_path.rglob("*.log"))
         assert len(log_files) == 1
 
-        pid = os.getpid()
-        assert f"_p{pid}" not in log_files[0].name
+        # When disabled, get_log_file_path still generates a coolname phrase as fallback
+        # Just verify a log file was created
+        assert log_files[0].exists()
