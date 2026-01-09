@@ -14,7 +14,7 @@ Entity Types:
     - video_collab: Video collaboration sessions
 """
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -37,6 +37,9 @@ class EntityRowsMessage(BaseModel):
         - video_collab → claimx_video_collab (merge key: collaboration_id)
 
     Attributes:
+        event_id: Original ClaimX event ID for traceability
+        event_type: Original event type (e.g., PROJECT_CREATED)
+        project_id: Project ID from the original event
         projects: List of project entity rows
         contacts: List of contact/policyholder entity rows
         media: List of media/attachment metadata rows
@@ -46,7 +49,7 @@ class EntityRowsMessage(BaseModel):
         video_collab: List of video collaboration rows
 
     Example:
-        >>> rows = EntityRowsMessage()
+        >>> rows = EntityRowsMessage(event_id="evt_123", event_type="PROJECT_CREATED")
         >>> rows.projects.append({
         ...     'project_id': 'proj_12345',
         ...     'project_name': 'Insurance Claim 2024',
@@ -61,6 +64,20 @@ class EntityRowsMessage(BaseModel):
         >>> rows.is_empty()
         False
     """
+
+    # Traceability fields - track origin event for debugging and retry handling
+    event_id: Optional[str] = Field(
+        default=None,
+        description="Original ClaimX event ID for end-to-end traceability"
+    )
+    event_type: Optional[str] = Field(
+        default=None,
+        description="Original event type (e.g., PROJECT_CREATED, PROJECT_FILE_ADDED)"
+    )
+    project_id: Optional[str] = Field(
+        default=None,
+        description="Project ID from the original event"
+    )
 
     projects: List[Dict[str, Any]] = Field(
         default_factory=list,
@@ -143,6 +160,9 @@ class EntityRowsMessage(BaseModel):
         'json_schema_extra': {
             'examples': [
                 {
+                    'event_id': 'evt_abc123',
+                    'event_type': 'PROJECT_CREATED',
+                    'project_id': 'proj_12345',
                     'projects': [
                         {
                             'project_id': 'proj_12345',

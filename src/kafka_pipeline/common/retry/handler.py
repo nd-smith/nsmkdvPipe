@@ -3,6 +3,17 @@ Retry handler for Kafka pipeline.
 
 Handles retry routing logic with exponential backoff via dedicated
 retry topics. Routes exhausted retries to dead-letter queue (DLQ).
+
+.. warning:: TECH DEBT
+    This module is xact-specific despite being in common/.
+    It imports and depends on xact schemas (FailedDownloadMessage, DownloadTaskMessage).
+
+    TODO: Move to kafka_pipeline.xact.retry.download_retry to properly reflect domain boundaries.
+    This requires updating imports in:
+    - kafka_pipeline.xact.workers.download_worker
+    - tests/kafka_pipeline/common/retry/test_handler.py
+    - tests/kafka_pipeline/integration/test_retry_flow.py
+    - tests/kafka_pipeline/integration/test_dlq_flow.py
 """
 
 import logging

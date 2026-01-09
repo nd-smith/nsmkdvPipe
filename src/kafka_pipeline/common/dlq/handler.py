@@ -6,6 +6,17 @@ Provides DLQ message management with:
 - Message replay capability to original pending topic
 - Manual acknowledgment for audit trail
 - Comprehensive audit logging for compliance
+
+.. warning:: TECH DEBT
+    This module is xact-specific despite being in common/.
+    It imports and depends on xact schemas (FailedDownloadMessage, DownloadTaskMessage).
+
+    TODO: Move to kafka_pipeline.xact.dlq.handler to properly reflect domain boundaries.
+    This requires updating imports in:
+    - kafka_pipeline.xact.workers.download_worker
+    - tests/kafka_pipeline/common/dlq/
+    - tests/kafka_pipeline/integration/test_dlq_flow.py
+    - tests/kafka_pipeline/integration/test_e2e_dlq_flow.py
 """
 
 import json

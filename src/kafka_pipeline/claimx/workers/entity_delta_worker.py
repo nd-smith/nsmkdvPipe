@@ -236,21 +236,66 @@ class ClaimXEntityDeltaWorker(BaseKafkaConsumer):
         except Exception as e:
             logger.error(
                 "Failed to write entity batch to Delta",
-                extra={"error": str(e)},
+                extra={
+                    "error": str(e),
+                    "messages_in_batch": batch_size,
+                    "entity_row_count": merged_rows.row_count(),
+                },
                 exc_info=True
             )
-            
-            # Handle retry/DLQ logic here
-            # Since we aggregated the messages, we might need to retry individually or as a batch.
-            # For simplicity, we can treat this failure as a batch failure if possible,
-            # or we might need to route the individual EntityRowsMessages to retry topics.
-            
-            # Current simplest strategy: Route underlying messages to retry
-            # But EntityRowsMessage doesn't carry original Kafka metadata easily unless wrapped.
-            # Given time constraints, logging error and potential DLQ routing of raw messages is best effort.
-             
-            # Ideal: Replicate DeltaRetryHandler logic from events worker
-            pass
+
+            # Route to retry/DLQ via the retry handler
+            if self.retry_handler:
+                # Extract event data for retry context
+                events = []
+                for entity_type in ["projects", "contacts", "media", "tasks",
+                                    "task_templates", "external_links", "video_collab"]:
+                    entity_list = getattr(merged_rows, entity_type, [])
+                    for entity in entity_list:
+                        events.append({
+                            "entity_type": entity_type,
+                            "event_id": merged_rows.event_id,
+                            "event_type": merged_rows.event_type,
+                            "project_id": merged_rows.project_id,
+                            **entity,
+                        })
+
+                if events:
+                    try:
+                        await self.retry_handler.handle_batch_failure(
+                            batch=events,
+                            error=e,
+                            retry_count=0,
+                            error_category="transient",
+                        )
+                        logger.info(
+                            "Entity batch sent to retry topic",
+                            extra={
+                                "event_count": len(events),
+                                "event_id": merged_rows.event_id,
+                            },
+                        )
+                    except Exception as retry_error:
+                        logger.error(
+                            "Failed to send entity batch to retry topic - DATA LOSS",
+                            extra={
+                                "original_error": str(e),
+                                "retry_error": str(retry_error),
+                                "event_count": len(events),
+                                "event_id": merged_rows.event_id,
+                            },
+                            exc_info=True,
+                        )
+            else:
+                # No retry handler - log critical error
+                logger.critical(
+                    "Entity batch write failed with no retry handler configured - DATA LOSS",
+                    extra={
+                        "error": str(e),
+                        "messages_in_batch": batch_size,
+                        "entity_row_count": merged_rows.row_count(),
+                    },
+                )
 
     async def _periodic_flush(self) -> None:
         """Timer callback to periodically flush batch regardless of size."""
