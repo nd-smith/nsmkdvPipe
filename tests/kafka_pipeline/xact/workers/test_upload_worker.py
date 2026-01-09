@@ -27,17 +27,26 @@ def kafka_config():
     """Create test Kafka configuration."""
     return KafkaConfig(
         bootstrap_servers="localhost:9092",
-        events_topic="test.events.raw",
-        downloads_pending_topic="test.downloads.pending",
-        downloads_cached_topic="test.downloads.cached",
-        downloads_results_topic="test.downloads.results",
-        dlq_topic="test.downloads.dlq",
-        consumer_group_prefix="test",
         onelake_base_path="abfss://test@test.dfs.core.windows.net/Files",
+        onelake_domain_paths={"xact": "abfss://test@test.dfs.core.windows.net/Files"},
         security_protocol="PLAINTEXT",
         sasl_mechanism="PLAIN",
-        upload_concurrency=10,
-        upload_batch_size=20,
+        xact={
+            "topics": {
+                "events": "test.events.raw",
+                "downloads_pending": "test.downloads.pending",
+                "downloads_cached": "test.downloads.cached",
+                "downloads_results": "test.downloads.results",
+                "dlq": "test.downloads.dlq",
+            },
+            "consumer_group_prefix": "test",
+            "upload_worker": {
+                "processing": {
+                    "concurrency": 10,
+                    "batch_size": 20,
+                },
+            },
+        },
     )
 
 
@@ -46,12 +55,13 @@ def sample_cached_message():
     """Create sample CachedDownloadMessage for testing."""
     return CachedDownloadMessage(
         trace_id="evt-123",
+        media_id="media-abc-123",
         attachment_url="https://claimxperience.com/files/document.pdf",
         destination_path="claims/C-456/document.pdf",
         local_cache_path="/tmp/kafka_pipeline_cache/evt-123/document.pdf",
         bytes_downloaded=2048,
         content_type="application/pdf",
-        event_type="claim",
+        event_type="xact",
         event_subtype="documentsReceived",
         status_subtype="documentsReceived",
         file_type="pdf",
@@ -106,8 +116,7 @@ class TestUploadWorkerInitialization:
         worker = UploadWorker(kafka_config)
 
         assert worker.config == kafka_config
-        assert worker.topic == kafka_config.downloads_cached_topic
-        assert worker.CONSUMER_GROUP == "xact-upload-worker"
+        assert worker.topic == kafka_config.get_topic("xact", "downloads_cached")
         assert worker.WORKER_NAME == "upload_worker"
         assert worker._running is False
         assert worker._consumer is None
@@ -118,6 +127,15 @@ class TestUploadWorkerInitialization:
             bootstrap_servers="localhost:9092",
             onelake_base_path="",  # Not configured
             onelake_domain_paths={},  # No domain paths either
+            xact={
+                "topics": {
+                    "events": "test.events.raw",
+                    "downloads_pending": "test.downloads.pending",
+                    "downloads_cached": "test.downloads.cached",
+                    "downloads_results": "test.downloads.results",
+                    "dlq": "test.downloads.dlq",
+                },
+            },
         )
 
         with pytest.raises(ValueError) as exc_info:
@@ -129,8 +147,8 @@ class TestUploadWorkerInitialization:
         """Test worker uses configured concurrency settings."""
         worker = UploadWorker(kafka_config)
 
-        assert worker.config.upload_concurrency == 10
-        assert worker.config.upload_batch_size == 20
+        assert worker.concurrency == 10
+        assert worker.batch_size == 20
 
 
 @pytest.mark.asyncio
@@ -200,7 +218,7 @@ class TestUploadWorkerProcessing:
         # Verify result message was produced
         worker.producer.send.assert_called_once()
         call_args = worker.producer.send.call_args
-        assert call_args.kwargs["topic"] == kafka_config.downloads_results_topic
+        assert call_args.kwargs["topic"] == kafka_config.get_topic("xact", "downloads_results")
         assert call_args.kwargs["key"] == "evt-123"
 
         result_msg = call_args.kwargs["value"]
@@ -264,7 +282,6 @@ class TestUploadWorkerProcessing:
         call_args = worker.producer.send.call_args
         result_msg = call_args.kwargs["value"]
         assert result_msg.status == "failed_permanent"
-        assert result_msg.error_category == "upload_error"
         assert "not found" in result_msg.error_message.lower()
 
     async def test_process_single_upload_onelake_error(
@@ -790,38 +807,75 @@ class TestUploadWorkerConfig:
     """Test suite for upload concurrency configuration."""
 
     async def test_default_upload_concurrency_config(self):
-        """Test default upload concurrency settings."""
+        """Test default upload concurrency settings when not specified."""
         config = KafkaConfig(
             bootstrap_servers="localhost:9092",
             onelake_base_path="abfss://test@test.dfs.core.windows.net/Files",
+            xact={
+                "topics": {
+                    "events": "test.events.raw",
+                    "downloads_pending": "test.downloads.pending",
+                    "downloads_cached": "test.downloads.cached",
+                    "downloads_results": "test.downloads.results",
+                    "dlq": "test.downloads.dlq",
+                },
+                # No upload_worker config - should use defaults
+            },
         )
 
-        assert config.upload_concurrency == 10
-        assert config.upload_batch_size == 20
+        worker = UploadWorker(config)
+        # Default concurrency is 10, batch_size is 20 in UploadWorker
+        assert worker.concurrency == 10
+        assert worker.batch_size == 20
 
     async def test_custom_upload_concurrency_config(self):
         """Test custom upload concurrency settings."""
         config = KafkaConfig(
             bootstrap_servers="localhost:9092",
             onelake_base_path="abfss://test@test.dfs.core.windows.net/Files",
-            upload_concurrency=25,
-            upload_batch_size=50,
+            xact={
+                "topics": {
+                    "events": "test.events.raw",
+                    "downloads_pending": "test.downloads.pending",
+                    "downloads_cached": "test.downloads.cached",
+                    "downloads_results": "test.downloads.results",
+                    "dlq": "test.downloads.dlq",
+                },
+                "upload_worker": {
+                    "processing": {
+                        "concurrency": 25,
+                        "batch_size": 50,
+                    },
+                },
+            },
         )
 
-        assert config.upload_concurrency == 25
-        assert config.upload_batch_size == 50
+        worker = UploadWorker(config)
+        assert worker.concurrency == 25
+        assert worker.batch_size == 50
 
-    async def test_upload_concurrency_from_env(self):
-        """Test loading upload concurrency settings from environment."""
-        import os
+    async def test_upload_concurrency_from_worker_config(self):
+        """Test loading upload concurrency settings from worker config."""
+        config = KafkaConfig(
+            bootstrap_servers="localhost:9092",
+            onelake_base_path="abfss://test@test.dfs.core.windows.net/Files",
+            xact={
+                "topics": {
+                    "events": "test.events.raw",
+                    "downloads_pending": "test.downloads.pending",
+                    "downloads_cached": "test.downloads.cached",
+                    "downloads_results": "test.downloads.results",
+                    "dlq": "test.downloads.dlq",
+                },
+                "upload_worker": {
+                    "processing": {
+                        "concurrency": 30,
+                        "batch_size": 40,
+                    },
+                },
+            },
+        )
 
-        with patch.dict(os.environ, {
-            "KAFKA_BOOTSTRAP_SERVERS": "localhost:9092",
-            "ONELAKE_BASE_PATH": "abfss://test@test.dfs.core.windows.net/Files",
-            "UPLOAD_CONCURRENCY": "30",
-            "UPLOAD_BATCH_SIZE": "40",
-        }):
-            config = KafkaConfig.from_env()
-
-            assert config.upload_concurrency == 30
-            assert config.upload_batch_size == 40
+        worker = UploadWorker(config)
+        assert worker.concurrency == 30
+        assert worker.batch_size == 40

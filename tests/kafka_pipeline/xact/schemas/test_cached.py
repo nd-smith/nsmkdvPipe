@@ -23,6 +23,7 @@ class TestCachedDownloadMessageCreation:
         """CachedDownloadMessage can be created with required fields."""
         cached = CachedDownloadMessage(
             trace_id="evt-123",
+            media_id="media-123",
             attachment_url="https://storage.example.com/file.pdf",
             destination_path="claims/C-456/file.pdf",
             local_cache_path="/tmp/kafka_pipeline_cache/evt-123/file.pdf",
@@ -48,6 +49,7 @@ class TestCachedDownloadMessageCreation:
         """CachedDownloadMessage can be created with all optional fields."""
         cached = CachedDownloadMessage(
             trace_id="evt-456",
+            media_id="media-456",
             attachment_url="https://claimxperience.com/files/document.pdf",
             destination_path="claims/C-789/document.pdf",
             local_cache_path="/tmp/kafka_pipeline_cache/evt-456/document.pdf",
@@ -74,6 +76,7 @@ class TestCachedDownloadMessageCreation:
         """CachedDownloadMessage can be created without optional fields."""
         cached = CachedDownloadMessage(
             trace_id="evt-789",
+            media_id="media-789",
             attachment_url="https://storage.example.com/image.jpg",
             destination_path="policies/P-123/image.jpg",
             local_cache_path="/tmp/kafka_pipeline_cache/evt-789/image.jpg",
@@ -257,6 +260,7 @@ class TestCachedDownloadMessageValidation:
         """Leading/trailing whitespace is trimmed from string fields."""
         cached = CachedDownloadMessage(
             trace_id="  evt-123  ",
+            media_id="  media-123  ",
             attachment_url="  https://storage.example.com/file.pdf  ",
             destination_path="  claims/C-456/file.pdf  ",
             local_cache_path="  /tmp/kafka_pipeline_cache/evt-123/file.pdf  ",
@@ -288,6 +292,7 @@ class TestCachedDownloadMessageSerialization:
         """CachedDownloadMessage serializes to valid JSON."""
         cached = CachedDownloadMessage(
             trace_id="evt-123",
+            media_id="media-123",
             attachment_url="https://storage.example.com/file.pdf",
             destination_path="claims/C-456/file.pdf",
             local_cache_path="/tmp/kafka_pipeline_cache/evt-123/file.pdf",
@@ -322,6 +327,7 @@ class TestCachedDownloadMessageSerialization:
         """CachedDownloadMessage serializes correctly without optional fields."""
         cached = CachedDownloadMessage(
             trace_id="evt-456",
+            media_id="media-456",
             attachment_url="https://storage.example.com/image.jpg",
             destination_path="policies/P-123/image.jpg",
             local_cache_path="/tmp/kafka_pipeline_cache/evt-456/image.jpg",
@@ -345,6 +351,7 @@ class TestCachedDownloadMessageSerialization:
         """CachedDownloadMessage can be created from JSON."""
         json_data = {
             "trace_id": "evt-789",
+            "media_id": "media-789",
             "attachment_url": "https://storage.example.com/doc.pdf",
             "destination_path": "claims/C-999/doc.pdf",
             "local_cache_path": "/tmp/kafka_pipeline_cache/evt-789/doc.pdf",
@@ -372,6 +379,7 @@ class TestCachedDownloadMessageSerialization:
         """CachedDownloadMessage can be created from JSON without optional fields."""
         json_data = {
             "trace_id": "evt-minimal",
+            "media_id": "media-minimal",
             "attachment_url": "https://storage.example.com/file.txt",
             "destination_path": "data/file.txt",
             "local_cache_path": "/tmp/cache/file.txt",
@@ -396,6 +404,7 @@ class TestCachedDownloadMessageSerialization:
         """Data survives JSON serialization round-trip."""
         original = CachedDownloadMessage(
             trace_id="evt-round-trip",
+            media_id="media-round-trip",
             attachment_url="https://storage.example.com/round.pdf",
             destination_path="test/round.pdf",
             local_cache_path="/tmp/cache/round.pdf",
@@ -432,6 +441,7 @@ class TestEdgeCases:
         """Zero bytes downloaded is a valid value (empty file)."""
         cached = CachedDownloadMessage(
             trace_id="evt-empty",
+            media_id="media-empty",
             attachment_url="https://storage.example.com/empty.txt",
             destination_path="test/empty.txt",
             local_cache_path="/tmp/cache/empty.txt",
@@ -450,6 +460,7 @@ class TestEdgeCases:
         """Very large bytes_downloaded values are accepted."""
         cached = CachedDownloadMessage(
             trace_id="evt-large",
+            media_id="media-large",
             attachment_url="https://storage.example.com/huge.zip",
             destination_path="archives/huge.zip",
             local_cache_path="/tmp/cache/huge.zip",
@@ -468,6 +479,7 @@ class TestEdgeCases:
         """Paths can contain Unicode characters."""
         cached = CachedDownloadMessage(
             trace_id="evt-unicode",
+            media_id="media-unicode",
             attachment_url="https://storage.example.com/Schäden/document.pdf",
             destination_path="claims/Schädenübersicht/document.pdf",
             local_cache_path="/tmp/cache/Schäden/document.pdf",
@@ -486,6 +498,7 @@ class TestEdgeCases:
         """Trace ID can contain special characters."""
         cached = CachedDownloadMessage(
             trace_id="evt-2024-001-abc_xyz",
+            media_id="media-special",
             attachment_url="https://storage.example.com/file.pdf",
             destination_path="test/file.pdf",
             local_cache_path="/tmp/cache/file.pdf",
@@ -507,6 +520,7 @@ class TestEdgeCases:
 
         cached = CachedDownloadMessage(
             trace_id="evt-naive",
+            media_id="media-naive",
             attachment_url="https://storage.example.com/file.pdf",
             destination_path="test/file.pdf",
             local_cache_path="/tmp/cache/file.pdf",
@@ -526,6 +540,7 @@ class TestEdgeCases:
         """Metadata can contain nested structures."""
         cached = CachedDownloadMessage(
             trace_id="evt-complex",
+            media_id="media-complex",
             attachment_url="https://storage.example.com/file.pdf",
             destination_path="test/file.pdf",
             local_cache_path="/tmp/cache/file.pdf",
@@ -567,6 +582,7 @@ class TestEdgeCases:
         for ct in content_types:
             cached = CachedDownloadMessage(
                 trace_id=f"evt-ct-{ct.replace('/', '-')}",
+                media_id=f"media-ct-{ct.replace('/', '-')}",
                 attachment_url="https://storage.example.com/file",
                 destination_path="test/file",
                 local_cache_path="/tmp/cache/file",
@@ -589,6 +605,7 @@ class TestEdgeCases:
 
         cached = CachedDownloadMessage(
             trace_id="evt-long-path",
+            media_id="media-long-path",
             attachment_url="https://storage.example.com/" + long_dest,
             destination_path=long_dest,
             local_cache_path=long_cache,

@@ -21,6 +21,7 @@ class TestDownloadTaskMessageCreation:
         """DownloadTaskMessage can be created with all fields populated."""
         task = DownloadTaskMessage(
             trace_id="evt-123",
+            media_id="media-123",
             attachment_url="https://storage.example.com/file.pdf",
             blob_path="documentsReceived/A12345/pdf/file.pdf",
             status_subtype="documentsReceived",
@@ -48,6 +49,7 @@ class TestDownloadTaskMessageCreation:
         """DownloadTaskMessage uses default values for optional fields."""
         task = DownloadTaskMessage(
             trace_id="evt-456",
+            media_id="media-456",
             attachment_url="https://storage.example.com/image.jpg",
             blob_path="estimateCreated/B67890/jpg/image.jpg",
             status_subtype="estimateCreated",
@@ -65,6 +67,7 @@ class TestDownloadTaskMessageCreation:
         """DownloadTaskMessage correctly tracks retry attempts."""
         task = DownloadTaskMessage(
             trace_id="evt-retry",
+            media_id="media-retry",
             attachment_url="https://storage.example.com/doc.pdf",
             blob_path="documentsReceived/C-001/pdf/doc.pdf",
             status_subtype="documentsReceived",
@@ -95,6 +98,7 @@ class TestDownloadTaskMessageCreation:
 
         task = DownloadTaskMessage(
             trace_id="evt-complex",
+            media_id="media-complex",
             attachment_url="https://storage.example.com/large.pdf",
             blob_path="documentsReceived/C-999/pdf/large.pdf",
             status_subtype="documentsReceived",
@@ -120,6 +124,7 @@ class TestDownloadTaskMessageValidation:
         with pytest.raises(ValidationError) as exc_info:
             DownloadTaskMessage(
                 trace_id="evt-123",
+                media_id="media-123",
                 attachment_url="https://storage.example.com/file.pdf",
                 event_type="xact",
                 event_subtype="documentsReceived",
@@ -135,6 +140,7 @@ class TestDownloadTaskMessageValidation:
         with pytest.raises(ValidationError) as exc_info:
             DownloadTaskMessage(
                 trace_id="",
+                media_id="media-123",
                 attachment_url="https://storage.example.com/file.pdf",
                 blob_path="documentsReceived/A12345/pdf/file.pdf",
                 status_subtype="documentsReceived",
@@ -153,6 +159,7 @@ class TestDownloadTaskMessageValidation:
         with pytest.raises(ValidationError) as exc_info:
             DownloadTaskMessage(
                 trace_id="   ",
+                media_id="media-123",
                 attachment_url="https://storage.example.com/file.pdf",
                 blob_path="documentsReceived/A12345/pdf/file.pdf",
                 status_subtype="documentsReceived",
@@ -171,6 +178,7 @@ class TestDownloadTaskMessageValidation:
         with pytest.raises(ValidationError):
             DownloadTaskMessage(
                 trace_id="evt-123",
+                media_id="media-123",
                 attachment_url="",
                 blob_path="documentsReceived/A12345/pdf/file.pdf",
                 status_subtype="documentsReceived",
@@ -186,6 +194,7 @@ class TestDownloadTaskMessageValidation:
         with pytest.raises(ValidationError):
             DownloadTaskMessage(
                 trace_id="evt-123",
+                media_id="media-123",
                 attachment_url="https://storage.example.com/file.pdf",
                 blob_path="",
                 status_subtype="documentsReceived",
@@ -200,6 +209,7 @@ class TestDownloadTaskMessageValidation:
         """Leading/trailing whitespace is trimmed from string fields."""
         task = DownloadTaskMessage(
             trace_id="  evt-123  ",
+            media_id="  media-123  ",
             attachment_url="  https://storage.example.com/file.pdf  ",
             blob_path="  documentsReceived/A12345/pdf/file.pdf  ",
             status_subtype="  documentsReceived  ",
@@ -221,6 +231,7 @@ class TestDownloadTaskMessageValidation:
         with pytest.raises(ValidationError) as exc_info:
             DownloadTaskMessage(
                 trace_id="evt-123",
+                media_id="media-123",
                 attachment_url="https://storage.example.com/file.pdf",
                 blob_path="documentsReceived/A12345/pdf/file.pdf",
                 status_subtype="documentsReceived",
@@ -239,6 +250,7 @@ class TestDownloadTaskMessageValidation:
         """Large retry_count values are accepted."""
         task = DownloadTaskMessage(
             trace_id="evt-many-retries",
+            media_id="media-many-retries",
             attachment_url="https://storage.example.com/file.pdf",
             blob_path="documentsReceived/A12345/pdf/file.pdf",
             status_subtype="documentsReceived",
@@ -260,6 +272,7 @@ class TestDownloadTaskMessageSerialization:
         """DownloadTaskMessage serializes to valid JSON."""
         task = DownloadTaskMessage(
             trace_id="evt-123",
+            media_id="media-123",
             attachment_url="https://storage.example.com/file.pdf",
             blob_path="documentsReceived/A12345/pdf/file.pdf",
             status_subtype="documentsReceived",
@@ -287,6 +300,7 @@ class TestDownloadTaskMessageSerialization:
         """DownloadTaskMessage can be created from JSON string."""
         json_data = {
             "trace_id": "evt-789",
+            "media_id": "media-789",
             "attachment_url": "https://storage.example.com/doc.pdf",
             "blob_path": "estimateCreated/P-001/pdf/doc.pdf",
             "status_subtype": "estimateCreated",
@@ -310,6 +324,7 @@ class TestDownloadTaskMessageSerialization:
         """Datetime fields serialize to ISO 8601 format."""
         task = DownloadTaskMessage(
             trace_id="evt-123",
+            media_id="media-123",
             attachment_url="https://storage.example.com/file.pdf",
             blob_path="documentsReceived/A12345/pdf/file.pdf",
             status_subtype="documentsReceived",
@@ -335,6 +350,7 @@ class TestDownloadTaskMessageSerialization:
         """Data survives JSON serialization round-trip."""
         original = DownloadTaskMessage(
             trace_id="evt-round-trip",
+            media_id="media-round-trip",
             attachment_url="https://storage.example.com/file.pdf",
             blob_path="documentsReceived/A12345/pdf/file.pdf",
             status_subtype="documentsReceived",
@@ -364,6 +380,7 @@ class TestDownloadTaskMessageSerialization:
         """model_dump() returns dict with serialized datetime."""
         task = DownloadTaskMessage(
             trace_id="evt-123",
+            media_id="media-123",
             attachment_url="https://storage.example.com/file.pdf",
             blob_path="documentsReceived/A12345/pdf/file.pdf",
             status_subtype="documentsReceived",
@@ -386,6 +403,7 @@ class TestDownloadTaskMessageSerialization:
         """model_dump(mode='json') converts datetime to string."""
         task = DownloadTaskMessage(
             trace_id="evt-123",
+            media_id="media-123",
             attachment_url="https://storage.example.com/file.pdf",
             blob_path="documentsReceived/A12345/pdf/file.pdf",
             status_subtype="documentsReceived",
@@ -413,6 +431,7 @@ class TestDownloadTaskMessageRetryTracking:
         # Initial task
         task_v1 = DownloadTaskMessage(
             trace_id="evt-retry-test",
+            media_id="media-retry-test",
             attachment_url="https://storage.example.com/file.pdf",
             blob_path="documentsReceived/A12345/pdf/file.pdf",
             status_subtype="documentsReceived",
@@ -427,6 +446,7 @@ class TestDownloadTaskMessageRetryTracking:
         # Simulate retry - same timestamp, incremented count
         task_v2 = DownloadTaskMessage(
             trace_id="evt-retry-test",
+            media_id="media-retry-test",
             attachment_url="https://storage.example.com/file.pdf",
             blob_path="documentsReceived/A12345/pdf/file.pdf",
             status_subtype="documentsReceived",
@@ -446,6 +466,7 @@ class TestDownloadTaskMessageRetryTracking:
         for attempt in range(5):
             task = DownloadTaskMessage(
                 trace_id="evt-retry-increment",
+                media_id="media-retry-increment",
                 attachment_url="https://storage.example.com/file.pdf",
                 blob_path="documentsReceived/A12345/pdf/file.pdf",
                 status_subtype="documentsReceived",
@@ -467,6 +488,7 @@ class TestDownloadTaskMessageMetadata:
         """Metadata defaults to empty dict."""
         task = DownloadTaskMessage(
             trace_id="evt-123",
+            media_id="media-123",
             attachment_url="https://storage.example.com/file.pdf",
             blob_path="documentsReceived/A12345/pdf/file.pdf",
             status_subtype="documentsReceived",
@@ -483,6 +505,7 @@ class TestDownloadTaskMessageMetadata:
         """Metadata can store arbitrary additional context."""
         task = DownloadTaskMessage(
             trace_id="evt-meta",
+            media_id="media-meta",
             attachment_url="https://storage.example.com/file.pdf",
             blob_path="documentsReceived/A12345/pdf/file.pdf",
             status_subtype="documentsReceived",
@@ -514,6 +537,7 @@ class TestDownloadTaskMessageEdgeCases:
         long_url = "https://storage.example.com/" + "x" * 2000 + ".pdf"
         task = DownloadTaskMessage(
             trace_id="evt-long-url",
+            media_id="media-long-url",
             attachment_url=long_url,
             blob_path="documentsReceived/A12345/pdf/file.pdf",
             status_subtype="documentsReceived",
@@ -531,6 +555,7 @@ class TestDownloadTaskMessageEdgeCases:
         long_path = "claims/" + "/".join(["dir"] * 100) + "/file.pdf"
         task = DownloadTaskMessage(
             trace_id="evt-long-path",
+            media_id="media-long-path",
             attachment_url="https://storage.example.com/file.pdf",
             blob_path=long_path,
             status_subtype="documentsReceived",
@@ -547,6 +572,7 @@ class TestDownloadTaskMessageEdgeCases:
         """Metadata can contain Unicode characters."""
         task = DownloadTaskMessage(
             trace_id="evt-unicode",
+            media_id="media-unicode",
             attachment_url="https://storage.example.com/file.pdf",
             blob_path="documentsReceived/A12345/pdf/file.pdf",
             status_subtype="documentsReceived",
@@ -570,6 +596,7 @@ class TestDownloadTaskMessageEdgeCases:
         naive_dt = datetime(2024, 12, 25, 10, 30, 0)
         task = DownloadTaskMessage(
             trace_id="evt-naive",
+            media_id="media-naive",
             attachment_url="https://storage.example.com/file.pdf",
             blob_path="documentsReceived/A12345/pdf/file.pdf",
             status_subtype="documentsReceived",
@@ -586,6 +613,7 @@ class TestDownloadTaskMessageEdgeCases:
         """Special characters in paths are preserved."""
         task = DownloadTaskMessage(
             trace_id="evt-special-chars",
+            media_id="media-special-chars",
             attachment_url="https://storage.example.com/file%20(1).pdf?token=abc123",
             blob_path="documentsReceived/A12345/pdf/file (1).pdf",
             status_subtype="documentsReceived",

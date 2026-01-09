@@ -17,14 +17,21 @@ from kafka_pipeline.xact.schemas.tasks import DownloadTaskMessage
 
 @pytest.fixture
 def kafka_config():
-    """Create test Kafka configuration."""
+    """Create test Kafka configuration with hierarchical domain structure."""
     return KafkaConfig(
         bootstrap_servers="localhost:9092",
         security_protocol="SASL_SSL",
         sasl_mechanism="OAUTHBEARER",
-        dlq_topic="test.dlq",
-        downloads_pending_topic="test.downloads.pending",
-        consumer_group_prefix="test",
+        xact={
+            "topics": {
+                "events": "test.events.raw",
+                "downloads_pending": "test.downloads.pending",
+                "downloads_cached": "test.downloads.cached",
+                "dlq": "test.dlq",
+            },
+            "retry_delays": [300, 600, 1200, 2400],
+            "consumer_group_prefix": "test",
+        },
     )
 
 
@@ -33,6 +40,7 @@ def sample_task():
     """Create sample download task message."""
     return DownloadTaskMessage(
         trace_id="evt-123",
+        media_id="media-123",
         attachment_url="https://storage.example.com/file.pdf",
         blob_path="documentsReceived/C-456/pdf/file.pdf",
         status_subtype="documentsReceived",
@@ -51,6 +59,7 @@ def sample_dlq_message(sample_task):
     """Create sample DLQ message."""
     return FailedDownloadMessage(
         trace_id=sample_task.trace_id,
+        media_id=sample_task.media_id,
         attachment_url=sample_task.attachment_url,
         original_task=sample_task,
         final_error="File not found after 4 retries",
@@ -239,6 +248,7 @@ class TestDLQCLIManagerViewMessage:
 
         task = DownloadTaskMessage(
             trace_id="evt-456",
+            media_id="media-456",
             attachment_url="https://example.com/test.pdf",
             blob_path="documentsReceived/T-001/pdf/test.pdf",
             status_subtype="documentsReceived",
@@ -253,6 +263,7 @@ class TestDLQCLIManagerViewMessage:
 
         dlq_msg = FailedDownloadMessage(
             trace_id=task.trace_id,
+            media_id=task.media_id,
             attachment_url=task.attachment_url,
             original_task=task,
             final_error="Test error",
@@ -292,7 +303,7 @@ class TestDLQCLIManagerReplayMessage:
 
         # Verify output
         captured = capsys.readouterr()
-        assert "✓" in captured.out
+        assert "\u2713" in captured.out
         assert "replayed successfully" in captured.out
 
     @pytest.mark.asyncio
@@ -319,7 +330,7 @@ class TestDLQCLIManagerReplayMessage:
         await manager.replay_message("evt-123")
 
         captured = capsys.readouterr()
-        assert "✗" in captured.out
+        assert "\u2717" in captured.out
         assert "Failed to replay" in captured.out
 
 
@@ -343,7 +354,7 @@ class TestDLQCLIManagerResolveMessage:
 
         # Verify output
         captured = capsys.readouterr()
-        assert "✓" in captured.out
+        assert "\u2713" in captured.out
         assert "resolved successfully" in captured.out
 
     @pytest.mark.asyncio
@@ -370,7 +381,7 @@ class TestDLQCLIManagerResolveMessage:
         await manager.resolve_message("evt-123")
 
         captured = capsys.readouterr()
-        assert "✗" in captured.out
+        assert "\u2717" in captured.out
         assert "Failed to resolve" in captured.out
 
 

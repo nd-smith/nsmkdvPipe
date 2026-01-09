@@ -20,12 +20,19 @@ from kafka_pipeline.xact.schemas.tasks import DownloadTaskMessage
 
 @pytest.fixture
 def kafka_config():
-    """Create test Kafka configuration."""
+    """Create test Kafka configuration with hierarchical domain structure."""
     return KafkaConfig(
         bootstrap_servers="localhost:9092",
-        downloads_pending_topic="test.downloads.pending",
-        retry_delays=[60, 120, 240, 480],  # Short delays for testing
-        max_retries=4,
+        xact={
+            "topics": {
+                "events": "test.events.raw",
+                "downloads_pending": "test.downloads.pending",
+                "downloads_cached": "test.downloads.cached",
+                "dlq": "test.downloads.dlq",
+            },
+            "retry_delays": [60, 120, 240, 480],  # Short delays for testing
+            "consumer_group_prefix": "test",
+        },
     )
 
 
@@ -43,6 +50,7 @@ def download_task():
     """Create test download task message."""
     return DownloadTaskMessage(
         trace_id="test-trace-123",
+        media_id="media-trace-123",
         attachment_url="https://example.com/file.pdf",
         blob_path="documentsReceived/C-123/pdf/file.pdf",
         status_subtype="documentsReceived",
@@ -62,6 +70,7 @@ def scheduler(kafka_config, mock_producer):
     return DelayedRedeliveryScheduler(
         config=kafka_config,
         producer=mock_producer,
+        domain="xact",
         lag_threshold=100,
         check_interval_seconds=1,
     )
@@ -119,6 +128,7 @@ class TestDelayedRedeliveryScheduler:
         scheduler = DelayedRedeliveryScheduler(
             config=kafka_config,
             producer=producer,
+            domain="xact",
         )
 
         with pytest.raises(RuntimeError, match="Producer must be started"):
@@ -390,6 +400,7 @@ class TestDelayedRedeliveryScheduler:
         scheduler = DelayedRedeliveryScheduler(
             config=kafka_config,
             producer=producer,
+            domain="xact",
         )
 
         # Verify retry topics match expected pattern

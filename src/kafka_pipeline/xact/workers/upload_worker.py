@@ -10,8 +10,8 @@ This worker is decoupled from the Download Worker to allow:
 - Cache buffer if OneLake has temporary issues
 
 Architecture:
-- Download Worker: downloads → local cache → CachedDownloadMessage
-- Upload Worker: CachedDownloadMessage → OneLake → DownloadResultMessage
+- Download Worker: downloads -> local cache -> CachedDownloadMessage
+- Upload Worker: CachedDownloadMessage -> OneLake -> DownloadResultMessage
 """
 
 import asyncio
@@ -507,6 +507,7 @@ class UploadWorker:
         start_time = time.time()
         trace_id = "unknown"
         consumer_group = self.config.get_consumer_group(self.domain, self.WORKER_NAME)
+        cached_message: Optional[CachedDownloadMessage] = None
 
         try:
             # Parse message
@@ -637,7 +638,7 @@ class UploadWorker:
                 f"Upload failed: {e}",
                 extra={
                     "trace_id": trace_id,
-                    "media_id": cached_message.media_id if 'cached_message' in locals() and cached_message else None,
+                    "media_id": cached_message.media_id if cached_message else None,
                 },
                 exc_info=True,
             )
@@ -646,8 +647,8 @@ class UploadWorker:
             # For upload failures, we produce a failure result
             # The file stays in cache for manual review/retry
             try:
-                # Re-parse message in case it wasn't parsed yet
-                if 'cached_message' not in locals() or cached_message is None:
+                # Re-parse message in case it wasn't parsed yet (e.g., JSON parsing failed)
+                if cached_message is None:
                     cached_message = CachedDownloadMessage.model_validate_json(message.value)
 
                 result_message = DownloadResultMessage(
@@ -680,7 +681,7 @@ class UploadWorker:
 
             return UploadResult(
                 message=message,
-                cached_message=cached_message if 'cached_message' in locals() else None,
+                cached_message=cached_message,
                 processing_time_ms=processing_time_ms,
                 success=False,
                 error=e,

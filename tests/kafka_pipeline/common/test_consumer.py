@@ -1,5 +1,7 @@
 """
 Tests for Kafka consumer with circuit breaker integration.
+
+These are unit tests that use mocks - no Docker/Kafka required.
 """
 
 import asyncio
@@ -14,14 +16,31 @@ from kafka_pipeline.common.consumer import BaseKafkaConsumer
 
 @pytest.fixture
 def kafka_config():
-    """Create test Kafka configuration."""
+    """Create test Kafka configuration with required domain config."""
     return KafkaConfig(
         bootstrap_servers="localhost:9092",
         security_protocol="SASL_SSL",
         sasl_mechanism="OAUTHBEARER",
-        enable_auto_commit=False,
-        auto_offset_reset="earliest",
-        max_poll_records=100,
+        # Consumer defaults (used by get_worker_config)
+        consumer_defaults={
+            "enable_auto_commit": False,
+            "auto_offset_reset": "earliest",
+            "max_poll_records": 100,
+            "session_timeout_ms": 30000,
+            "max_poll_interval_ms": 300000,
+        },
+        # Domain config required for get_worker_config and get_consumer_group
+        xact={
+            "topics": {
+                "events": "xact.events.raw",
+                "downloads_pending": "xact.downloads.pending",
+            },
+            "consumer_group_prefix": "xact",
+            "test_worker": {
+                "consumer": {},
+                "processing": {},
+            },
+        },
     )
 
 
@@ -88,15 +107,19 @@ class TestBaseKafkaConsumerInit:
         """Consumer initializes with config and circuit breaker."""
         consumer = BaseKafkaConsumer(
             config=kafka_config,
+            domain="xact",
+            worker_name="test_worker",
             topics=["test-topic"],
-            group_id="test-group",
             message_handler=mock_message_handler,
             circuit_breaker=mock_circuit_breaker,
         )
 
         assert consumer.config == kafka_config
         assert consumer.topics == ["test-topic"]
-        assert consumer.group_id == "test-group"
+        assert consumer.domain == "xact"
+        assert consumer.worker_name == "test_worker"
+        # group_id is now derived from config.get_consumer_group()
+        assert consumer.group_id == "xact-test_worker"
         assert consumer.message_handler == mock_message_handler
         assert consumer._circuit_breaker == mock_circuit_breaker
         assert consumer._consumer is None
@@ -112,8 +135,9 @@ class TestBaseKafkaConsumerInit:
 
             consumer = BaseKafkaConsumer(
                 config=kafka_config,
+                domain="xact",
+                worker_name="test_worker",
                 topics=["test-topic"],
-                group_id="test-group",
                 message_handler=mock_message_handler,
             )
 
@@ -127,8 +151,9 @@ class TestBaseKafkaConsumerInit:
         topics = ["topic-1", "topic-2", "topic-3"]
         consumer = BaseKafkaConsumer(
             config=kafka_config,
+            domain="xact",
+            worker_name="test_worker",
             topics=topics,
-            group_id="test-group",
             message_handler=mock_message_handler,
             circuit_breaker=mock_circuit_breaker,
         )
@@ -140,8 +165,9 @@ class TestBaseKafkaConsumerInit:
         with pytest.raises(ValueError, match="At least one topic must be specified"):
             BaseKafkaConsumer(
                 config=kafka_config,
+                domain="xact",
+                worker_name="test_worker",
                 topics=[],
-                group_id="test-group",
                 message_handler=mock_message_handler,
             )
 
@@ -167,8 +193,9 @@ class TestBaseKafkaConsumerStartStop:
 
                 consumer = BaseKafkaConsumer(
                     config=kafka_config,
+                    domain="xact",
+                    worker_name="test_worker",
                     topics=["test-topic"],
-                    group_id="test-group",
                     message_handler=mock_message_handler,
                     circuit_breaker=mock_circuit_breaker,
                 )
@@ -197,8 +224,9 @@ class TestBaseKafkaConsumerStartStop:
         """Starting consumer multiple times is safe."""
         consumer = BaseKafkaConsumer(
             config=kafka_config,
+            domain="xact",
+            worker_name="test_worker",
             topics=["test-topic"],
-            group_id="test-group",
             message_handler=mock_message_handler,
             circuit_breaker=mock_circuit_breaker,
         )
@@ -221,8 +249,9 @@ class TestBaseKafkaConsumerStartStop:
         """Consumer stops successfully and commits offsets."""
         consumer = BaseKafkaConsumer(
             config=kafka_config,
+            domain="xact",
+            worker_name="test_worker",
             topics=["test-topic"],
-            group_id="test-group",
             message_handler=mock_message_handler,
             circuit_breaker=mock_circuit_breaker,
         )
@@ -245,8 +274,9 @@ class TestBaseKafkaConsumerStartStop:
         """Stopping consumer multiple times is safe."""
         consumer = BaseKafkaConsumer(
             config=kafka_config,
+            domain="xact",
+            worker_name="test_worker",
             topics=["test-topic"],
-            group_id="test-group",
             message_handler=mock_message_handler,
             circuit_breaker=mock_circuit_breaker,
         )
@@ -274,8 +304,9 @@ class TestBaseKafkaConsumerMessageProcessing:
         """Message handler called and offset committed on success."""
         consumer = BaseKafkaConsumer(
             config=kafka_config,
+            domain="xact",
+            worker_name="test_worker",
             topics=["test-topic"],
-            group_id="test-group",
             message_handler=mock_message_handler,
             circuit_breaker=mock_circuit_breaker,
         )
@@ -304,8 +335,9 @@ class TestBaseKafkaConsumerMessageProcessing:
         """Offset not committed when handler raises error."""
         consumer = BaseKafkaConsumer(
             config=kafka_config,
+            domain="xact",
+            worker_name="test_worker",
             topics=["test-topic"],
-            group_id="test-group",
             message_handler=mock_message_handler,
             circuit_breaker=mock_circuit_breaker,
         )
@@ -336,8 +368,9 @@ class TestBaseKafkaConsumerMessageProcessing:
         """Consume loop fetches and processes messages."""
         consumer = BaseKafkaConsumer(
             config=kafka_config,
+            domain="xact",
+            worker_name="test_worker",
             topics=["test-topic"],
-            group_id="test-group",
             message_handler=mock_message_handler,
             circuit_breaker=mock_circuit_breaker,
         )
@@ -353,6 +386,8 @@ class TestBaseKafkaConsumerMessageProcessing:
         ]
 
         # Mock getmany to return messages once, then empty
+        # Also mock assignment() to return a partition so consume_loop doesn't skip
+        mock_aiokafka_consumer.assignment = MagicMock(return_value=[tp])
         call_count = 0
 
         async def mock_getmany(timeout_ms):
@@ -376,25 +411,31 @@ class TestBaseKafkaConsumerMessageProcessing:
         assert mock_aiokafka_consumer.commit.call_count == 3
 
     @pytest.mark.asyncio
-    async def test_consume_loop_circuit_breaker_integration(
+    async def test_consume_loop_circuit_breaker_records_success(
         self,
         kafka_config,
         mock_message_handler,
         mock_circuit_breaker,
         mock_aiokafka_consumer,
     ):
-        """Consume loop uses circuit breaker for fetch operations."""
+        """Consume loop records success/failure with circuit breaker."""
+        # Note: The current implementation calls getmany() directly (not through
+        # circuit_breaker.call_async) but records success/failure manually
         consumer = BaseKafkaConsumer(
             config=kafka_config,
+            domain="xact",
+            worker_name="test_worker",
             topics=["test-topic"],
-            group_id="test-group",
             message_handler=mock_message_handler,
             circuit_breaker=mock_circuit_breaker,
         )
         consumer._consumer = mock_aiokafka_consumer
         consumer._running = True
 
-        # Mock empty response and stop after first call
+        # Mock partition assignment and empty response, stop after first call
+        tp = TopicPartition("test-topic", 0)
+        mock_aiokafka_consumer.assignment = MagicMock(return_value=[tp])
+
         async def mock_getmany(timeout_ms):
             consumer._running = False
             return {}
@@ -404,8 +445,8 @@ class TestBaseKafkaConsumerMessageProcessing:
         # Run consume loop
         await consumer._consume_loop()
 
-        # Circuit breaker was used
-        mock_circuit_breaker.call_async.assert_called()
+        # Circuit breaker record_success was called after successful fetch
+        mock_circuit_breaker.record_success.assert_called()
 
     @pytest.mark.asyncio
     async def test_consume_loop_handles_cancellation(
@@ -418,13 +459,18 @@ class TestBaseKafkaConsumerMessageProcessing:
         """Consume loop handles asyncio cancellation gracefully."""
         consumer = BaseKafkaConsumer(
             config=kafka_config,
+            domain="xact",
+            worker_name="test_worker",
             topics=["test-topic"],
-            group_id="test-group",
             message_handler=mock_message_handler,
             circuit_breaker=mock_circuit_breaker,
         )
         consumer._consumer = mock_aiokafka_consumer
         consumer._running = True
+
+        # Mock partition assignment
+        tp = TopicPartition("test-topic", 0)
+        mock_aiokafka_consumer.assignment = MagicMock(return_value=[tp])
 
         # Mock getmany to raise CancelledError
         mock_aiokafka_consumer.getmany = AsyncMock(side_effect=asyncio.CancelledError())
@@ -444,13 +490,18 @@ class TestBaseKafkaConsumerMessageProcessing:
         """Consume loop continues processing after errors."""
         consumer = BaseKafkaConsumer(
             config=kafka_config,
+            domain="xact",
+            worker_name="test_worker",
             topics=["test-topic"],
-            group_id="test-group",
             message_handler=mock_message_handler,
             circuit_breaker=mock_circuit_breaker,
         )
         consumer._consumer = mock_aiokafka_consumer
         consumer._running = True
+
+        # Mock partition assignment
+        tp = TopicPartition("test-topic", 0)
+        mock_aiokafka_consumer.assignment = MagicMock(return_value=[tp])
 
         call_count = 0
 
@@ -481,8 +532,9 @@ class TestBaseKafkaConsumerUtilities:
         """is_running property reflects consumer state."""
         consumer = BaseKafkaConsumer(
             config=kafka_config,
+            domain="xact",
+            worker_name="test_worker",
             topics=["test-topic"],
-            group_id="test-group",
             message_handler=mock_message_handler,
             circuit_breaker=mock_circuit_breaker,
         )

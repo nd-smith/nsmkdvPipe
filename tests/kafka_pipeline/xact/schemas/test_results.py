@@ -22,6 +22,7 @@ class TestDownloadResultMessageCreation:
         """DownloadResultMessage can be created for successful download."""
         result = DownloadResultMessage(
             trace_id="evt-123",
+            media_id="media-123",
             attachment_url="https://storage.example.com/file.pdf",
             blob_path="claims/C-456/file.pdf",
             status_subtype="documentsReceived",
@@ -43,6 +44,7 @@ class TestDownloadResultMessageCreation:
         """DownloadResultMessage can be created for transient failure."""
         result = DownloadResultMessage(
             trace_id="evt-456",
+            media_id="media-456",
             attachment_url="https://storage.example.com/file.pdf",
             blob_path="documentsReceived/C-456/pdf/file.pdf",
             status_subtype="documentsReceived",
@@ -62,6 +64,7 @@ class TestDownloadResultMessageCreation:
         """DownloadResultMessage can be created for permanent failure."""
         result = DownloadResultMessage(
             trace_id="evt-789",
+            media_id="media-789",
             attachment_url="https://storage.example.com/invalid.exe",
             blob_path="documentsReceived/C-789/exe/invalid.exe",
             status_subtype="documentsReceived",
@@ -88,10 +91,11 @@ class TestDownloadResultMessageValidation:
                 trace_id="evt-123",
                 attachment_url="https://storage.example.com/file.pdf",
                 status="completed"
-                # Missing blob_path, status_subtype, file_type, assignment_id, created_at
+                # Missing media_id, blob_path, status_subtype, file_type, assignment_id, created_at
             )
 
         errors = exc_info.value.errors()
+        assert any(e['loc'] == ('media_id',) for e in errors)
         assert any(e['loc'] == ('blob_path',) for e in errors)
         assert any(e['loc'] == ('status_subtype',) for e in errors)
         assert any(e['loc'] == ('file_type',) for e in errors)
@@ -103,6 +107,7 @@ class TestDownloadResultMessageValidation:
         with pytest.raises(ValidationError):
             DownloadResultMessage(
                 trace_id="",
+                media_id="media-123",
                 attachment_url="https://storage.example.com/file.pdf",
                 blob_path="claims/C-456/file.pdf",
                 status_subtype="documentsReceived",
@@ -117,6 +122,7 @@ class TestDownloadResultMessageValidation:
         with pytest.raises(ValidationError):
             DownloadResultMessage(
                 trace_id="   ",
+                media_id="media-123",
                 attachment_url="https://storage.example.com/file.pdf",
                 blob_path="claims/C-456/file.pdf",
                 status_subtype="documentsReceived",
@@ -131,6 +137,7 @@ class TestDownloadResultMessageValidation:
         with pytest.raises(ValidationError):
             DownloadResultMessage(
                 trace_id="evt-123",
+                media_id="media-123",
                 attachment_url="https://storage.example.com/file.pdf",
                 blob_path="claims/C-456/file.pdf",
                 status_subtype="documentsReceived",
@@ -145,6 +152,7 @@ class TestDownloadResultMessageValidation:
         with pytest.raises(ValidationError):
             DownloadResultMessage(
                 trace_id="evt-123",
+                media_id="media-123",
                 attachment_url="https://storage.example.com/file.pdf",
                 blob_path="claims/C-456/file.pdf",
                 status_subtype="documentsReceived",
@@ -159,6 +167,7 @@ class TestDownloadResultMessageValidation:
         """Leading/trailing whitespace is trimmed from string fields."""
         result = DownloadResultMessage(
             trace_id="  evt-123  ",
+            media_id="  media-123  ",
             attachment_url="  https://storage.example.com/file.pdf  ",
             blob_path="  claims/C-456/file.pdf  ",
             status_subtype="  documentsReceived  ",
@@ -180,6 +189,7 @@ class TestDownloadResultMessageStatusEnum:
         """Status 'completed' is accepted."""
         result = DownloadResultMessage(
             trace_id="evt-123",
+            media_id="media-123",
             attachment_url="https://storage.example.com/file.pdf",
             blob_path="claims/C-456/file.pdf",
             status_subtype="documentsReceived",
@@ -194,6 +204,7 @@ class TestDownloadResultMessageStatusEnum:
         """Status 'failed' is accepted."""
         result = DownloadResultMessage(
             trace_id="evt-123",
+            media_id="media-123",
             attachment_url="https://storage.example.com/file.pdf",
             blob_path="claims/C-456/file.pdf",
             status_subtype="documentsReceived",
@@ -208,6 +219,7 @@ class TestDownloadResultMessageStatusEnum:
         """Status 'failed_permanent' is accepted."""
         result = DownloadResultMessage(
             trace_id="evt-123",
+            media_id="media-123",
             attachment_url="https://storage.example.com/file.pdf",
             blob_path="claims/C-456/file.pdf",
             status_subtype="documentsReceived",
@@ -226,6 +238,7 @@ class TestDownloadResultMessageSerialization:
         """DownloadResultMessage serializes to valid JSON."""
         result = DownloadResultMessage(
             trace_id="evt-123",
+            media_id="media-123",
             attachment_url="https://storage.example.com/file.pdf",
             blob_path="claims/C-456/file.pdf",
             status_subtype="documentsReceived",
@@ -250,6 +263,7 @@ class TestDownloadResultMessageSerialization:
         """Failed result serializes with error fields."""
         result = DownloadResultMessage(
             trace_id="evt-456",
+            media_id="media-456",
             attachment_url="https://storage.example.com/file.pdf",
             blob_path="documentsReceived/C-456/pdf/file.pdf",
             status_subtype="documentsReceived",
@@ -272,6 +286,7 @@ class TestDownloadResultMessageSerialization:
         """DownloadResultMessage can be created from JSON."""
         json_data = {
             "trace_id": "evt-789",
+            "media_id": "media-789",
             "attachment_url": "https://storage.example.com/doc.pdf",
             "blob_path": "policies/P-001/doc.pdf",
             "status_subtype": "documentsReceived",
@@ -296,6 +311,7 @@ class TestDownloadResultMessageSerialization:
         """Data survives JSON serialization round-trip."""
         original = DownloadResultMessage(
             trace_id="evt-round-trip",
+            media_id="media-round-trip",
             attachment_url="https://storage.example.com/file.pdf",
             blob_path="documentsReceived/C-456/pdf/file.pdf",
             status_subtype="documentsReceived",
@@ -323,6 +339,7 @@ class TestErrorMessageTruncation:
         short_error = "Connection timeout after 30 seconds"
         result = DownloadResultMessage(
             trace_id="evt-123",
+            media_id="media-123",
             attachment_url="https://storage.example.com/file.pdf",
             blob_path="documentsReceived/C-456/pdf/file.pdf",
             status_subtype="documentsReceived",
@@ -341,6 +358,7 @@ class TestErrorMessageTruncation:
         long_error = "x" * 600
         result = DownloadResultMessage(
             trace_id="evt-123",
+            media_id="media-123",
             attachment_url="https://storage.example.com/file.pdf",
             blob_path="documentsReceived/C-456/pdf/file.pdf",
             status_subtype="documentsReceived",
@@ -360,6 +378,7 @@ class TestErrorMessageTruncation:
         exact_error = "x" * 500
         result = DownloadResultMessage(
             trace_id="evt-123",
+            media_id="media-123",
             attachment_url="https://storage.example.com/file.pdf",
             blob_path="documentsReceived/C-456/pdf/file.pdf",
             status_subtype="documentsReceived",
@@ -382,6 +401,7 @@ class TestFailedDownloadMessageCreation:
         """FailedDownloadMessage can be created with original task."""
         task = DownloadTaskMessage(
             trace_id="evt-456",
+            media_id="media-456",
             attachment_url="https://storage.example.com/bad.pdf",
             blob_path="documentsReceived/C-789/pdf/bad.pdf",
             status_subtype="documentsReceived",
@@ -395,6 +415,7 @@ class TestFailedDownloadMessageCreation:
 
         dlq = FailedDownloadMessage(
             trace_id="evt-456",
+            media_id="media-456",
             attachment_url="https://storage.example.com/bad.pdf",
             original_task=task,
             final_error="File not found after 4 retries",
@@ -413,6 +434,7 @@ class TestFailedDownloadMessageCreation:
         """FailedDownloadMessage truncates long error messages."""
         task = DownloadTaskMessage(
             trace_id="evt-error",
+            media_id="media-error",
             attachment_url="https://storage.example.com/file.pdf",
             blob_path="documentsReceived/C-001/pdf/file.pdf",
             status_subtype="documentsReceived",
@@ -427,6 +449,7 @@ class TestFailedDownloadMessageCreation:
         long_error = "Error: " + "x" * 600
         dlq = FailedDownloadMessage(
             trace_id="evt-error",
+            media_id="media-error",
             attachment_url="https://storage.example.com/file.pdf",
             original_task=task,
             final_error=long_error,
@@ -448,10 +471,11 @@ class TestFailedDownloadMessageValidation:
             FailedDownloadMessage(
                 trace_id="evt-123",
                 attachment_url="https://storage.example.com/file.pdf"
-                # Missing original_task, final_error, error_category, retry_count, failed_at
+                # Missing media_id, original_task, final_error, error_category, retry_count, failed_at
             )
 
         errors = exc_info.value.errors()
+        assert any(e['loc'] == ('media_id',) for e in errors)
         assert any(e['loc'] == ('original_task',) for e in errors)
         assert any(e['loc'] == ('final_error',) for e in errors)
 
@@ -459,6 +483,7 @@ class TestFailedDownloadMessageValidation:
         """Empty trace_id raises ValidationError."""
         task = DownloadTaskMessage(
             trace_id="evt-456",
+            media_id="media-456",
             attachment_url="https://storage.example.com/file.pdf",
             blob_path="documentsReceived/C-789/pdf/file.pdf",
             status_subtype="documentsReceived",
@@ -472,6 +497,7 @@ class TestFailedDownloadMessageValidation:
         with pytest.raises(ValidationError):
             FailedDownloadMessage(
                 trace_id="",
+                media_id="media-456",
                 attachment_url="https://storage.example.com/file.pdf",
                 original_task=task,
                 final_error="Error occurred",
@@ -484,6 +510,7 @@ class TestFailedDownloadMessageValidation:
         """Empty final_error raises ValidationError."""
         task = DownloadTaskMessage(
             trace_id="evt-456",
+            media_id="media-456",
             attachment_url="https://storage.example.com/file.pdf",
             blob_path="documentsReceived/C-789/pdf/file.pdf",
             status_subtype="documentsReceived",
@@ -497,6 +524,7 @@ class TestFailedDownloadMessageValidation:
         with pytest.raises(ValidationError):
             FailedDownloadMessage(
                 trace_id="evt-456",
+                media_id="media-456",
                 attachment_url="https://storage.example.com/file.pdf",
                 original_task=task,
                 final_error="",
@@ -509,6 +537,7 @@ class TestFailedDownloadMessageValidation:
         """Whitespace-only final_error raises ValidationError."""
         task = DownloadTaskMessage(
             trace_id="evt-456",
+            media_id="media-456",
             attachment_url="https://storage.example.com/file.pdf",
             blob_path="documentsReceived/C-789/pdf/file.pdf",
             status_subtype="documentsReceived",
@@ -522,6 +551,7 @@ class TestFailedDownloadMessageValidation:
         with pytest.raises(ValidationError):
             FailedDownloadMessage(
                 trace_id="evt-456",
+                media_id="media-456",
                 attachment_url="https://storage.example.com/file.pdf",
                 original_task=task,
                 final_error="   ",
@@ -534,6 +564,7 @@ class TestFailedDownloadMessageValidation:
         """Leading/trailing whitespace is trimmed from string fields."""
         task = DownloadTaskMessage(
             trace_id="evt-456",
+            media_id="media-456",
             attachment_url="https://storage.example.com/file.pdf",
             blob_path="documentsReceived/C-789/pdf/file.pdf",
             status_subtype="documentsReceived",
@@ -546,6 +577,7 @@ class TestFailedDownloadMessageValidation:
 
         dlq = FailedDownloadMessage(
             trace_id="  evt-456  ",
+            media_id="  media-456  ",
             attachment_url="  https://storage.example.com/file.pdf  ",
             original_task=task,
             final_error="  Error occurred  ",
@@ -567,6 +599,7 @@ class TestFailedDownloadMessageSerialization:
         """FailedDownloadMessage serializes to valid JSON with nested task."""
         task = DownloadTaskMessage(
             trace_id="evt-dlq",
+            media_id="media-dlq",
             attachment_url="https://storage.example.com/missing.pdf",
             blob_path="documentsReceived/C-999/pdf/missing.pdf",
             status_subtype="documentsReceived",
@@ -581,6 +614,7 @@ class TestFailedDownloadMessageSerialization:
 
         dlq = FailedDownloadMessage(
             trace_id="evt-dlq",
+            media_id="media-dlq",
             attachment_url="https://storage.example.com/missing.pdf",
             original_task=task,
             final_error="File not found (404) - exhausted retries",
@@ -603,9 +637,11 @@ class TestFailedDownloadMessageSerialization:
         """FailedDownloadMessage can be created from JSON."""
         json_data = {
             "trace_id": "evt-dlq",
+            "media_id": "media-dlq",
             "attachment_url": "https://storage.example.com/missing.pdf",
             "original_task": {
                 "trace_id": "evt-dlq",
+                "media_id": "media-dlq",
                 "attachment_url": "https://storage.example.com/missing.pdf",
                 "blob_path": "documentsReceived/C-999/pdf/missing.pdf",
                 "status_subtype": "documentsReceived",
@@ -636,6 +672,7 @@ class TestFailedDownloadMessageSerialization:
         """DLQ message survives JSON serialization round-trip."""
         task = DownloadTaskMessage(
             trace_id="evt-round",
+            media_id="media-round",
             attachment_url="https://storage.example.com/file.pdf",
             blob_path="documentsReceived/C-123/pdf/file.pdf",
             status_subtype="documentsReceived",
@@ -649,6 +686,7 @@ class TestFailedDownloadMessageSerialization:
 
         original = FailedDownloadMessage(
             trace_id="evt-round",
+            media_id="media-round",
             attachment_url="https://storage.example.com/file.pdf",
             original_task=task,
             final_error="Connection failed",
@@ -673,6 +711,7 @@ class TestEdgeCases:
         """Zero bytes downloaded is a valid value."""
         result = DownloadResultMessage(
             trace_id="evt-zero",
+            media_id="media-zero",
             attachment_url="https://storage.example.com/empty.txt",
             blob_path="documentsReceived/C-456/txt/empty.txt",
             status_subtype="documentsReceived",
@@ -688,6 +727,7 @@ class TestEdgeCases:
         """Very large bytes_downloaded values are accepted."""
         result = DownloadResultMessage(
             trace_id="evt-large",
+            media_id="media-large",
             attachment_url="https://storage.example.com/huge.zip",
             blob_path="documentsReceived/C-456/zip/huge.zip",
             status_subtype="documentsReceived",
@@ -703,6 +743,7 @@ class TestEdgeCases:
         """Error messages can contain Unicode characters."""
         result = DownloadResultMessage(
             trace_id="evt-unicode",
+            media_id="media-unicode",
             attachment_url="https://storage.example.com/file.pdf",
             blob_path="documentsReceived/C-456/pdf/file.pdf",
             status_subtype="documentsReceived",
@@ -720,6 +761,7 @@ class TestEdgeCases:
         naive_dt = datetime(2024, 12, 25, 10, 30, 0)
         result = DownloadResultMessage(
             trace_id="evt-naive",
+            media_id="media-naive",
             attachment_url="https://storage.example.com/file.pdf",
             blob_path="documentsReceived/C-456/pdf/file.pdf",
             status_subtype="documentsReceived",
@@ -734,6 +776,7 @@ class TestEdgeCases:
         """Test conversion to tracking table row format."""
         result = DownloadResultMessage(
             trace_id="evt-tracking",
+            media_id="media-tracking",
             attachment_url="https://storage.example.com/file.pdf",
             blob_path="documentsReceived/C-456/pdf/file.pdf",
             status_subtype="documentsReceived",
@@ -748,6 +791,7 @@ class TestEdgeCases:
         row = result.to_tracking_row()
 
         assert row["trace_id"] == "evt-tracking"
+        assert row["media_id"] == "media-tracking"
         assert row["blob_path"] == "documentsReceived/C-456/pdf/file.pdf"
         assert row["status"] == "completed"
         assert row["bytes_downloaded"] == 1024
