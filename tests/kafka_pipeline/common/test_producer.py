@@ -1,5 +1,7 @@
 """
 Tests for Kafka producer with circuit breaker integration.
+
+These are unit tests that use mocks - no Docker/Kafka required.
 """
 
 import pytest
@@ -21,14 +23,30 @@ class SampleMessage(BaseModel):
 
 @pytest.fixture
 def kafka_config():
-    """Create test Kafka configuration."""
+    """Create test Kafka configuration with required domain config."""
     return KafkaConfig(
         bootstrap_servers="localhost:9092",
         security_protocol="SASL_SSL",
         sasl_mechanism="OAUTHBEARER",
-        acks="all",
-        retries=3,
-        retry_backoff_ms=1000,
+        # Producer defaults (used by get_worker_config)
+        producer_defaults={
+            "acks": "all",
+            "retries": 3,
+            "retry_backoff_ms": 1000,
+        },
+        # Domain config required for get_worker_config
+        xact={
+            "topics": {
+                "events": "xact.events.raw",
+                "downloads_pending": "xact.downloads.pending",
+            },
+            "consumer_group_prefix": "xact",
+            "test_worker": {
+                "consumer": {},
+                "producer": {},
+                "processing": {},
+            },
+        },
     )
 
 
@@ -60,7 +78,12 @@ def mock_aiokafka_producer():
 @pytest.fixture
 def producer(kafka_config, mock_circuit_breaker):
     """Create producer with mocked dependencies."""
-    return BaseKafkaProducer(kafka_config, circuit_breaker=mock_circuit_breaker)
+    return BaseKafkaProducer(
+        kafka_config,
+        domain="xact",
+        worker_name="test_worker",
+        circuit_breaker=mock_circuit_breaker,
+    )
 
 
 class TestBaseKafkaProducerInit:
@@ -68,9 +91,16 @@ class TestBaseKafkaProducerInit:
 
     def test_init_with_config(self, kafka_config, mock_circuit_breaker):
         """Producer initializes with config and circuit breaker."""
-        producer = BaseKafkaProducer(kafka_config, circuit_breaker=mock_circuit_breaker)
+        producer = BaseKafkaProducer(
+            kafka_config,
+            domain="xact",
+            worker_name="test_worker",
+            circuit_breaker=mock_circuit_breaker,
+        )
 
         assert producer.config == kafka_config
+        assert producer.domain == "xact"
+        assert producer.worker_name == "test_worker"
         assert producer._circuit_breaker == mock_circuit_breaker
         assert producer._producer is None
         assert not producer._started
@@ -81,7 +111,11 @@ class TestBaseKafkaProducerInit:
             mock_breaker = MagicMock(spec=CircuitBreaker)
             mock_get_breaker.return_value = mock_breaker
 
-            producer = BaseKafkaProducer(kafka_config)
+            producer = BaseKafkaProducer(
+                kafka_config,
+                domain="xact",
+                worker_name="test_worker",
+            )
 
             mock_get_breaker.assert_called_once()
             assert producer._circuit_breaker == mock_breaker
