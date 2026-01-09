@@ -1,5 +1,5 @@
 """
-Tests for RetryHandler.
+Tests for xact domain DownloadRetryHandler.
 
 Tests retry routing logic, DLQ handling, error categorization,
 and metadata preservation through retry chain.
@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, call
 from core.types import ErrorCategory
 from kafka_pipeline.config import KafkaConfig
 from kafka_pipeline.common.producer import BaseKafkaProducer
-from kafka_pipeline.common.retry.handler import RetryHandler
+from kafka_pipeline.xact.retry import DownloadRetryHandler, RetryHandler
 from kafka_pipeline.xact.schemas.results import FailedDownloadMessage
 from kafka_pipeline.xact.schemas.tasks import DownloadTaskMessage
 
@@ -45,8 +45,8 @@ def mock_producer():
 
 @pytest.fixture
 def retry_handler(kafka_config, mock_producer):
-    """Create RetryHandler with mocked dependencies."""
-    return RetryHandler(kafka_config, mock_producer, domain="xact")
+    """Create DownloadRetryHandler with mocked dependencies."""
+    return DownloadRetryHandler(kafka_config, mock_producer, domain="xact")
 
 
 @pytest.fixture
@@ -69,14 +69,22 @@ def download_task():
 
 
 class TestRetryHandlerInit:
-    """Test RetryHandler initialization."""
+    """Test DownloadRetryHandler initialization."""
 
     def test_initialization(self, kafka_config, mock_producer):
         """Test handler initializes with correct configuration."""
+        handler = DownloadRetryHandler(kafka_config, mock_producer)
+
+        assert handler.config == kafka_config
+        assert handler.producer == mock_producer
+
+    def test_backwards_compatibility_alias(self, kafka_config, mock_producer):
+        """Test RetryHandler alias works for backwards compatibility."""
         handler = RetryHandler(kafka_config, mock_producer)
 
         assert handler.config == kafka_config
         assert handler.producer == mock_producer
+        assert isinstance(handler, DownloadRetryHandler)
 
 
 class TestHandleFailureRetry:
@@ -450,7 +458,7 @@ class TestConfigurableRetryDelays:
                 "consumer_group_prefix": "test",
             },
         )
-        handler = RetryHandler(custom_config, mock_producer, domain="xact")
+        handler = DownloadRetryHandler(custom_config, mock_producer, domain="xact")
 
         task = DownloadTaskMessage(
             trace_id="evt-custom",
@@ -492,7 +500,7 @@ class TestConfigurableRetryDelays:
                 "consumer_group_prefix": "test",
             },
         )
-        handler = RetryHandler(custom_config, mock_producer, domain="xact")
+        handler = DownloadRetryHandler(custom_config, mock_producer, domain="xact")
 
         task = DownloadTaskMessage(
             trace_id="evt-max",

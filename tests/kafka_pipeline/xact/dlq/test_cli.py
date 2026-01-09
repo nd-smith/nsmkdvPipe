@@ -1,5 +1,5 @@
 """
-Tests for DLQ CLI tool.
+Tests for xact domain DLQ CLI tool.
 """
 
 import asyncio
@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from aiokafka.structs import ConsumerRecord
 
 from kafka_pipeline.config import KafkaConfig
-from kafka_pipeline.common.dlq.cli import DLQCLIManager
+from kafka_pipeline.xact.dlq.cli import DLQCLIManager
 from kafka_pipeline.xact.schemas.results import FailedDownloadMessage
 from kafka_pipeline.xact.schemas.tasks import DownloadTaskMessage
 

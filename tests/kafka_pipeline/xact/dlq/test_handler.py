@@ -1,5 +1,5 @@
 """
-Tests for DLQ handler with manual review and replay capability.
+Tests for xact domain DLQ handler with manual review and replay capability.
 """
 
 import asyncio
@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from aiokafka.structs import ConsumerRecord
 
 from kafka_pipeline.config import KafkaConfig
-from kafka_pipeline.common.dlq.handler import DLQHandler
+from kafka_pipeline.xact.dlq.handler import DLQHandler
 from kafka_pipeline.xact.schemas.results import FailedDownloadMessage
 from kafka_pipeline.xact.schemas.tasks import DownloadTaskMessage
 
@@ -112,8 +112,8 @@ class TestDLQHandlerStartStop:
     """Tests for DLQ handler lifecycle."""
 
     @pytest.mark.asyncio
-    @patch("kafka_pipeline.common.dlq.handler.BaseKafkaProducer")
-    @patch("kafka_pipeline.common.dlq.handler.BaseKafkaConsumer")
+    @patch("kafka_pipeline.xact.dlq.handler.BaseKafkaProducer")
+    @patch("kafka_pipeline.xact.dlq.handler.BaseKafkaConsumer")
     async def test_start_creates_producer_and_consumer(
         self, mock_consumer_class, mock_producer_class, kafka_config
     ):
@@ -157,8 +157,8 @@ class TestDLQHandlerStartStop:
                     pass
 
     @pytest.mark.asyncio
-    @patch("kafka_pipeline.common.dlq.handler.BaseKafkaProducer")
-    @patch("kafka_pipeline.common.dlq.handler.BaseKafkaConsumer")
+    @patch("kafka_pipeline.xact.dlq.handler.BaseKafkaProducer")
+    @patch("kafka_pipeline.xact.dlq.handler.BaseKafkaConsumer")
     async def test_stop_cleans_up_resources(
         self, mock_consumer_class, mock_producer_class, kafka_config
     ):

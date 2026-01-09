@@ -1,11 +1,14 @@
 """
-Dead-letter queue (DLQ) handler for manual review and replay.
+Dead-letter queue (DLQ) handler for xact domain manual review and replay.
 
 Provides DLQ message management with:
 - Manual consumption from DLQ topic (no auto-commit)
 - Message replay capability to original pending topic
 - Manual acknowledgment for audit trail
 - Comprehensive audit logging for compliance
+
+This handler is xact-domain-specific as it works with xact schemas
+(FailedDownloadMessage, DownloadTaskMessage) for parsing and replay.
 """
 
 import json

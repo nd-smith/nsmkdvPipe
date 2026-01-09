@@ -34,8 +34,8 @@ Event-driven pipeline using Kafka, organized by domain:
 
 | Module | Purpose |
 |--------|---------|
-| `common/` | Shared infrastructure (consumer, producer, retry, DLQ, storage, writers) |
-| `xact/` | Transaction domain (workers, schemas, writers) |
+| `common/` | Shared infrastructure (consumer, producer, retry decorators, storage, writers) |
+| `xact/` | Transaction domain (workers, schemas, writers, retry handler, DLQ handler) |
 | `claimx/` | Claims domain (workers, handlers, API client, schemas, writers) |
 
 **Domain-Based Architecture:**
@@ -93,16 +93,17 @@ from core.resilience import CircuitBreaker, with_retry
 from core.security import validate_download_url
 from core.logging import get_logger
 
-# Using common kafka_pipeline infrastructure
+# Using common kafka_pipeline infrastructure (generic utilities)
 from kafka_pipeline.common.consumer import BaseKafkaConsumer
 from kafka_pipeline.common.producer import BaseKafkaProducer
-from kafka_pipeline.common.retry import RetryHandler
-from kafka_pipeline.common.dlq import DLQHandler
+from kafka_pipeline.common.retry import with_retry, RetryConfig  # Generic retry decorators
 
 # Using xact domain
 from kafka_pipeline.xact.workers import DownloadWorker, EventIngesterWorker
 from kafka_pipeline.xact.schemas import DownloadTaskMessage, EventMessage
 from kafka_pipeline.xact.writers import DeltaEventsWriter
+from kafka_pipeline.xact.retry import RetryHandler  # Download task retry routing
+from kafka_pipeline.xact.dlq import DLQHandler  # DLQ message handling
 
 # Using claimx domain
 from kafka_pipeline.claimx.workers import ClaimXEnrichmentWorker

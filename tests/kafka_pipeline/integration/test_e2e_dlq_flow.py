@@ -35,8 +35,7 @@ from aiokafka import AIOKafkaProducer
 from core.download.models import DownloadOutcome
 from core.types import ErrorCategory
 from kafka_pipeline.config import KafkaConfig
-from kafka_pipeline.common.dlq.cli import DLQCLIManager
-from kafka_pipeline.common.dlq.handler import DLQHandler
+from kafka_pipeline.xact.dlq import DLQCLIManager, DLQHandler
 from kafka_pipeline.xact.schemas.results import FailedDownloadMessage
 from kafka_pipeline.xact.schemas.tasks import DownloadTaskMessage
 

@@ -14,9 +14,9 @@ from datetime import datetime, timezone
 import pytest
 
 from kafka_pipeline.config import KafkaConfig
-from kafka_pipeline.common.dlq.handler import DLQHandler
+from kafka_pipeline.xact.dlq import DLQHandler
 from kafka_pipeline.common.producer import BaseKafkaProducer
-from kafka_pipeline.common.retry.handler import RetryHandler
+from kafka_pipeline.xact.retry import RetryHandler
 from kafka_pipeline.xact.schemas.results import FailedDownloadMessage
 from kafka_pipeline.xact.schemas.tasks import DownloadTaskMessage
 from core.types import ErrorCategory
