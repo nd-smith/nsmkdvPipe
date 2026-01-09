@@ -35,12 +35,12 @@ class TestClassifyApiError:
     """Test error classification logic."""
 
     def test_classify_401_unauthorized(self):
-        """Test 401 returns AUTH error, retryable with credential refresh."""
+        """Test 401 returns AUTH error, not retryable (static credentials)."""
         error = classify_api_error(401, "https://api.test/project/123")
         assert error.status_code == 401
         assert error.category == ErrorCategory.AUTH
-        assert error.is_retryable is True  # Now retryable with credential refresh
-        assert error.should_refresh_auth is True  # Should trigger credential refresh
+        assert error.is_retryable is False  # Static credentials - not retryable without changes
+        assert error.should_refresh_auth is False  # No credential refresh for static tokens
         assert "Unauthorized" in str(error)
 
     def test_classify_403_forbidden(self):
@@ -120,7 +120,7 @@ def api_client(mock_circuit_breaker):
     ):
         client = ClaimXApiClient(
             base_url="https://api.claimx.test/service/cxedirest",
-            auth_token="test-token-123",
+            token="test-token-123",
             timeout_seconds=30,
             max_concurrent=20,
             sender_username="test@example.com",
@@ -134,7 +134,8 @@ class TestClaimXApiClientInit:
     def test_init_sets_config(self, api_client):
         """Test initialization sets configuration properly."""
         assert api_client.base_url == "https://api.claimx.test/service/cxedirest"
-        assert api_client.auth_token == "test-token-123"
+        # Note: token is stored in _auth_header as "Basic <token>", not as raw token
+        assert api_client._auth_header == "Basic test-token-123"
         assert api_client.timeout_seconds == 30
         assert api_client.max_concurrent == 20
         assert api_client.sender_username == "test@example.com"
@@ -147,7 +148,7 @@ class TestClaimXApiClientInit:
         ):
             client = ClaimXApiClient(
                 base_url="https://api.claimx.test/service/cxedirest/",
-                auth_token="token",
+                token="token",
             )
             assert client.base_url == "https://api.claimx.test/service/cxedirest"
 
@@ -189,14 +190,17 @@ class TestClaimXApiClientSessionManagement:
 
     @pytest.mark.asyncio
     async def test_ensure_session_sets_headers(self, api_client):
-        """Test _ensure_session configures auth headers."""
+        """Test _ensure_session configures session headers (auth per-request)."""
         await api_client._ensure_session()
 
         assert api_client._session is not None
         headers = api_client._session.headers
-        assert headers["Authorization"] == "Basic test-token-123"
+        # Note: Authorization header is now set per-request for refresh support
+        # Session only has Content-Type and Accept
         assert headers["Content-Type"] == "application/json"
         assert headers["Accept"] == "application/json"
+        # Auth header is stored separately for per-request use
+        assert api_client._auth_header == "Basic test-token-123"
 
         await api_client.close()
 
