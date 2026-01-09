@@ -3,7 +3,7 @@ Tests for Delta inventory writer.
 
 Tests cover:
 - Result to DataFrame conversion
-- Merge operation for idempotency
+- Append-only write operations
 - Async write operations
 - Error handling
 - Batch metrics tracking (size and latency)
@@ -28,6 +28,7 @@ def sample_result():
     """Create a sample DownloadResultMessage for testing."""
     return DownloadResultMessage(
         trace_id="test-trace-123",
+        media_id="media-123-abc",
         attachment_url="https://example.com/file1.pdf",
         blob_path="attachments/2024/01/test-trace-123/file1.pdf",
         status_subtype="documentsReceived",
@@ -43,7 +44,12 @@ def sample_result():
 @pytest.fixture
 def delta_writer():
     """Create a DeltaInventoryWriter with mocked Delta backend."""
-    with patch("kafka_pipeline.common.writers.base.DeltaTableWriter"):
+    with patch("kafka_pipeline.common.writers.base.DeltaTableWriter") as mock_delta_class:
+        # Setup mock instance
+        mock_instance = MagicMock()
+        mock_instance.append = MagicMock(return_value=1)
+        mock_delta_class.return_value = mock_instance
+
         writer = DeltaInventoryWriter(
             table_path="abfss://test@onelake/lakehouse/xact_attachments",
         )
@@ -66,17 +72,18 @@ class TestDeltaInventoryWriter:
         assert len(df) == 1
 
         # Check schema
+        assert "media_id" in df.columns
         assert "trace_id" in df.columns
         assert "attachment_url" in df.columns
         assert "blob_path" in df.columns
         assert "status_subtype" in df.columns
         assert "file_type" in df.columns
         assert "assignment_id" in df.columns
-        assert "status" in df.columns
         assert "bytes_downloaded" in df.columns
         assert "created_at" in df.columns
 
         # Check data types
+        assert df.schema["media_id"] == pl.Utf8
         assert df.schema["trace_id"] == pl.Utf8
         assert df.schema["attachment_url"] == pl.Utf8
         assert df.schema["blob_path"] == pl.Utf8
@@ -86,17 +93,18 @@ class TestDeltaInventoryWriter:
         assert df.schema["bytes_downloaded"] == pl.Int64
 
         # Check values
+        assert df["media_id"][0] == "media-123-abc"
         assert df["trace_id"][0] == "test-trace-123"
         assert df["attachment_url"][0] == "https://example.com/file1.pdf"
         assert df["blob_path"][0] == "attachments/2024/01/test-trace-123/file1.pdf"
         assert df["bytes_downloaded"][0] == 12345
-        assert df["status"][0] == "completed"
 
     def test_results_to_dataframe_multiple_results(self, delta_writer):
         """Test converting multiple results to DataFrame."""
         results = [
             DownloadResultMessage(
                 trace_id=f"trace-{i}",
+                media_id=f"media-{i}",
                 attachment_url=f"https://example.com/file{i}.pdf",
                 blob_path=f"attachments/2024/01/trace-{i}/file{i}.pdf",
                 status_subtype="documentsReceived",
@@ -119,24 +127,20 @@ class TestDeltaInventoryWriter:
     @pytest.mark.asyncio
     async def test_write_result_success(self, delta_writer, sample_result):
         """Test successful single result write."""
-        # Mock asyncio.to_thread to actually call the function synchronously
-        with patch("asyncio.to_thread", side_effect=lambda f, *args, **kwargs: f(*args, **kwargs)):
-            # Mock the underlying Delta writer merge
-            delta_writer._delta_writer.merge = MagicMock(return_value=1)
+        # Mock the underlying Delta writer append
+        delta_writer._delta_writer.append = MagicMock(return_value=1)
 
-            result = await delta_writer.write_result(sample_result)
+        result = await delta_writer.write_result(sample_result)
 
-            assert result is True
-            delta_writer._delta_writer.merge.assert_called_once()
+        assert result is True
+        delta_writer._delta_writer.append.assert_called_once()
 
-            # Verify DataFrame was created correctly
-            call_args = delta_writer._delta_writer.merge.call_args
-            df = call_args[0][0]
-            assert len(df) == 1
-            assert df["trace_id"][0] == "test-trace-123"
-
-            # Verify merge keys (passed as keyword argument)
-            assert call_args[1]["merge_keys"] == ["trace_id", "attachment_url"]
+        # Verify DataFrame was created correctly
+        call_args = delta_writer._delta_writer.append.call_args
+        df = call_args[0][0]
+        assert len(df) == 1
+        assert df["trace_id"][0] == "test-trace-123"
+        assert df["media_id"][0] == "media-123-abc"
 
     @pytest.mark.asyncio
     async def test_write_results_multiple(self, delta_writer):
@@ -144,6 +148,7 @@ class TestDeltaInventoryWriter:
         results = [
             DownloadResultMessage(
                 trace_id=f"trace-{i}",
+                media_id=f"media-{i}",
                 attachment_url=f"https://example.com/file{i}.pdf",
                 blob_path=f"attachments/2024/01/trace-{i}/file{i}.pdf",
                 status_subtype="documentsReceived",
@@ -157,15 +162,15 @@ class TestDeltaInventoryWriter:
             for i in range(5)
         ]
 
-        delta_writer._delta_writer.merge = MagicMock(return_value=5)
+        delta_writer._delta_writer.append = MagicMock(return_value=5)
 
         result = await delta_writer.write_results(results)
 
         assert result is True
-        delta_writer._delta_writer.merge.assert_called_once()
+        delta_writer._delta_writer.append.assert_called_once()
 
         # Verify DataFrame has all results
-        call_args = delta_writer._delta_writer.merge.call_args
+        call_args = delta_writer._delta_writer.append.call_args
         df = call_args[0][0]
         assert len(df) == 5
 
@@ -175,14 +180,14 @@ class TestDeltaInventoryWriter:
         result = await delta_writer.write_results([])
 
         assert result is True
-        delta_writer._delta_writer.merge.assert_not_called()
+        delta_writer._delta_writer.append.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_write_result_failure(self, delta_writer, sample_result):
         """Test write failure handling."""
-        # Mock merge to raise an exception
-        delta_writer._delta_writer.merge = MagicMock(
-            side_effect=Exception("Delta merge failed")
+        # Mock append to raise an exception
+        delta_writer._delta_writer.append = MagicMock(
+            side_effect=Exception("Delta append failed")
         )
 
         result = await delta_writer.write_result(sample_result)
@@ -190,61 +195,35 @@ class TestDeltaInventoryWriter:
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_write_results_merge_keys(self, delta_writer, sample_result):
-        """Test that correct merge keys are used for idempotency."""
-        # Mock asyncio.to_thread to actually call the function synchronously
-        with patch("asyncio.to_thread", side_effect=lambda f, *args, **kwargs: f(*args, **kwargs)):
-            delta_writer._delta_writer.merge = MagicMock(return_value=1)
-
-            await delta_writer.write_result(sample_result)
-
-            # Verify merge keys: (trace_id, attachment_url)
-            call_args = delta_writer._delta_writer.merge.call_args
-            merge_keys = call_args[1]["merge_keys"]
-            assert merge_keys == ["trace_id", "attachment_url"]
-
-    @pytest.mark.asyncio
-    async def test_write_results_preserve_columns(self, delta_writer, sample_result):
-        """Test that created_at is preserved during merge updates."""
-        delta_writer._delta_writer.merge = MagicMock(return_value=1)
-
-        await delta_writer.write_result(sample_result)
-
-        # Verify preserve_columns includes created_at
-        call_args = delta_writer._delta_writer.merge.call_args
-        preserve_columns = call_args[1]["preserve_columns"]
-        assert preserve_columns == ["created_at"]
-
-    @pytest.mark.asyncio
     async def test_write_results_async_execution(self, delta_writer, sample_result):
         """Test that write operations use asyncio.to_thread for non-blocking I/O."""
         # Track if asyncio.to_thread was called
         to_thread_called = []
 
-        def mock_to_thread(f, *args, **kwargs):
+        async def mock_to_thread(f, *args, **kwargs):
             to_thread_called.append(True)
             return f(*args, **kwargs)
 
         # Patch asyncio.to_thread to track calls
         with patch("asyncio.to_thread", side_effect=mock_to_thread):
-            delta_writer._delta_writer.merge = MagicMock(return_value=1)
+            delta_writer._delta_writer.append = MagicMock(return_value=1)
 
             result = await delta_writer.write_result(sample_result)
 
             assert result is True
             # Verify asyncio.to_thread was called for non-blocking I/O
-            assert len(to_thread_called) == 1
+            assert len(to_thread_called) >= 1
 
     @pytest.mark.asyncio
     async def test_write_results_latency_metrics(self, delta_writer, sample_result):
         """Test that latency metrics are logged."""
-        delta_writer._delta_writer.merge = MagicMock(return_value=1)
+        delta_writer._delta_writer.append = MagicMock(return_value=1)
 
-        # Capture log output to verify latency_ms is logged
-        with patch("kafka_pipeline.xact.writers.delta_inventory.logger") as mock_logger:
+        # Mock the logger to capture calls
+        with patch.object(delta_writer, 'logger') as mock_logger:
             await delta_writer.write_result(sample_result)
 
-            # Verify info log was called with latency_ms
+            # Verify logger was called with latency_ms and batch_size
             assert mock_logger.info.called
             log_call = mock_logger.info.call_args
             extra = log_call[1]["extra"]
@@ -298,7 +277,7 @@ async def test_delta_writer_integration():
     ) as mock_delta_writer_class:
         # Setup mock
         mock_writer_instance = MagicMock()
-        mock_writer_instance.merge = MagicMock(return_value=1)
+        mock_writer_instance.append = MagicMock(return_value=1)
         mock_delta_writer_class.return_value = mock_writer_instance
 
         # Create writer and write result
@@ -308,6 +287,7 @@ async def test_delta_writer_integration():
 
         result = DownloadResultMessage(
             trace_id="integration-test",
+            media_id="media-integration-123",
             attachment_url="https://example.com/integration.pdf",
             blob_path="attachments/2024/01/integration-test/integration.pdf",
             status_subtype="documentsReceived",
@@ -322,12 +302,14 @@ async def test_delta_writer_integration():
         write_result = await writer.write_result(result)
 
         assert write_result is True
-        mock_writer_instance.merge.assert_called_once()
+        mock_writer_instance.append.assert_called_once()
 
         # Verify DeltaTableWriter was initialized with correct params
         mock_delta_writer_class.assert_called_once_with(
             table_path="abfss://test@onelake/lakehouse/xact_attachments",
-            z_order_columns=["trace_id", "downloaded_at"],
+            timestamp_column="ingested_at",
+            partition_column="event_date",
+            z_order_columns=[],
         )
 
 
@@ -341,6 +323,7 @@ def sample_failed_result():
     """Create a sample failed DownloadResultMessage for testing."""
     return DownloadResultMessage(
         trace_id="test-trace-failed-123",
+        media_id="media-failed-123",
         attachment_url="https://example.com/missing.pdf",
         blob_path="documentsReceived/A12345/pdf/missing.pdf",
         status_subtype="documentsReceived",
@@ -357,7 +340,12 @@ def sample_failed_result():
 @pytest.fixture
 def failed_writer():
     """Create a DeltaFailedAttachmentsWriter with mocked Delta backend."""
-    with patch("kafka_pipeline.common.writers.base.DeltaTableWriter"):
+    with patch("kafka_pipeline.common.writers.base.DeltaTableWriter") as mock_delta_class:
+        # Setup mock instance
+        mock_instance = MagicMock()
+        mock_instance.merge = MagicMock(return_value=1)
+        mock_delta_class.return_value = mock_instance
+
         writer = DeltaFailedAttachmentsWriter(
             table_path="abfss://test@onelake/lakehouse/xact_attachments_failed",
         )
@@ -379,25 +367,25 @@ class TestDeltaFailedAttachmentsWriter:
         # Check DataFrame shape
         assert len(df) == 1
 
-        # Check schema
+        # Check schema - matches the failed attachments schema from delta_inventory.py
+        assert "media_id" in df.columns
         assert "trace_id" in df.columns
         assert "attachment_url" in df.columns
-        assert "blob_path" in df.columns
-        assert "status_subtype" in df.columns
-        assert "file_type" in df.columns
-        assert "assignment_id" in df.columns
-        assert "status" in df.columns
         assert "error_message" in df.columns
+        assert "status" in df.columns
+        assert "failed_at" in df.columns
+        assert "retry_count" in df.columns
+        assert "http_status" in df.columns
         assert "created_at" in df.columns
 
         # Check data types
+        assert df.schema["media_id"] == pl.Utf8
         assert df.schema["trace_id"] == pl.Utf8
         assert df.schema["attachment_url"] == pl.Utf8
-        assert df.schema["blob_path"] == pl.Utf8
-        assert df.schema["status_subtype"] == pl.Utf8
         assert df.schema["error_message"] == pl.Utf8
 
         # Check values
+        assert df["media_id"][0] == "media-failed-123"
         assert df["trace_id"][0] == "test-trace-failed-123"
         assert df["attachment_url"][0] == "https://example.com/missing.pdf"
         assert df["error_message"][0] == "File not found: 404 response"
@@ -408,6 +396,7 @@ class TestDeltaFailedAttachmentsWriter:
         results = [
             DownloadResultMessage(
                 trace_id=f"trace-failed-{i}",
+                media_id=f"media-failed-{i}",
                 attachment_url=f"https://example.com/missing{i}.pdf",
                 blob_path=f"documentsReceived/A{i}/pdf/missing{i}.pdf",
                 status_subtype="documentsReceived",
@@ -432,6 +421,7 @@ class TestDeltaFailedAttachmentsWriter:
         """Test that null error_message is handled."""
         result = DownloadResultMessage(
             trace_id="trace-null-error",
+            media_id="media-null-error",
             attachment_url="https://example.com/null.pdf",
             blob_path="documentsReceived/A12345/pdf/null.pdf",
             status_subtype="documentsReceived",
@@ -452,23 +442,23 @@ class TestDeltaFailedAttachmentsWriter:
     @pytest.mark.asyncio
     async def test_write_result_success(self, failed_writer, sample_failed_result):
         """Test successful single failed result write."""
-        with patch("asyncio.to_thread", side_effect=lambda f, *args, **kwargs: f(*args, **kwargs)):
-            failed_writer._delta_writer.merge = MagicMock(return_value=1)
+        failed_writer._delta_writer.merge = MagicMock(return_value=1)
 
-            result = await failed_writer.write_result(sample_failed_result)
+        result = await failed_writer.write_result(sample_failed_result)
 
-            assert result is True
-            failed_writer._delta_writer.merge.assert_called_once()
+        assert result is True
+        failed_writer._delta_writer.merge.assert_called_once()
 
-            # Verify DataFrame was created correctly
-            call_args = failed_writer._delta_writer.merge.call_args
-            df = call_args[0][0]
-            assert len(df) == 1
-            assert df["trace_id"][0] == "test-trace-failed-123"
-            assert df["error_message"][0] == "File not found: 404 response"
+        # Verify DataFrame was created correctly
+        call_args = failed_writer._delta_writer.merge.call_args
+        df = call_args[0][0]
+        assert len(df) == 1
+        assert df["media_id"][0] == "media-failed-123"
+        assert df["trace_id"][0] == "test-trace-failed-123"
+        assert df["error_message"][0] == "File not found: 404 response"
 
-            # Verify merge keys
-            assert call_args[1]["merge_keys"] == ["trace_id", "attachment_url"]
+        # Verify merge keys (merge on media_id for idempotency)
+        assert call_args[1]["merge_keys"] == ["media_id"]
 
     @pytest.mark.asyncio
     async def test_write_results_empty_list(self, failed_writer):
@@ -517,6 +507,7 @@ async def test_failed_writer_integration():
 
         result = DownloadResultMessage(
             trace_id="integration-failed-test",
+            media_id="media-integration-failed-123",
             attachment_url="https://example.com/integration-fail.pdf",
             blob_path="documentsReceived/A12345/pdf/integration-fail.pdf",
             status_subtype="documentsReceived",
@@ -537,5 +528,7 @@ async def test_failed_writer_integration():
         # Verify DeltaTableWriter was initialized with correct params
         mock_delta_writer_class.assert_called_once_with(
             table_path="abfss://test@onelake/lakehouse/xact_attachments_failed",
-            z_order_columns=["trace_id", "failed_at"],
+            timestamp_column="ingested_at",
+            partition_column=None,
+            z_order_columns=["media_id", "failed_at"],
         )

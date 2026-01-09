@@ -13,23 +13,54 @@ from unittest.mock import AsyncMock, MagicMock, patch, call
 import pytest
 from aiokafka.structs import ConsumerRecord
 
-from kafka_pipeline.config import KafkaConfig
 from kafka_pipeline.xact.schemas.results import DownloadResultMessage
 from kafka_pipeline.xact.workers.result_processor import ResultProcessor
 
 
 @pytest.fixture
 def kafka_config():
-    """Create test Kafka configuration."""
-    return KafkaConfig(
-        bootstrap_servers="localhost:9092",
-        events_topic="test.events.raw",
-        downloads_pending_topic="test.downloads.pending",
-        downloads_results_topic="test.downloads.results",
-        dlq_topic="test.downloads.dlq",
-        consumer_group_prefix="test",
-        onelake_base_path="abfss://test@test.dfs.core.windows.net/Files",
-    )
+    """Create test Kafka configuration using mock."""
+    config = MagicMock()
+    config.bootstrap_servers = "localhost:9092"
+    config.security_protocol = "PLAINTEXT"
+    config.sasl_mechanism = "PLAIN"
+    config.request_timeout_ms = 120000
+    config.metadata_max_age_ms = 300000
+    config.connections_max_idle_ms = 540000
+
+    # Configure topics
+    def get_topic(domain, topic_key):
+        topics = {
+            "events": "xact.events.raw",
+            "events_ingested": "xact.events.ingested",
+            "downloads_pending": "xact.downloads.pending",
+            "downloads_cached": "xact.downloads.cached",
+            "downloads_results": "xact.downloads.results",
+            "dlq": "xact.downloads.dlq",
+        }
+        return topics.get(topic_key, f"xact.{topic_key}")
+
+    def get_consumer_group(domain, worker_name):
+        return f"{domain}-{worker_name}"
+
+    def get_worker_config(domain, worker_name, component):
+        return {}
+
+    config.get_topic = MagicMock(side_effect=get_topic)
+    config.get_consumer_group = MagicMock(side_effect=get_consumer_group)
+    config.get_worker_config = MagicMock(side_effect=get_worker_config)
+
+    return config
+
+
+@pytest.fixture
+def mock_producer():
+    """Create mock Kafka producer."""
+    producer = AsyncMock()
+    producer.send = AsyncMock()
+    producer.start = AsyncMock()
+    producer.stop = AsyncMock()
+    return producer
 
 
 @pytest.fixture
@@ -71,6 +102,7 @@ def sample_success_result():
     """Create sample successful DownloadResultMessage."""
     return DownloadResultMessage(
         trace_id="evt-123",
+        media_id="media-123",
         attachment_url="https://storage.example.com/file.pdf",
         blob_path="claims/C-456/file.pdf",
         status_subtype="documentsReceived",
@@ -88,6 +120,7 @@ def sample_failed_transient_result():
     """Create sample failed (transient) DownloadResultMessage."""
     return DownloadResultMessage(
         trace_id="evt-456",
+        media_id="media-456",
         attachment_url="https://storage.example.com/timeout.pdf",
         blob_path="documentsReceived/C-456/pdf/timeout.pdf",
         status_subtype="documentsReceived",
@@ -106,6 +139,7 @@ def sample_failed_permanent_result():
     """Create sample failed (permanent) DownloadResultMessage."""
     return DownloadResultMessage(
         trace_id="evt-789",
+        media_id="media-789",
         attachment_url="https://storage.example.com/invalid.exe",
         blob_path="documentsReceived/C-789/exe/invalid.exe",
         status_subtype="documentsReceived",
@@ -122,7 +156,7 @@ def sample_failed_permanent_result():
 def create_consumer_record(result: DownloadResultMessage, offset: int = 0) -> ConsumerRecord:
     """Create ConsumerRecord from DownloadResultMessage."""
     return ConsumerRecord(
-        topic="test.downloads.results",
+        topic="xact.downloads.results",
         partition=0,
         offset=offset,
         timestamp=int(datetime.now(timezone.utc).timestamp() * 1000),
@@ -141,10 +175,10 @@ class TestResultProcessor:
     """Test suite for ResultProcessor."""
 
     async def test_initialization(
-        self, kafka_config, inventory_table_path, mock_inventory_writer
+        self, kafka_config, mock_producer, inventory_table_path, mock_inventory_writer
     ):
         """Test processor initialization with correct configuration."""
-        processor = ResultProcessor(kafka_config, inventory_table_path)
+        processor = ResultProcessor(kafka_config, mock_producer, inventory_table_path)
 
         assert processor.config == kafka_config
         assert processor.batch_size == 100
@@ -153,11 +187,12 @@ class TestResultProcessor:
         assert not processor.is_running
 
     async def test_initialization_custom_batch_config(
-        self, kafka_config, inventory_table_path, mock_inventory_writer
+        self, kafka_config, mock_producer, inventory_table_path, mock_inventory_writer
     ):
         """Test processor initialization with custom batch configuration."""
         processor = ResultProcessor(
             kafka_config,
+            mock_producer,
             inventory_table_path,
             batch_size=50,
             batch_timeout_seconds=10.0,
@@ -167,10 +202,10 @@ class TestResultProcessor:
         assert processor.batch_timeout_seconds == 10.0
 
     async def test_handle_successful_result(
-        self, kafka_config, inventory_table_path, mock_inventory_writer, sample_success_result
+        self, kafka_config, mock_producer, inventory_table_path, mock_inventory_writer, sample_success_result
     ):
         """Test handling successful download result."""
-        processor = ResultProcessor(kafka_config, inventory_table_path)
+        processor = ResultProcessor(kafka_config, mock_producer, inventory_table_path)
         record = create_consumer_record(sample_success_result)
 
         await processor._handle_result(record)
@@ -181,10 +216,10 @@ class TestResultProcessor:
         assert processor._batch[0].status == "completed"
 
     async def test_filter_failed_transient_result(
-        self, kafka_config, inventory_table_path, mock_inventory_writer, sample_failed_transient_result
+        self, kafka_config, mock_producer, inventory_table_path, mock_inventory_writer, sample_failed_transient_result
     ):
         """Test that failed_transient results are filtered out."""
-        processor = ResultProcessor(kafka_config, inventory_table_path)
+        processor = ResultProcessor(kafka_config, mock_producer, inventory_table_path)
         record = create_consumer_record(sample_failed_transient_result)
 
         await processor._handle_result(record)
@@ -193,10 +228,10 @@ class TestResultProcessor:
         assert len(processor._batch) == 0
 
     async def test_filter_failed_permanent_result(
-        self, kafka_config, inventory_table_path, mock_inventory_writer, sample_failed_permanent_result
+        self, kafka_config, mock_producer, inventory_table_path, mock_inventory_writer, sample_failed_permanent_result
     ):
         """Test that failed_permanent results are filtered out."""
-        processor = ResultProcessor(kafka_config, inventory_table_path)
+        processor = ResultProcessor(kafka_config, mock_producer, inventory_table_path)
         record = create_consumer_record(sample_failed_permanent_result)
 
         await processor._handle_result(record)
@@ -205,15 +240,16 @@ class TestResultProcessor:
         assert len(processor._batch) == 0
 
     async def test_batch_size_flush(
-        self, kafka_config, inventory_table_path, mock_inventory_writer, sample_success_result
+        self, kafka_config, mock_producer, inventory_table_path, mock_inventory_writer, sample_success_result
     ):
         """Test that batch flushes when size threshold reached."""
-        processor = ResultProcessor(kafka_config, inventory_table_path, batch_size=3)
+        processor = ResultProcessor(kafka_config, mock_producer, inventory_table_path, batch_size=3)
 
         # Add results up to batch size
         for i in range(3):
             result = DownloadResultMessage(
                 trace_id=f"evt-{i}",
+                media_id=f"media-{i}",
                 attachment_url=f"https://storage.example.com/file{i}.pdf",
                 blob_path=f"claims/C-{i}/file{i}.pdf",
                 status_subtype="documentsReceived",
@@ -231,15 +267,16 @@ class TestResultProcessor:
         assert len(processor._batch) == 0
 
     async def test_batch_accumulation_below_threshold(
-        self, kafka_config, inventory_table_path, mock_inventory_writer, sample_success_result
+        self, kafka_config, mock_producer, inventory_table_path, mock_inventory_writer, sample_success_result
     ):
         """Test that batch accumulates when below size threshold."""
-        processor = ResultProcessor(kafka_config, inventory_table_path, batch_size=10)
+        processor = ResultProcessor(kafka_config, mock_producer, inventory_table_path, batch_size=10)
 
         # Add 5 results (below threshold)
         for i in range(5):
             result = DownloadResultMessage(
                 trace_id=f"evt-{i}",
+                media_id=f"media-{i}",
                 attachment_url=f"https://storage.example.com/file{i}.pdf",
                 blob_path=f"claims/C-{i}/file{i}.pdf",
                 status_subtype="documentsReceived",
@@ -257,10 +294,10 @@ class TestResultProcessor:
         assert len(processor._batch) == 5
 
     async def test_periodic_flush_timeout(
-        self, kafka_config, inventory_table_path, mock_inventory_writer, sample_success_result
+        self, kafka_config, mock_producer, inventory_table_path, mock_inventory_writer, sample_success_result
     ):
         """Test that periodic flush triggers after timeout."""
-        processor = ResultProcessor(kafka_config, inventory_table_path, batch_timeout_seconds=0.5)
+        processor = ResultProcessor(kafka_config, mock_producer, inventory_table_path, batch_timeout_seconds=0.5)
 
         # Add one result to batch
         record = create_consumer_record(sample_success_result)
@@ -288,10 +325,10 @@ class TestResultProcessor:
                 pass
 
     async def test_graceful_shutdown_flushes_pending_batch(
-        self, kafka_config, inventory_table_path, mock_inventory_writer, sample_success_result
+        self, kafka_config, mock_producer, inventory_table_path, mock_inventory_writer, sample_success_result
     ):
         """Test that graceful shutdown flushes pending batch."""
-        processor = ResultProcessor(kafka_config, inventory_table_path)
+        processor = ResultProcessor(kafka_config, mock_producer, inventory_table_path)
 
         # Mock the consumer
         mock_consumer = AsyncMock()
@@ -303,6 +340,7 @@ class TestResultProcessor:
         for i in range(3):
             result = DownloadResultMessage(
                 trace_id=f"evt-{i}",
+                media_id=f"media-{i}",
                 attachment_url=f"https://storage.example.com/file{i}.pdf",
                 blob_path=f"claims/C-{i}/file{i}.pdf",
                 status_subtype="documentsReceived",
@@ -327,10 +365,10 @@ class TestResultProcessor:
         assert not processor.is_running
 
     async def test_empty_batch_no_flush(
-        self, kafka_config, inventory_table_path, mock_inventory_writer
+        self, kafka_config, mock_producer, inventory_table_path, mock_inventory_writer
     ):
         """Test that empty batch doesn't trigger flush."""
-        processor = ResultProcessor(kafka_config, inventory_table_path)
+        processor = ResultProcessor(kafka_config, mock_producer, inventory_table_path)
 
         # Call flush with empty batch
         async with processor._batch_lock:
@@ -340,14 +378,14 @@ class TestResultProcessor:
         assert len(processor._batch) == 0
 
     async def test_invalid_message_raises_exception(
-        self, kafka_config, inventory_table_path, mock_inventory_writer
+        self, kafka_config, mock_producer, inventory_table_path, mock_inventory_writer
     ):
         """Test that invalid message parsing raises exception."""
-        processor = ResultProcessor(kafka_config, inventory_table_path)
+        processor = ResultProcessor(kafka_config, mock_producer, inventory_table_path)
 
         # Create invalid consumer record
         invalid_record = ConsumerRecord(
-            topic="test.downloads.results",
+            topic="xact.downloads.results",
             partition=0,
             offset=0,
             timestamp=int(datetime.now(timezone.utc).timestamp() * 1000),
@@ -365,15 +403,16 @@ class TestResultProcessor:
             await processor._handle_result(invalid_record)
 
     async def test_thread_safe_batch_accumulation(
-        self, kafka_config, inventory_table_path, mock_inventory_writer
+        self, kafka_config, mock_producer, inventory_table_path, mock_inventory_writer
     ):
         """Test that concurrent batch accumulation is thread-safe."""
-        processor = ResultProcessor(kafka_config, inventory_table_path, batch_size=1000)
+        processor = ResultProcessor(kafka_config, mock_producer, inventory_table_path, batch_size=1000)
 
         # Create multiple results
         async def add_result(i):
             result = DownloadResultMessage(
                 trace_id=f"evt-{i}",
+                media_id=f"media-{i}",
                 attachment_url=f"https://storage.example.com/file{i}.pdf",
                 blob_path=f"claims/C-{i}/file{i}.pdf",
                 status_subtype="documentsReceived",
@@ -395,10 +434,10 @@ class TestResultProcessor:
         assert len(processor._batch) == 50
 
     async def test_flush_batch_converts_to_inventory_records(
-        self, kafka_config, inventory_table_path, mock_inventory_writer, sample_success_result
+        self, kafka_config, mock_producer, inventory_table_path, mock_inventory_writer, sample_success_result
     ):
         """Test that flush_batch converts results to inventory record format."""
-        processor = ResultProcessor(kafka_config, inventory_table_path)
+        processor = ResultProcessor(kafka_config, mock_producer, inventory_table_path)
 
         # Add result to batch
         record = create_consumer_record(sample_success_result)
@@ -415,15 +454,16 @@ class TestResultProcessor:
         assert len(processor._batch) == 0
 
     async def test_multiple_flush_cycles(
-        self, kafka_config, inventory_table_path, mock_inventory_writer
+        self, kafka_config, mock_producer, inventory_table_path, mock_inventory_writer
     ):
         """Test that processor handles multiple flush cycles correctly."""
-        processor = ResultProcessor(kafka_config, inventory_table_path, batch_size=2)
+        processor = ResultProcessor(kafka_config, mock_producer, inventory_table_path, batch_size=2)
 
         # First batch
         for i in range(2):
             result = DownloadResultMessage(
                 trace_id=f"evt-batch1-{i}",
+                media_id=f"media-batch1-{i}",
                 attachment_url=f"https://storage.example.com/file{i}.pdf",
                 blob_path=f"claims/C-{i}/file{i}.pdf",
                 status_subtype="documentsReceived",
@@ -444,6 +484,7 @@ class TestResultProcessor:
         for i in range(2):
             result = DownloadResultMessage(
                 trace_id=f"evt-batch2-{i}",
+                media_id=f"media-batch2-{i}",
                 attachment_url=f"https://storage.example.com/file{i}.pdf",
                 blob_path=f"claims/C-{i}/file{i}.pdf",
                 status_subtype="documentsReceived",
@@ -461,10 +502,10 @@ class TestResultProcessor:
         assert len(processor._batch) == 0
 
     async def test_is_running_property(
-        self, kafka_config, inventory_table_path, mock_inventory_writer
+        self, kafka_config, mock_producer, inventory_table_path, mock_inventory_writer
     ):
         """Test is_running property reflects processor state."""
-        processor = ResultProcessor(kafka_config, inventory_table_path)
+        processor = ResultProcessor(kafka_config, mock_producer, inventory_table_path)
 
         # Initially not running
         assert not processor.is_running
@@ -484,15 +525,16 @@ class TestResultProcessor:
         assert not processor.is_running
 
     async def test_delta_writer_called_on_flush(
-        self, kafka_config, inventory_table_path, mock_inventory_writer, sample_success_result
+        self, kafka_config, mock_producer, inventory_table_path, mock_inventory_writer, sample_success_result
     ):
         """Test that Delta writer is called when batch is flushed."""
-        processor = ResultProcessor(kafka_config, inventory_table_path, batch_size=2)
+        processor = ResultProcessor(kafka_config, mock_producer, inventory_table_path, batch_size=2)
 
         # Add 2 results to trigger flush
         for i in range(2):
             result = DownloadResultMessage(
                 trace_id=f"evt-{i}",
+                media_id=f"media-{i}",
                 attachment_url=f"https://storage.example.com/file{i}.pdf",
                 blob_path=f"claims/C-{i}/file{i}.pdf",
                 status_subtype="documentsReceived",
@@ -516,17 +558,18 @@ class TestResultProcessor:
         assert call_args[1].trace_id == "evt-1"
 
     async def test_delta_write_failure_logged(
-        self, kafka_config, inventory_table_path, mock_inventory_writer
+        self, kafka_config, mock_producer, inventory_table_path, mock_inventory_writer
     ):
         """Test that Delta write failures are logged but don't crash processor."""
         # Configure mock to return False (failure)
         mock_inventory_writer.write_results = AsyncMock(return_value=False)
 
-        processor = ResultProcessor(kafka_config, inventory_table_path, batch_size=1)
+        processor = ResultProcessor(kafka_config, mock_producer, inventory_table_path, batch_size=1)
 
         # Add result to trigger flush
         result = DownloadResultMessage(
             trace_id="evt-fail",
+            media_id="media-fail",
             attachment_url="https://storage.example.com/file.pdf",
             blob_path="claims/C-123/file.pdf",
             status_subtype="documentsReceived",
@@ -546,10 +589,10 @@ class TestResultProcessor:
         assert len(processor._batch) == 0
 
     async def test_duplicate_start_warning(
-        self, kafka_config, inventory_table_path, mock_inventory_writer
+        self, kafka_config, mock_producer, inventory_table_path, mock_inventory_writer
     ):
         """Test that starting already-running processor logs warning."""
-        processor = ResultProcessor(kafka_config, inventory_table_path)
+        processor = ResultProcessor(kafka_config, mock_producer, inventory_table_path)
 
         # Mock as already running
         processor._running = True
@@ -561,10 +604,10 @@ class TestResultProcessor:
         assert processor._running
 
     async def test_stop_already_stopped_processor(
-        self, kafka_config, inventory_table_path, mock_inventory_writer
+        self, kafka_config, mock_producer, inventory_table_path, mock_inventory_writer
     ):
         """Test that stopping already-stopped processor is safe."""
-        processor = ResultProcessor(kafka_config, inventory_table_path)
+        processor = ResultProcessor(kafka_config, mock_producer, inventory_table_path)
 
         # Processor not running
         assert not processor._running
@@ -576,10 +619,10 @@ class TestResultProcessor:
         assert not processor._running
 
     async def test_stop_with_error_in_consumer_stop(
-        self, kafka_config, inventory_table_path, mock_inventory_writer
+        self, kafka_config, mock_producer, inventory_table_path, mock_inventory_writer
     ):
         """Test that errors during consumer stop are propagated."""
-        processor = ResultProcessor(kafka_config, inventory_table_path)
+        processor = ResultProcessor(kafka_config, mock_producer, inventory_table_path)
 
         # Mock the consumer to raise exception on stop
         mock_consumer = AsyncMock()
@@ -596,12 +639,12 @@ class TestResultProcessor:
         assert not processor._running
 
     async def test_initialization_with_failed_table_path(
-        self, kafka_config, inventory_table_path, failed_table_path,
+        self, kafka_config, mock_producer, inventory_table_path, failed_table_path,
         mock_inventory_writer, mock_failed_writer
     ):
         """Test that failed writer is initialized when failed_table_path is provided."""
         processor = ResultProcessor(
-            kafka_config, inventory_table_path, failed_table_path=failed_table_path
+            kafka_config, mock_producer, inventory_table_path, failed_table_path=failed_table_path
         )
 
         # Both writers should be initialized
@@ -609,12 +652,12 @@ class TestResultProcessor:
         assert processor._failed_writer is not None
 
     async def test_failed_permanent_result_with_writer(
-        self, kafka_config, inventory_table_path, failed_table_path,
+        self, kafka_config, mock_producer, inventory_table_path, failed_table_path,
         mock_inventory_writer, mock_failed_writer, sample_failed_permanent_result
     ):
         """Test that failed_permanent results are added to failed batch when writer is configured."""
         processor = ResultProcessor(
-            kafka_config, inventory_table_path, failed_table_path=failed_table_path
+            kafka_config, mock_producer, inventory_table_path, failed_table_path=failed_table_path
         )
         record = create_consumer_record(sample_failed_permanent_result)
 
@@ -626,18 +669,19 @@ class TestResultProcessor:
         assert processor._failed_batch[0].trace_id == sample_failed_permanent_result.trace_id
 
     async def test_failed_batch_size_flush(
-        self, kafka_config, inventory_table_path, failed_table_path,
+        self, kafka_config, mock_producer, inventory_table_path, failed_table_path,
         mock_inventory_writer, mock_failed_writer
     ):
         """Test that failed batch flushes when size threshold reached."""
         processor = ResultProcessor(
-            kafka_config, inventory_table_path, failed_table_path=failed_table_path, batch_size=3
+            kafka_config, mock_producer, inventory_table_path, failed_table_path=failed_table_path, batch_size=3
         )
 
         # Add failed results up to batch size
         for i in range(3):
             result = DownloadResultMessage(
                 trace_id=f"evt-fail-{i}",
+                media_id=f"media-fail-{i}",
                 attachment_url=f"https://storage.example.com/invalid{i}.pdf",
                 blob_path=f"documentsReceived/C-fail-{i}/pdf/invalid{i}.pdf",
                 status_subtype="documentsReceived",
@@ -659,18 +703,19 @@ class TestResultProcessor:
         mock_failed_writer.write_results.assert_called_once()
 
     async def test_failed_writer_called_on_flush(
-        self, kafka_config, inventory_table_path, failed_table_path,
+        self, kafka_config, mock_producer, inventory_table_path, failed_table_path,
         mock_inventory_writer, mock_failed_writer
     ):
         """Test that failed writer is called when failed batch is flushed."""
         processor = ResultProcessor(
-            kafka_config, inventory_table_path, failed_table_path=failed_table_path, batch_size=2
+            kafka_config, mock_producer, inventory_table_path, failed_table_path=failed_table_path, batch_size=2
         )
 
         # Add 2 failed results to trigger flush
         for i in range(2):
             result = DownloadResultMessage(
                 trace_id=f"evt-fail-{i}",
+                media_id=f"media-fail-{i}",
                 attachment_url=f"https://storage.example.com/invalid{i}.pdf",
                 blob_path=f"documentsReceived/C-fail-{i}/pdf/invalid{i}.pdf",
                 status_subtype="documentsReceived",
@@ -695,17 +740,18 @@ class TestResultProcessor:
         assert call_args[1].trace_id == "evt-fail-1"
 
     async def test_graceful_shutdown_flushes_failed_batch(
-        self, kafka_config, inventory_table_path, failed_table_path,
+        self, kafka_config, mock_producer, inventory_table_path, failed_table_path,
         mock_inventory_writer, mock_failed_writer
     ):
         """Test that graceful shutdown flushes pending failed batch."""
         processor = ResultProcessor(
-            kafka_config, inventory_table_path, failed_table_path=failed_table_path, batch_size=100
+            kafka_config, mock_producer, inventory_table_path, failed_table_path=failed_table_path, batch_size=100
         )
 
         # Add a failed result but don't reach batch size
         result = DownloadResultMessage(
             trace_id="evt-fail-shutdown",
+            media_id="media-fail-shutdown",
             attachment_url="https://storage.example.com/invalid.pdf",
             blob_path="documentsReceived/C-shutdown/pdf/invalid.pdf",
             status_subtype="documentsReceived",
@@ -739,17 +785,18 @@ class TestResultProcessor:
         assert call_args[0].trace_id == "evt-fail-shutdown"
 
     async def test_separate_batches_for_success_and_failed(
-        self, kafka_config, inventory_table_path, failed_table_path,
+        self, kafka_config, mock_producer, inventory_table_path, failed_table_path,
         mock_inventory_writer, mock_failed_writer
     ):
         """Test that success and failed results use separate batches."""
         processor = ResultProcessor(
-            kafka_config, inventory_table_path, failed_table_path=failed_table_path, batch_size=100
+            kafka_config, mock_producer, inventory_table_path, failed_table_path=failed_table_path, batch_size=100
         )
 
         # Add success result
         success_result = DownloadResultMessage(
             trace_id="evt-success",
+            media_id="media-success",
             attachment_url="https://storage.example.com/file.pdf",
             blob_path="claims/C-123/file.pdf",
             status_subtype="documentsReceived",
@@ -765,6 +812,7 @@ class TestResultProcessor:
         # Add failed result
         failed_result = DownloadResultMessage(
             trace_id="evt-failed",
+            media_id="media-failed",
             attachment_url="https://storage.example.com/invalid.pdf",
             blob_path="documentsReceived/C-fail/pdf/invalid.pdf",
             status_subtype="documentsReceived",

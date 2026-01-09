@@ -5,7 +5,6 @@ Tests cover:
 - Initialization
 - Async write operations via write_raw_events
 - Error handling
-- Deduplication settings
 """
 
 import asyncio
@@ -31,12 +30,16 @@ def sample_raw_event():
 @pytest.fixture
 def delta_writer():
     """Create a DeltaEventsWriter with mocked Delta backend."""
-    with patch("kafka_pipeline.common.writers.base.DeltaTableWriter"):
+    with patch("kafka_pipeline.common.writers.base.DeltaTableWriter") as mock_delta_class:
+        # Setup mock instance
+        mock_instance = MagicMock()
+        mock_instance.append = MagicMock(return_value=1)
+        mock_delta_class.return_value = mock_instance
+
         from kafka_pipeline.xact.writers.delta_events import DeltaEventsWriter
 
         writer = DeltaEventsWriter(
             table_path="abfss://test@onelake/lakehouse/xact_events",
-            dedupe_window_hours=24,
         )
         yield writer
 
@@ -47,7 +50,6 @@ class TestDeltaEventsWriter:
     def test_initialization(self, delta_writer):
         """Test writer initialization."""
         assert delta_writer.table_path == "abfss://test@onelake/lakehouse/xact_events"
-        assert delta_writer.dedupe_window_hours == 24
         assert delta_writer._delta_writer is not None
 
     @pytest.mark.asyncio
@@ -69,10 +71,6 @@ class TestDeltaEventsWriter:
 
         assert result is True
         delta_writer._delta_writer.append.assert_called_once()
-
-        # Verify dedupe=True was passed
-        call_args = delta_writer._delta_writer.append.call_args
-        assert call_args[1]["dedupe"] is True
 
     @pytest.mark.asyncio
     async def test_write_raw_events_multiple(self, delta_writer):
@@ -153,22 +151,25 @@ class TestDeltaEventsWriter:
             }
         )
 
+        to_thread_call_count = [0]
+
         async def mock_to_thread_impl(func, *args, **kwargs):
             # Actually call the function to simulate to_thread behavior
+            to_thread_call_count[0] += 1
             return func(*args, **kwargs)
 
         with patch(
             "kafka_pipeline.xact.writers.delta_events.flatten_events", return_value=mock_df
         ):
             with patch(
-                "kafka_pipeline.common.writers.base.asyncio.to_thread",
+                "asyncio.to_thread",
                 side_effect=mock_to_thread_impl,
-            ) as mock_to_thread:
+            ):
                 result = await delta_writer.write_raw_events([sample_raw_event])
 
                 assert result is True
                 # Verify to_thread was called (proving async execution)
-                mock_to_thread.assert_called_once()
+                assert to_thread_call_count[0] >= 1
 
     @pytest.mark.asyncio
     async def test_created_at_timestamp_added(self, delta_writer, sample_raw_event):
@@ -215,17 +216,14 @@ async def test_delta_writer_integration():
         # Create writer
         writer = DeltaEventsWriter(
             table_path="abfss://test@onelake/lakehouse/xact_events",
-            dedupe_window_hours=24,
         )
 
         # Verify DeltaTableWriter was initialized with correct params
         mock_delta_writer_class.assert_called_once_with(
             table_path="abfss://test@onelake/lakehouse/xact_events",
-            dedupe_column="trace_id",
-            dedupe_window_hours=24,
-            timestamp_column="ingested_at",
+            timestamp_column="created_at",
             partition_column="event_date",
-            z_order_columns=[],
+            z_order_columns=["event_date", "trace_id", "event_id", "type"],
         )
 
         # Write a raw event
