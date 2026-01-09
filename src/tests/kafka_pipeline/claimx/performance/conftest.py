@@ -22,8 +22,7 @@ def perf_test_config():
     config.claimx_enrichment_pending_topic = "claimx.enrichment.pending"
     config.claimx_downloads_pending_topic = "claimx.downloads.pending"
     config.claimx_api_url = "https://api.claimx.test"
-    config.claimx_api_username = "test"
-    config.claimx_api_password = "test"
+    config.claimx_api_token = "dGVzdDp0ZXN0"  # base64 encoded test:test
     config.claimx_api_timeout_seconds = 30
     config.claimx_api_max_retries = 3
     config.claimx_api_concurrency = 10
