@@ -49,7 +49,7 @@ class BaseDeltaWriter:
         self,
         table_path: str,
         timestamp_column: str = "ingested_at",
-        partition_column: str = "event_date",
+        partition_column: Optional[str] = None,
         z_order_columns: Optional[List[str]] = None,
     ):
         """
@@ -62,7 +62,7 @@ class BaseDeltaWriter:
         Args:
             table_path: Full abfss:// path to Delta table
             timestamp_column: Column used for time-based operations (default: "ingested_at")
-            partition_column: Column used for partitioning (default: "event_date")
+            partition_column: Column used for partitioning (default: None, no partitioning)
             z_order_columns: Columns for Z-ordering optimization (optional)
         """
         self.table_path = table_path

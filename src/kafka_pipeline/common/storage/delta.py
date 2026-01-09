@@ -303,7 +303,7 @@ class DeltaTableWriter(LoggedClass):
         self,
         table_path: str,
         timestamp_column: str = "ingested_at",
-        partition_column: str = "event_date",
+        partition_column: Optional[str] = None,
         z_order_columns: Optional[List[str]] = None,
     ):
         self.table_path = table_path
