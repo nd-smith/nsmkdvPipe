@@ -139,6 +139,7 @@ class BaseDeltaWriter:
         df: pl.DataFrame,
         merge_keys: List[str],
         preserve_columns: Optional[List[str]] = None,
+        update_condition: Optional[str] = None,
     ) -> bool:
         """
         Merge DataFrame into Delta table (non-blocking upsert).
@@ -149,6 +150,9 @@ class BaseDeltaWriter:
             df: Polars DataFrame to merge
             merge_keys: Columns forming primary key for merge
             preserve_columns: Columns to preserve on update (default: ["created_at"])
+            update_condition: Optional SQL predicate for when to update matched rows.
+                              E.g., "source.modified_date > target.modified_date" to only
+                              update when the source has a newer modified_date.
 
         Returns:
             True if merge succeeded, False otherwise
@@ -162,6 +166,7 @@ class BaseDeltaWriter:
                 df,
                 merge_keys=merge_keys,
                 preserve_columns=preserve_columns,
+                update_condition=update_condition,
             )
 
             self.logger.info(
