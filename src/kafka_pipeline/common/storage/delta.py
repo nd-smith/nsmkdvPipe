@@ -510,6 +510,7 @@ class DeltaTableWriter(LoggedClass):
         df: pl.DataFrame,
         merge_keys: List[str],
         preserve_columns: Optional[List[str]] = None,
+        update_condition: Optional[str] = None,
     ) -> int:
         """
         Merge DataFrame into table (true upsert via Delta merge API).
@@ -522,6 +523,9 @@ class DeltaTableWriter(LoggedClass):
             df: Data to merge
             merge_keys: Columns forming primary key
             preserve_columns: Columns to preserve on update (default: ["created_at"])
+            update_condition: Optional SQL predicate for when to update matched rows.
+                              E.g., "source.modified_date > target.modified_date" to only
+                              update when the source has a newer modified_date.
 
         Returns:
             Number of rows affected
@@ -612,17 +616,22 @@ class DeltaTableWriter(LoggedClass):
         # Perform merge
         dt = DeltaTable(self.table_path, storage_options=opts)
 
-        result = (
-            dt.merge(
-                source=pa_df,
-                predicate=predicate,
-                source_alias="source",
-                target_alias="target",
-            )
-            .when_matched_update(update_dict)
-            .when_not_matched_insert(insert_dict)
-            .execute()
+        merge_builder = dt.merge(
+            source=pa_df,
+            predicate=predicate,
+            source_alias="source",
+            target_alias="target",
         )
+
+        # Apply update condition if provided (e.g., only update if modified_date changed)
+        if update_condition:
+            merge_builder = merge_builder.when_matched_update(
+                update_dict, predicate=update_condition
+            )
+        else:
+            merge_builder = merge_builder.when_matched_update(update_dict)
+
+        result = merge_builder.when_not_matched_insert(insert_dict).execute()
 
         # Free PyArrow table and DeltaTable reference
         del pa_df, dt

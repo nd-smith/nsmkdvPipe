@@ -294,6 +294,16 @@ class ClaimXEntityWriter:
                 # Media is append-only
                 success = await writer._async_append(df)
                 rows_affected = len(df) if success else 0
+            elif table_name == "task_templates":
+                # Task templates: merge only when modified_date has changed
+                # This prevents unnecessary updates when template data hasn't changed
+                success = await writer._async_merge(
+                    df,
+                    merge_keys=merge_keys,
+                    preserve_columns=["created_at"],
+                    update_condition="source.modified_date <> target.modified_date OR target.modified_date IS NULL",
+                )
+                rows_affected = len(df) if success else 0
             else:
                 # Other tables use merge (upsert)
                 # Preserve created_at on updates
