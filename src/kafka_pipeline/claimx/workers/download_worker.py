@@ -133,8 +133,9 @@ class ClaimXDownloadWorker:
         self.batch_size = processing_config.get("batch_size", 20)
 
         # Build list of topics to consume from (pending + retry topics)
+        retry_delays = config.get_retry_delays(domain)
         retry_topics = [
-            config.get_retry_topic(domain, i) for i in range(len(config.retry_delays))
+            config.get_retry_topic(domain, i) for i in range(len(retry_delays))
         ]
         self.topics = [config.get_topic(domain, "downloads_pending")] + retry_topics
 
