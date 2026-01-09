@@ -575,7 +575,8 @@ class TestAttachmentDownloaderErrors:
 
     @pytest.mark.asyncio
     async def test_file_write_error(self, sample_task):
-        """Test handling of file write error."""
+        """Test handling of permanent file write error (disk full)."""
+        import errno as errno_module
         content = b"PDF content"
         response = DownloadResponse(
             content=content, status_code=200, content_type="application/pdf"
@@ -588,7 +589,8 @@ class TestAttachmentDownloaderErrors:
         ) as mock_to_thread:
             mock_download.return_value = (response, None)
             mock_should_stream.return_value = False  # Force in-memory path
-            mock_to_thread.side_effect = OSError("Disk full")
+            # Use proper errno to ensure it's classified as PERMANENT
+            mock_to_thread.side_effect = OSError(errno_module.ENOSPC, "Disk full")
 
             downloader = AttachmentDownloader()
             outcome = await downloader.download(sample_task)
@@ -596,6 +598,59 @@ class TestAttachmentDownloaderErrors:
             assert outcome.success is False
             assert "File write error" in outcome.error_message
             assert outcome.error_category == ErrorCategory.PERMANENT
+
+    @pytest.mark.asyncio
+    async def test_file_write_socket_timeout_error(self, sample_task):
+        """Test that socket timeout errors during file write are classified as transient."""
+        content = b"PDF content"
+        response = DownloadResponse(
+            content=content, status_code=200, content_type="application/pdf"
+        )
+
+        with patch("core.download.downloader.download_url") as mock_download, patch(
+            "core.download.downloader.should_stream"
+        ) as mock_should_stream, patch(
+            "asyncio.to_thread"
+        ) as mock_to_thread:
+            mock_download.return_value = (response, None)
+            mock_should_stream.return_value = False  # Force in-memory path
+            # Simulate socket timeout error during file write
+            mock_to_thread.side_effect = OSError("Timeout on reading data from socket")
+
+            downloader = AttachmentDownloader()
+            outcome = await downloader.download(sample_task)
+
+            assert outcome.success is False
+            assert "File write error" in outcome.error_message
+            assert "Timeout" in outcome.error_message
+            # Socket timeout should be classified as TRANSIENT, not PERMANENT
+            assert outcome.error_category == ErrorCategory.TRANSIENT
+
+    @pytest.mark.asyncio
+    async def test_file_write_unknown_error(self, sample_task):
+        """Test that unknown file write errors are classified as transient (conservative)."""
+        content = b"PDF content"
+        response = DownloadResponse(
+            content=content, status_code=200, content_type="application/pdf"
+        )
+
+        with patch("core.download.downloader.download_url") as mock_download, patch(
+            "core.download.downloader.should_stream"
+        ) as mock_should_stream, patch(
+            "asyncio.to_thread"
+        ) as mock_to_thread:
+            mock_download.return_value = (response, None)
+            mock_should_stream.return_value = False  # Force in-memory path
+            # Simulate unknown error with no errno (empty error message case)
+            mock_to_thread.side_effect = OSError()
+
+            downloader = AttachmentDownloader()
+            outcome = await downloader.download(sample_task)
+
+            assert outcome.success is False
+            assert "File write error" in outcome.error_message
+            # Unknown errors should be classified as TRANSIENT to allow retry
+            assert outcome.error_category == ErrorCategory.TRANSIENT
 
     @pytest.mark.asyncio
     async def test_streaming_download_error(self, sample_task):

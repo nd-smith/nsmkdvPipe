@@ -297,6 +297,97 @@ async def test_download_to_file_write_error(mock_session, mock_response, tmp_pat
     assert error.error_category == ErrorCategory.PERMANENT
 
 
+@pytest.mark.asyncio
+async def test_download_to_file_socket_timeout_error(mock_session, mock_response, tmp_path):
+    """Test that socket timeout errors during streaming are classified as transient."""
+    output_path = tmp_path / "output.pdf"
+
+    chunks = [b"chunk1"]
+
+    async def mock_iter_chunked(chunk_size):
+        for chunk in chunks:
+            yield chunk
+
+    mock_response.content = Mock()
+    mock_response.content.iter_chunked = mock_iter_chunked
+
+    # Setup context manager
+    mock_ctx = AsyncMock()
+    mock_ctx.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_ctx.__aexit__ = AsyncMock(return_value=None)
+    mock_session.get = Mock(return_value=mock_ctx)
+
+    # Mock open to raise OSError with socket timeout message
+    import builtins
+    original_open = builtins.open
+
+    def mock_open_error(*args, **kwargs):
+        if args[0] == output_path and 'wb' in args:
+            raise OSError("Timeout on reading data from socket")
+        return original_open(*args, **kwargs)
+
+    with patch("builtins.open", side_effect=mock_open_error):
+        # Execute
+        result, error = await download_to_file(
+            "https://example.com/file.pdf",
+            output_path,
+            mock_session,
+        )
+
+    # Verify
+    assert result is None
+    assert error is not None
+    assert "write error" in error.error_message.lower()
+    assert "timeout" in error.error_message.lower()
+    # Socket timeout should be classified as TRANSIENT, not PERMANENT
+    assert error.error_category == ErrorCategory.TRANSIENT
+
+
+@pytest.mark.asyncio
+async def test_download_to_file_unknown_error(mock_session, mock_response, tmp_path):
+    """Test that unknown errors during streaming are classified as transient (conservative)."""
+    output_path = tmp_path / "output.pdf"
+
+    chunks = [b"chunk1"]
+
+    async def mock_iter_chunked(chunk_size):
+        for chunk in chunks:
+            yield chunk
+
+    mock_response.content = Mock()
+    mock_response.content.iter_chunked = mock_iter_chunked
+
+    # Setup context manager
+    mock_ctx = AsyncMock()
+    mock_ctx.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_ctx.__aexit__ = AsyncMock(return_value=None)
+    mock_session.get = Mock(return_value=mock_ctx)
+
+    # Mock open to raise OSError with no errno (unknown error)
+    import builtins
+    original_open = builtins.open
+
+    def mock_open_error(*args, **kwargs):
+        if args[0] == output_path and 'wb' in args:
+            raise OSError()  # No errno, no message
+        return original_open(*args, **kwargs)
+
+    with patch("builtins.open", side_effect=mock_open_error):
+        # Execute
+        result, error = await download_to_file(
+            "https://example.com/file.pdf",
+            output_path,
+            mock_session,
+        )
+
+    # Verify
+    assert result is None
+    assert error is not None
+    assert "write error" in error.error_message.lower()
+    # Unknown errors should be classified as TRANSIENT to allow retry
+    assert error.error_category == ErrorCategory.TRANSIENT
+
+
 def test_should_stream_large_file():
     """Test should_stream returns True for files > 50MB."""
     assert should_stream(100 * 1024 * 1024) is True  # 100MB
