@@ -20,6 +20,7 @@ from kafka_pipeline.claimx.handlers.utils import (
     safe_int,
     safe_str,
     safe_str_id,
+    safe_float,
     now_iso,
     elapsed_ms,
 )
@@ -74,19 +75,15 @@ class MediaTransformer:
         return {
             "media_id": safe_str_id(media.get("mediaID")),
             "project_id": safe_str_id(project_id),
-            "task_assignment_id": safe_str_id(media.get("taskAssignmentID")),
             "file_type": safe_str(media.get("mediaType")),
             "file_name": safe_str(media.get("mediaName")),
             "media_description": safe_str(media.get("mediaDescription")),
             "media_comment": safe_str(media.get("mediaComment")),
-            "latitude": safe_str(media.get("latitude")),
-            "longitude": safe_str(media.get("longitude")),
+            "latitude": safe_float(media.get("latitude")),
+            "longitude": safe_float(media.get("longitude")),
             "gps_source": safe_str(media.get("gpsSource")),
             "taken_date": safe_str(media.get("takenDate")),
             "full_download_link": download_link,
-            "expires_at": (
-                extract_expires_at_iso(download_link) if download_link else None
-            ),
             "source_event_id": source_event_id,
             "created_at": now,
             "updated_at": now,

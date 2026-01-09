@@ -19,6 +19,7 @@ from kafka_pipeline.claimx.handlers.base import (
 )
 from kafka_pipeline.claimx.handlers.utils import (
     safe_int,
+    safe_int32,
     safe_str,
     safe_str_id,
     safe_bool,
@@ -188,12 +189,13 @@ class TaskTransformer:
             "phone_country_code": safe_int(link.get("phoneCountryCode")),
             "is_primary_contact": False,
             "master_file_name": None,
-            "task_assignment_id": assignment_id,
+            "task_assignment_id": safe_int32(assignment_id),
             "video_collaboration_id": None,
             "source_event_id": source_event_id,
             "created_at": now,
-            "updated_at": now,
+            "updated_at": now_iso(),
             "created_date": today,
+            "last_enriched_at": now,
         }
 
 

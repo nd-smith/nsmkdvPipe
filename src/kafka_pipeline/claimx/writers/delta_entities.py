@@ -23,9 +23,17 @@ from kafka_pipeline.claimx.schemas.entities import EntityRowsMessage
 from kafka_pipeline.common.writers.base import BaseDeltaWriter
 
 
-# Schema definitions for contacts table to ensure proper type casting
-# This prevents null type inference when all values in a column are None
-# Note: Use pl.Utf8 for timestamp/date fields as handlers produce ISO strings
+# Schema definitions matching actual Delta table schemas exactly
+# These schemas are derived from the Fabric Delta tables to ensure type compatibility
+# Spark/Delta type mapping:
+#   StringType -> pl.Utf8
+#   BooleanType -> pl.Boolean
+#   IntegerType -> pl.Int32
+#   LongType -> pl.Int64
+#   DoubleType -> pl.Float64
+#   TimestampType -> pl.Datetime("us", "UTC")
+#   DateType -> pl.Date
+
 CONTACTS_SCHEMA = {
     "project_id": pl.Utf8,
     "contact_email": pl.Utf8,
@@ -33,119 +41,86 @@ CONTACTS_SCHEMA = {
     "first_name": pl.Utf8,
     "last_name": pl.Utf8,
     "phone_number": pl.Utf8,
-    "phone_country_code": pl.Int64,
     "is_primary_contact": pl.Boolean,
     "master_file_name": pl.Utf8,
-    "task_assignment_id": pl.Int64,
+    "task_assignment_id": pl.Int32,
     "video_collaboration_id": pl.Utf8,
     "source_event_id": pl.Utf8,
-    "created_at": pl.Utf8,
+    "created_at": pl.Datetime("us", "UTC"),
+    "last_enriched_at": pl.Datetime("us", "UTC"),
+    "created_date": pl.Date,
+    "phone_country_code": pl.Int64,
     "updated_at": pl.Utf8,
-    "created_date": pl.Utf8,
-    "last_enriched_at": pl.Utf8,
 }
 
-# Schema definitions for media table to ensure proper type casting
-# This prevents schema inference issues when latitude/longitude values are mixed None/string
-# Note: task_assignment_id is Utf8 to match Delta table schema
 MEDIA_SCHEMA = {
     "media_id": pl.Utf8,
     "project_id": pl.Utf8,
-    "task_assignment_id": pl.Utf8,
     "file_type": pl.Utf8,
     "file_name": pl.Utf8,
     "media_description": pl.Utf8,
     "media_comment": pl.Utf8,
-    "latitude": pl.Utf8,
-    "longitude": pl.Utf8,
+    "latitude": pl.Float64,
+    "longitude": pl.Float64,
     "gps_source": pl.Utf8,
     "taken_date": pl.Utf8,
     "full_download_link": pl.Utf8,
-    "expires_at": pl.Utf8,
     "source_event_id": pl.Utf8,
     "created_at": pl.Utf8,
     "updated_at": pl.Utf8,
     "last_enriched_at": pl.Utf8,
 }
 
-# Schema definitions for projects table
-# Prevents issues with primary_phone, zip_postcode, and other numeric-looking strings
 PROJECTS_SCHEMA = {
     "project_id": pl.Utf8,
     "project_number": pl.Utf8,
     "master_file_name": pl.Utf8,
     "secondary_number": pl.Utf8,
-    "created_date": pl.Utf8,
     "status": pl.Utf8,
+    "created_date": pl.Utf8,
     "date_of_loss": pl.Utf8,
     "type_of_loss": pl.Utf8,
     "cause_of_loss": pl.Utf8,
     "loss_description": pl.Utf8,
     "customer_first_name": pl.Utf8,
     "customer_last_name": pl.Utf8,
-    "custom_business_name": pl.Utf8,
-    "business_line_type": pl.Utf8,
-    "year_built": pl.Int64,
-    "square_footage": pl.Int64,
     "street1": pl.Utf8,
-    "street2": pl.Utf8,
     "city": pl.Utf8,
     "state_province": pl.Utf8,
     "zip_postcode": pl.Utf8,
-    "county": pl.Utf8,
-    "country": pl.Utf8,
     "primary_email": pl.Utf8,
     "primary_phone": pl.Utf8,
-    "primary_phone_country_code": pl.Int64,
-    "date_received": pl.Utf8,
-    "date_contacted": pl.Utf8,
-    "planned_inspection_date": pl.Utf8,
-    "date_inspected": pl.Utf8,
-    "appointment_date": pl.Utf8,
     "custom_attribute1": pl.Utf8,
     "custom_attribute2": pl.Utf8,
     "custom_attribute3": pl.Utf8,
-    "custom_external_unique_id": pl.Utf8,
-    "company_name": pl.Utf8,
+    "coverages": pl.Utf8,
+    "contents_task_sent": pl.Boolean,
+    "contents_task_at": pl.Datetime("us", "UTC"),
+    "xa_autolink_fail": pl.Boolean,
+    "xa_autolink_fail_at": pl.Datetime("us", "UTC"),
     "source_event_id": pl.Utf8,
-    "created_at": pl.Utf8,
-    "updated_at": pl.Utf8,
-    "policyholder_invited_at": pl.Utf8,
-    "policyholder_joined_at": pl.Utf8,
+    "created_at": pl.Datetime("us", "UTC"),
+    "updated_at": pl.Datetime("us", "UTC"),
+    "last_enriched_at": pl.Datetime("us", "UTC"),
 }
 
-# Schema definitions for tasks table
 TASKS_SCHEMA = {
     "assignment_id": pl.Int64,
     "task_id": pl.Int64,
-    "task_name": pl.Utf8,
-    "form_id": pl.Utf8,
     "project_id": pl.Utf8,
     "assignee_id": pl.Int64,
     "assignor_id": pl.Int64,
-    "assignor_email": pl.Utf8,
     "date_assigned": pl.Utf8,
     "date_completed": pl.Utf8,
-    "cancelled_date": pl.Utf8,
-    "cancelled_by_resource_id": pl.Int64,
     "status": pl.Utf8,
-    "pdf_project_media_id": pl.Int64,
-    "date_exported": pl.Utf8,
-    "form_response_id": pl.Utf8,
     "stp_enabled": pl.Boolean,
-    "stp_started_date": pl.Utf8,
     "mfn": pl.Utf8,
-    "xactimate_exportable": pl.Boolean,
-    "fraud_language_accepted_date": pl.Utf8,
-    "resubmit_task_assignment_id": pl.Int64,
-    "task_url": pl.Utf8,
     "source_event_id": pl.Utf8,
-    "created_at": pl.Utf8,
-    "updated_at": pl.Utf8,
-    "last_enriched_at": pl.Utf8,
+    "created_at": pl.Datetime("us", "UTC"),
+    "updated_at": pl.Datetime("us", "UTC"),
+    "last_enriched_at": pl.Datetime("us", "UTC"),
 }
 
-# Schema definitions for task_templates table
 TASK_TEMPLATES_SCHEMA = {
     "task_id": pl.Int64,
     "comp_id": pl.Int64,
@@ -169,12 +144,11 @@ TASK_TEMPLATES_SCHEMA = {
     "modified_by_id": pl.Int64,
     "modified_date": pl.Utf8,
     "source_event_id": pl.Utf8,
-    "created_at": pl.Utf8,
-    "updated_at": pl.Utf8,
-    "last_enriched_at": pl.Utf8,
+    "created_at": pl.Datetime("us", "UTC"),
+    "updated_at": pl.Datetime("us", "UTC"),
+    "last_enriched_at": pl.Datetime("us", "UTC"),
 }
 
-# Schema definitions for external_links table
 EXTERNAL_LINKS_SCHEMA = {
     "link_id": pl.Int64,
     "assignment_id": pl.Int64,
@@ -192,8 +166,6 @@ EXTERNAL_LINKS_SCHEMA = {
     "updated_at": pl.Utf8,
 }
 
-# Schema definitions for video_collab table
-# Prevents issues with mfn, claim_number, policy_number (numeric-looking strings)
 VIDEO_COLLAB_SCHEMA = {
     "video_collaboration_id": pl.Int64,
     "claim_id": pl.Int64,
@@ -217,9 +189,9 @@ VIDEO_COLLAB_SCHEMA = {
     "company_name": pl.Utf8,
     "guid": pl.Utf8,
     "source_event_id": pl.Utf8,
-    "created_at": pl.Utf8,
-    "updated_at": pl.Utf8,
-    "last_enriched_at": pl.Utf8,
+    "created_at": pl.Datetime("us", "UTC"),
+    "updated_at": pl.Datetime("us", "UTC"),
+    "last_enriched_at": pl.Datetime("us", "UTC"),
 }
 
 # Map table names to their schema definitions
