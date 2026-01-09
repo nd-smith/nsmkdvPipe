@@ -267,14 +267,14 @@ async def download_to_file(
         ), None
 
     except OSError as e:
-        # ENOENT (file/directory not found) is often transient:
-        # - Race condition with temp directory cleanup
-        # - Windows directory creation timing issues
-        # Other OSErrors (disk full, permissions) are permanent
+        # Classify OSError - be conservative: only mark as PERMANENT if we're
+        # certain it's not recoverable. Unknown errors should retry.
+        # Permanent errors: disk full, read-only filesystem, permission denied
+        permanent_errnos = (errno.ENOSPC, errno.EROFS, errno.EACCES, errno.EPERM)
+        is_permanent = e.errno in permanent_errnos
+
         error_category = (
-            ErrorCategory.TRANSIENT
-            if e.errno == errno.ENOENT
-            else ErrorCategory.PERMANENT
+            ErrorCategory.PERMANENT if is_permanent else ErrorCategory.TRANSIENT
         )
         return None, StreamDownloadError(
             status_code=None,
