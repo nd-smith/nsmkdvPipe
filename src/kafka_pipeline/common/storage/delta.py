@@ -414,8 +414,12 @@ class DeltaTableWriter(LoggedClass):
 
         type_str = str(arrow_type)
 
-        # Timestamp types
+        # Timestamp types - preserve timezone info if present
+        # Arrow timestamp format: "timestamp[us, tz=UTC]" or "timestamp[us]"
         if "timestamp" in type_str.lower():
+            # Check for timezone in the type string
+            if "tz=" in type_str.lower() or "utc" in type_str.lower():
+                return pl.Datetime("us", "UTC")
             return pl.Datetime("us")
 
         # String types
