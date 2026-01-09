@@ -358,36 +358,57 @@ class DeltaTableWriter(LoggedClass):
 
             # Build expressions in TARGET column order first
             cast_exprs = []
+            mismatches = []
             for col in target_column_order:
                 if col in source_columns:
                     target_arrow_type = target_types[col]
+                    source_dtype = df[col].dtype
                     # Convert Arrow type to Polars type and cast
                     try:
                         polars_type = self._arrow_type_to_polars(target_arrow_type)
-                        if polars_type and df[col].dtype != polars_type:
+                        if polars_type is None:
+                            # Unknown type - log warning and keep original
+                            mismatches.append(
+                                f"{col}: source={source_dtype}, target={target_arrow_type} (unmapped)"
+                            )
+                            cast_exprs.append(pl.col(col))
+                        elif source_dtype != polars_type:
+                            mismatches.append(
+                                f"{col}: {source_dtype} -> {polars_type}"
+                            )
                             cast_exprs.append(
                                 pl.col(col).cast(polars_type, strict=False).alias(col)
                             )
                         else:
                             cast_exprs.append(pl.col(col))
-                    except Exception:
+                    except Exception as e:
                         # If cast fails, keep original column
+                        mismatches.append(
+                            f"{col}: cast failed ({e})"
+                        )
                         cast_exprs.append(pl.col(col))
 
             # Add any extra source columns not in target (at the end)
             # Schema evolution will handle adding these to the table
+            extra_cols = []
             for col in df.columns:
                 if col not in target_types:
+                    extra_cols.append(col)
                     cast_exprs.append(pl.col(col))
 
             if cast_exprs:
                 df = df.select(cast_exprs)
 
+            # Log detailed info for debugging schema issues
+            log_level = logging.WARNING if mismatches else logging.DEBUG
             self._log(
-                logging.DEBUG,
+                log_level,
                 "Aligned source schema with target",
-                source_columns=len(df.columns),
+                source_columns=len(source_columns),
                 target_columns=len(target_types),
+                casts_applied=len(mismatches),
+                extra_source_cols=extra_cols if extra_cols else None,
+                type_changes=mismatches if mismatches else None,
             )
 
             return df
@@ -412,22 +433,25 @@ class DeltaTableWriter(LoggedClass):
         """
         import pyarrow as pa
 
-        type_str = str(arrow_type)
+        type_str = str(arrow_type).lower()
 
         # Timestamp types - preserve timezone info if present
         # Use PyArrow's tz attribute for proper timezone detection
-        if "timestamp" in type_str.lower():
+        if "timestamp" in type_str:
             # Check if the Arrow type has a timezone attribute
             tz = getattr(arrow_type, "tz", None)
             if tz is not None:
                 return pl.Datetime("us", "UTC")
             return pl.Datetime("us")
 
-        # String types
+        # String types - check by string representation for flexibility
+        # Handles: string, large_string, utf8, large_utf8
         if arrow_type == pa.string() or arrow_type == pa.large_string():
             return pl.Utf8
+        if "string" in type_str or "utf8" in type_str:
+            return pl.Utf8
 
-        # Integer types
+        # Integer types - exact match first, then string fallback
         if arrow_type == pa.int64():
             return pl.Int64
         if arrow_type == pa.int32():
@@ -436,24 +460,47 @@ class DeltaTableWriter(LoggedClass):
             return pl.Int16
         if arrow_type == pa.int8():
             return pl.Int8
+        # String-based fallback for integer types
+        if "int64" in type_str or type_str == "long":
+            return pl.Int64
+        if "int32" in type_str or type_str == "int":
+            return pl.Int32
 
         # Float types
         if arrow_type == pa.float64():
             return pl.Float64
         if arrow_type == pa.float32():
             return pl.Float32
+        if "float64" in type_str or "double" in type_str:
+            return pl.Float64
+        if "float32" in type_str or type_str == "float":
+            return pl.Float32
 
         # Boolean
         if arrow_type == pa.bool_():
+            return pl.Boolean
+        if "bool" in type_str:
             return pl.Boolean
 
         # Date types
         if arrow_type == pa.date32() or arrow_type == pa.date64():
             return pl.Date
+        if "date" in type_str and "timestamp" not in type_str:
+            return pl.Date
 
         # Binary
         if arrow_type == pa.binary() or arrow_type == pa.large_binary():
             return pl.Binary
+        if "binary" in type_str:
+            return pl.Binary
+
+        # Decimal types - convert to Float64 for compatibility
+        if "decimal" in type_str:
+            return pl.Float64
+
+        # Null type
+        if arrow_type == pa.null() or type_str == "null":
+            return pl.Null
 
         return None
 

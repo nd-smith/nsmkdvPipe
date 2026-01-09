@@ -19,6 +19,22 @@ import polars as pl
 from kafka_pipeline.common.writers.base import BaseDeltaWriter
 
 
+# Explicit schema for claimx_events table matching actual Delta table schema
+# This ensures type compatibility and prevents inference issues
+EVENTS_SCHEMA = {
+    "event_id": pl.Utf8,
+    "event_type": pl.Utf8,
+    "project_id": pl.Utf8,
+    "media_id": pl.Utf8,
+    "task_assignment_id": pl.Utf8,
+    "video_collaboration_id": pl.Utf8,
+    "master_file_name": pl.Utf8,
+    "ingested_at": pl.Datetime("us", "UTC"),
+    "created_at": pl.Datetime("us", "UTC"),
+    "event_date": pl.Date,
+}
+
+
 class ClaimXEventsDeltaWriter(BaseDeltaWriter):
     """
     Writer for claimx_events Delta table with async support.
@@ -100,77 +116,67 @@ class ClaimXEventsDeltaWriter(BaseDeltaWriter):
             return True
 
         try:
-            # Create DataFrame from events
-            df = pl.DataFrame(events)
-
-            # Ensure ingested_at is datetime type with UTC timezone
-            # (may be string from JSON serialization, or datetime without timezone)
-            if df.schema.get("ingested_at") == pl.Utf8:
-                df = df.with_columns(
-                    pl.col("ingested_at")
-                    .str.to_datetime(time_zone="UTC")
-                    .alias("ingested_at")
-                )
-            elif df.schema.get("ingested_at") == pl.Datetime("us"):
-                # Datetime without timezone - add UTC
-                df = df.with_columns(
-                    pl.col("ingested_at")
-                    .dt.replace_time_zone("UTC")
-                    .alias("ingested_at")
-                )
-
-            # Add event_date partition column (from ingested_at)
-            df = df.with_columns(
-                pl.col("ingested_at").dt.date().alias("event_date")
-            )
-
-            # Add created_at column (pipeline processing timestamp)
             now = datetime.now(timezone.utc)
-            df = df.with_columns(
-                pl.lit(now).alias("created_at")
-            )
 
-            # Fill null values for non-nullable timestamp columns
-            # Delta table declares ingested_at and created_at as NOT NULL
-            df = df.with_columns([
-                pl.col("ingested_at").fill_null(now),
-                pl.col("created_at").fill_null(now),
-            ])
+            # Pre-process events to ensure correct types before DataFrame creation
+            # This is more reliable than post-hoc type conversion
+            processed_events = []
+            for event in events:
+                processed = {
+                    "event_id": event.get("event_id"),
+                    "event_type": event.get("event_type"),
+                    "project_id": event.get("project_id"),
+                    "media_id": event.get("media_id"),
+                    "task_assignment_id": event.get("task_assignment_id"),
+                    "video_collaboration_id": event.get("video_collaboration_id"),
+                    "master_file_name": event.get("master_file_name"),
+                    "created_at": now,
+                }
 
-            # Filter out rows with null event_id or event_type (required by Delta schema)
-            # These are essential identifiers - rows without them are invalid
-            initial_count = len(df)
-            df = df.filter(
-                pl.col("event_id").is_not_null() & pl.col("event_type").is_not_null()
-            )
-            if len(df) < initial_count:
+                # Parse ingested_at - handle string, datetime, or None
+                ingested_at = event.get("ingested_at")
+                if ingested_at is None:
+                    processed["ingested_at"] = now
+                elif isinstance(ingested_at, str):
+                    # Parse ISO format string
+                    processed["ingested_at"] = datetime.fromisoformat(
+                        ingested_at.replace("Z", "+00:00")
+                    )
+                elif isinstance(ingested_at, datetime):
+                    # Ensure timezone-aware
+                    if ingested_at.tzinfo is None:
+                        processed["ingested_at"] = ingested_at.replace(tzinfo=timezone.utc)
+                    else:
+                        processed["ingested_at"] = ingested_at
+                else:
+                    processed["ingested_at"] = now
+
+                # Derive event_date from ingested_at
+                processed["event_date"] = processed["ingested_at"].date()
+
+                processed_events.append(processed)
+
+            # Filter out events with null event_id or event_type before creating DataFrame
+            valid_events = [
+                e for e in processed_events
+                if e.get("event_id") is not None and e.get("event_type") is not None
+            ]
+
+            if len(valid_events) < len(processed_events):
                 self.logger.warning(
                     "Dropped events with null event_id or event_type",
                     extra={
-                        "dropped_count": initial_count - len(df),
-                        "remaining_count": len(df),
+                        "dropped_count": len(processed_events) - len(valid_events),
+                        "remaining_count": len(valid_events),
                     },
                 )
 
-            if len(df) == 0:
+            if not valid_events:
                 self.logger.warning("No valid events to write after filtering nulls")
                 return True
 
-            # Select only columns that match the target schema (exclude raw_data)
-            # Order matches Delta table schema definition
-            target_columns = [
-                "event_id",
-                "event_type",
-                "project_id",
-                "media_id",
-                "task_assignment_id",
-                "video_collaboration_id",
-                "master_file_name",
-                "ingested_at",
-                "created_at",
-                "event_date",
-            ]
-            df = df.select([col for col in target_columns if col in df.columns])
+            # Create DataFrame with explicit schema for type safety
+            df = pl.DataFrame(valid_events, schema=EVENTS_SCHEMA)
 
             # Use base class async append method
             success = await self._async_append(df)
