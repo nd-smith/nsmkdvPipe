@@ -484,6 +484,14 @@ class DeltaTableWriter(LoggedClass):
         if self._table_exists(opts):
             df = self._align_schema_with_target(df, opts)
 
+        # Cast any remaining null-typed columns to string to avoid Delta Lake errors.
+        # This can happen when all values in a column are None (e.g., contacts batch
+        # with only CLAIM_REP entries where first_name/last_name are all null).
+        # Delta's schema evolution will handle type coercion during write.
+        for col in df.columns:
+            if df[col].dtype == pl.Null:
+                df = df.with_columns(pl.col(col).cast(pl.Utf8))
+
         write_deltalake(
             self.table_path,
             df.to_arrow(),
