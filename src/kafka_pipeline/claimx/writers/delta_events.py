@@ -120,6 +120,32 @@ class ClaimXEventsDeltaWriter(BaseDeltaWriter):
                 pl.lit(now).alias("created_at")
             )
 
+            # Fill null values for non-nullable timestamp columns
+            # Delta table declares ingested_at and created_at as NOT NULL
+            df = df.with_columns([
+                pl.col("ingested_at").fill_null(now),
+                pl.col("created_at").fill_null(now),
+            ])
+
+            # Filter out rows with null event_id or event_type (required by Delta schema)
+            # These are essential identifiers - rows without them are invalid
+            initial_count = len(df)
+            df = df.filter(
+                pl.col("event_id").is_not_null() & pl.col("event_type").is_not_null()
+            )
+            if len(df) < initial_count:
+                self.logger.warning(
+                    "Dropped events with null event_id or event_type",
+                    extra={
+                        "dropped_count": initial_count - len(df),
+                        "remaining_count": len(df),
+                    },
+                )
+
+            if len(df) == 0:
+                self.logger.warning("No valid events to write after filtering nulls")
+                return True
+
             # Select only columns that match the target schema (exclude raw_data)
             # Order matches Delta table schema definition
             target_columns = [
