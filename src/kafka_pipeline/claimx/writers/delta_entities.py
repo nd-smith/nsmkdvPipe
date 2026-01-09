@@ -109,8 +109,7 @@ class ClaimXEntityWriter:
 
         # Create individual writers for each entity table
         # Projects and Media are partitioned by project_id
-        # Others are not partitioned (must explicitly set partition_column=None
-        # since BaseDeltaWriter defaults to partition_column="event_date")
+        # Others use the default (no partitioning)
         self._writers: Dict[str, BaseDeltaWriter] = {
             "projects": BaseDeltaWriter(
                 table_path=projects_table_path,
@@ -118,7 +117,6 @@ class ClaimXEntityWriter:
             ),
             "contacts": BaseDeltaWriter(
                 table_path=contacts_table_path,
-                partition_column=None,
             ),
             "media": BaseDeltaWriter(
                 table_path=media_table_path,
@@ -126,19 +124,15 @@ class ClaimXEntityWriter:
             ),
             "tasks": BaseDeltaWriter(
                 table_path=tasks_table_path,
-                partition_column=None,
             ),
             "task_templates": BaseDeltaWriter(
                 table_path=task_templates_table_path,
-                partition_column=None,
             ),
             "external_links": BaseDeltaWriter(
                 table_path=external_links_table_path,
-                partition_column=None,
             ),
             "video_collab": BaseDeltaWriter(
                 table_path=video_collab_table_path,
-                partition_column=None,
             ),
         }
 
