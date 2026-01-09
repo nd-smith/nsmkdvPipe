@@ -540,21 +540,33 @@ class TestClaimXApiClientEndpoints:
 
     @pytest.mark.asyncio
     async def test_get_project_tasks(self, api_client):
-        """Test get_project_tasks normalizes response to list."""
+        """Test get_project_tasks POST request with body."""
         mock_response = AsyncMock()
         mock_response.status = 200
         mock_response.json = AsyncMock(
-            return_value={"tasks": [{"taskId": 1}]}
+            return_value={
+                "success": True,
+                "data": [{"customTaskAssignmentId": 1, "taskName": "Test Task"}],
+            }
         )
         mock_response.__aenter__ = AsyncMock(return_value=mock_response)
         mock_response.__aexit__ = AsyncMock(return_value=None)
 
-        with patch("aiohttp.ClientSession.request", return_value=mock_response):
+        with patch("aiohttp.ClientSession.request", return_value=mock_response) as mock_req:
             async with api_client:
                 result = await api_client.get_project_tasks(123)
 
+                # Check POST was made to /data
+                assert mock_req.call_args[0][0] == "POST"
+                # Check body includes reportType, projectId, and senderUsername
+                body = mock_req.call_args[1]["json"]
+                assert body["reportType"] == "CUSTOM_TASK_HIGH_LEVEL"
+                assert body["projectId"] == 123
+                assert body["senderUsername"] == "test@example.com"
+                # Check result is the data list
                 assert isinstance(result, list)
                 assert len(result) == 1
+                assert result[0]["customTaskAssignmentId"] == 1
 
     @pytest.mark.asyncio
     async def test_get_video_collaboration(self, api_client):
