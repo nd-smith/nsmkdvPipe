@@ -415,10 +415,11 @@ class DeltaTableWriter(LoggedClass):
         type_str = str(arrow_type)
 
         # Timestamp types - preserve timezone info if present
-        # Arrow timestamp format: "timestamp[us, tz=UTC]" or "timestamp[us]"
+        # Use PyArrow's tz attribute for proper timezone detection
         if "timestamp" in type_str.lower():
-            # Check for timezone in the type string
-            if "tz=" in type_str.lower() or "utc" in type_str.lower():
+            # Check if the Arrow type has a timezone attribute
+            tz = getattr(arrow_type, "tz", None)
+            if tz is not None:
                 return pl.Datetime("us", "UTC")
             return pl.Datetime("us")
 
