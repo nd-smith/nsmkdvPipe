@@ -53,7 +53,7 @@ class TaskTransformer:
     @staticmethod
     def to_task_row(
         data: Dict[str, Any],
-        source_event_id: str,
+        event_id: str,
     ) -> Dict[str, Any]:
         """Transform task assignment to row."""
         now = now_datetime()
@@ -86,7 +86,7 @@ class TaskTransformer:
                 data.get("resubmitTaskAssignmentId")
             ),
             "task_url": safe_str(data.get("url")),
-            "source_event_id": source_event_id,
+            "event_id": event_id,
             "created_at": now,
             "updated_at": now,
             "last_enriched_at": now,
@@ -95,7 +95,7 @@ class TaskTransformer:
     @staticmethod
     def to_template_row(
         template: Dict[str, Any],
-        source_event_id: str,
+        event_id: str,
     ) -> Dict[str, Any]:
         """Transform custom task template to row."""
         now = now_datetime()
@@ -130,7 +130,7 @@ class TaskTransformer:
             "modified_by": safe_str(template.get("modifiedBy")),
             "modified_by_id": safe_int(template.get("modifiedById")),
             "modified_date": parse_timestamp(template.get("modifiedDate")),
-            "source_event_id": source_event_id,
+            "event_id": event_id,
             "created_at": now,
             "updated_at": now,
             "last_enriched_at": now,
@@ -141,7 +141,7 @@ class TaskTransformer:
         link: Dict[str, Any],
         assignment_id: int,
         project_id: Any,
-        source_event_id: str,
+        event_id: str,
     ) -> Dict[str, Any]:
         """Transform external link data to row."""
         now = now_iso()
@@ -160,7 +160,7 @@ class TaskTransformer:
             "created_date": None,
             "accessed_count": 0,
             "last_accessed": None,
-            "source_event_id": source_event_id,
+            "event_id": event_id,
             "created_at": now,
             "updated_at": now,
         }
@@ -170,7 +170,7 @@ class TaskTransformer:
         link: Dict[str, Any],
         project_id: Any,
         assignment_id: int,
-        source_event_id: str,
+        event_id: str,
     ) -> Optional[Dict[str, Any]]:
         """Extract contact from external link data."""
         email = safe_str(link.get("email"))
@@ -191,7 +191,7 @@ class TaskTransformer:
             "master_file_name": None,
             "task_assignment_id": safe_int32(assignment_id),
             "video_collaboration_id": None,
-            "source_event_id": source_event_id,
+            "event_id": event_id,
             "created_at": now,
             "updated_at": now_iso(),
             "created_date": today,
@@ -243,7 +243,7 @@ class TaskHandler(EventHandler):
 
         task_row = TaskTransformer.to_task_row(
             response,
-            source_event_id=event.event_id,
+            event_id=event.event_id,
         )
         if task_row.get("assignment_id") is not None:
             rows.tasks.append(task_row)
@@ -267,7 +267,7 @@ class TaskHandler(EventHandler):
         if custom_task:
             template_row = TaskTransformer.to_template_row(
                 custom_task,
-                source_event_id=event.event_id,
+                event_id=event.event_id,
             )
             if template_row.get("task_id") is not None:
                 rows.task_templates.append(template_row)
@@ -278,7 +278,7 @@ class TaskHandler(EventHandler):
                 link_data,
                 assignment_id=assignment_id,
                 project_id=project_id,
-                source_event_id=event.event_id,
+                event_id=event.event_id,
             )
             if link_row.get("link_id") is not None:
                 rows.external_links.append(link_row)
@@ -287,7 +287,7 @@ class TaskHandler(EventHandler):
                 link_data,
                 project_id=project_id,
                 assignment_id=assignment_id,
-                source_event_id=event.event_id,
+                event_id=event.event_id,
             )
             if contact_row:
                 rows.contacts.append(contact_row)

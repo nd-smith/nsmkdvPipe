@@ -87,7 +87,7 @@ class VideoCollabHandler(EventHandler):
 
         video_row = VideoCollabTransformer.to_video_collab_row(
             collab_data,
-            source_event_id=event.event_id,
+            event_id=event.event_id,
         )
         if video_row.get("video_collaboration_id") is not None:
             rows.video_collab.append(video_row)
@@ -176,14 +176,14 @@ class VideoCollabTransformer:
     @staticmethod
     def to_video_collab_row(
         data: Dict[str, Any],
-        source_event_id: str,
+        event_id: str,
     ) -> Dict[str, Any]:
         """
         Transform API response to video collaboration row.
 
         Args:
             data: API response dict
-            source_event_id: Event ID for traceability
+            event_id: Event ID for traceability
 
         Returns:
             Video collaboration row dict
@@ -224,7 +224,7 @@ class VideoCollabTransformer:
             "company_id": safe_int(data.get("companyId")),
             "company_name": safe_str(data.get("companyName")),
             "guid": safe_str(data.get("guid")),
-            "source_event_id": source_event_id,
+            "event_id": event_id,
             "created_at": now,
             "updated_at": now,
             "last_enriched_at": now,
