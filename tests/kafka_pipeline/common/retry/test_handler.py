@@ -19,13 +19,19 @@ from kafka_pipeline.xact.schemas.tasks import DownloadTaskMessage
 
 @pytest.fixture
 def kafka_config():
-    """Create test Kafka configuration."""
+    """Create test Kafka configuration with hierarchical domain structure."""
     return KafkaConfig(
         bootstrap_servers="localhost:9092",
-        retry_delays=[300, 600, 1200, 2400],  # 5m, 10m, 20m, 40m
-        max_retries=4,
-        downloads_pending_topic="test.downloads.pending",
-        dlq_topic="test.downloads.dlq",
+        xact={
+            "topics": {
+                "events": "test.events.raw",
+                "downloads_pending": "test.downloads.pending",
+                "downloads_cached": "test.downloads.cached",
+                "dlq": "test.downloads.dlq",
+            },
+            "retry_delays": [300, 600, 1200, 2400],  # 5m, 10m, 20m, 40m
+            "consumer_group_prefix": "test",
+        },
     )
 
 
@@ -40,7 +46,7 @@ def mock_producer():
 @pytest.fixture
 def retry_handler(kafka_config, mock_producer):
     """Create RetryHandler with mocked dependencies."""
-    return RetryHandler(kafka_config, mock_producer)
+    return RetryHandler(kafka_config, mock_producer, domain="xact")
 
 
 @pytest.fixture
@@ -48,6 +54,7 @@ def download_task():
     """Create sample download task."""
     return DownloadTaskMessage(
         trace_id="evt-test-001",
+        media_id="media-test-001",
         attachment_url="https://storage.example.com/file.pdf",
         blob_path="documentsReceived/C-123/pdf/file.pdf",
         status_subtype="documentsReceived",
@@ -325,15 +332,15 @@ class TestRetryTopicGeneration:
 
     def test_retry_topic_names(self, kafka_config):
         """Test retry topic names match delay configuration."""
-        assert kafka_config.get_retry_topic(0) == "test.downloads.pending.retry.5m"
-        assert kafka_config.get_retry_topic(1) == "test.downloads.pending.retry.10m"
-        assert kafka_config.get_retry_topic(2) == "test.downloads.pending.retry.20m"
-        assert kafka_config.get_retry_topic(3) == "test.downloads.pending.retry.40m"
+        assert kafka_config.get_retry_topic("xact", 0) == "test.downloads.pending.retry.5m"
+        assert kafka_config.get_retry_topic("xact", 1) == "test.downloads.pending.retry.10m"
+        assert kafka_config.get_retry_topic("xact", 2) == "test.downloads.pending.retry.20m"
+        assert kafka_config.get_retry_topic("xact", 3) == "test.downloads.pending.retry.40m"
 
     def test_retry_topic_out_of_bounds(self, kafka_config):
         """Test requesting invalid retry topic raises error."""
         with pytest.raises(ValueError, match="exceeds max retries"):
-            kafka_config.get_retry_topic(4)
+            kafka_config.get_retry_topic("xact", 4)
 
 
 class TestEdgeCases:
@@ -362,6 +369,7 @@ class TestEdgeCases:
         """Test task with empty metadata dict."""
         task = DownloadTaskMessage(
             trace_id="evt-empty-meta",
+            media_id="media-empty-meta",
             attachment_url="https://example.com/file.pdf",
             blob_path="documentsReceived/T-001/pdf/file.pdf",
             status_subtype="documentsReceived",
@@ -431,15 +439,22 @@ class TestConfigurableRetryDelays:
         """Test handler with custom retry delay configuration."""
         custom_config = KafkaConfig(
             bootstrap_servers="localhost:9092",
-            retry_delays=[60, 300, 900],  # 1m, 5m, 15m
-            max_retries=3,
-            downloads_pending_topic="test.downloads.pending",
-            dlq_topic="test.downloads.dlq",
+            xact={
+                "topics": {
+                    "events": "test.events.raw",
+                    "downloads_pending": "test.downloads.pending",
+                    "downloads_cached": "test.downloads.cached",
+                    "dlq": "test.downloads.dlq",
+                },
+                "retry_delays": [60, 300, 900],  # 1m, 5m, 15m
+                "consumer_group_prefix": "test",
+            },
         )
-        handler = RetryHandler(custom_config, mock_producer)
+        handler = RetryHandler(custom_config, mock_producer, domain="xact")
 
         task = DownloadTaskMessage(
             trace_id="evt-custom",
+            media_id="media-custom",
             attachment_url="https://example.com/file.pdf",
             blob_path="documentsReceived/T-002/pdf/file.pdf",
             status_subtype="documentsReceived",
@@ -466,15 +481,22 @@ class TestConfigurableRetryDelays:
         """Test handler with custom max_retries configuration."""
         custom_config = KafkaConfig(
             bootstrap_servers="localhost:9092",
-            retry_delays=[300, 600],  # Only 2 retry levels
-            max_retries=2,
-            downloads_pending_topic="test.downloads.pending",
-            dlq_topic="test.downloads.dlq",
+            xact={
+                "topics": {
+                    "events": "test.events.raw",
+                    "downloads_pending": "test.downloads.pending",
+                    "downloads_cached": "test.downloads.cached",
+                    "dlq": "test.downloads.dlq",
+                },
+                "retry_delays": [300, 600],  # Only 2 retry levels (max_retries=2)
+                "consumer_group_prefix": "test",
+            },
         )
-        handler = RetryHandler(custom_config, mock_producer)
+        handler = RetryHandler(custom_config, mock_producer, domain="xact")
 
         task = DownloadTaskMessage(
             trace_id="evt-max",
+            media_id="media-max",
             attachment_url="https://example.com/file.pdf",
             blob_path="documentsReceived/T-003/pdf/file.pdf",
             status_subtype="documentsReceived",
