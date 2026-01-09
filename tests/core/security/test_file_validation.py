@@ -65,6 +65,32 @@ class TestExtractExtension:
         assert extract_extension("image.tiff") == "tiff"
         assert extract_extension("image.tif") == "tif"
 
+    def test_filename_query_parameter(self):
+        """Should extract extension from filename query parameter when path has no extension."""
+        # ClaimX file service pattern - filename is in query param, not path
+        url = "https://example.com/service/get/uuid-123?filename=document.pdf&download=true"
+        assert extract_extension(url) == "pdf"
+
+    def test_filename_query_parameter_various_params(self):
+        """Should check multiple common filename parameter names."""
+        assert extract_extension("https://example.com/get?file=test.xml") == "xml"
+        assert extract_extension("https://example.com/get?name=image.png") == "png"
+
+    def test_path_extension_takes_priority_over_query(self):
+        """Path extension should be used when present, not query parameter."""
+        url = "https://example.com/file.jpg?filename=document.pdf"
+        assert extract_extension(url) == "jpg"
+
+    def test_claimx_fileservice_url(self):
+        """Should handle real ClaimX file service URL format."""
+        url = (
+            "https://www.claimxperience.com/service/cxfileservice/get/"
+            "49ddecc8-3ca2-43eb-b51b-6a290421b0f7"
+            "?sign=abc123&systemDate=123456&expires=86400000"
+            "&filename=Property_Report.pdf&download=true"
+        )
+        assert extract_extension(url) == "pdf"
+
 
 class TestNormalizeContentType:
     """Tests for normalize_content_type() function."""
