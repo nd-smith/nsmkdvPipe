@@ -53,7 +53,9 @@ from kafka_pipeline.common.metrics import (
     update_assigned_partitions,
     update_downloads_concurrent,
     update_downloads_batch_size,
+    update_downloads_batch_size,
     message_processing_duration_seconds,
+    claim_processing_seconds,
 )
 
 logger = get_logger(__name__)
@@ -729,6 +731,9 @@ class ClaimXDownloadWorker:
             message_processing_duration_seconds.labels(
                 topic=message.topic, consumer_group=consumer_group
             ).observe(duration)
+
+            # Record business logic metrics
+            claim_processing_seconds.labels(step="download").observe(duration)
 
             # Handle outcome: cache and produce cached message
             if outcome.success:

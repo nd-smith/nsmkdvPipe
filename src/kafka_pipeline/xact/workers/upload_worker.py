@@ -37,8 +37,10 @@ from kafka_pipeline.common.metrics import (
     record_processing_error,
     update_connection_status,
     update_assigned_partitions,
+    update_assigned_partitions,
     update_consumer_lag,
     update_consumer_offset,
+    update_uploads_concurrent,
     message_processing_duration_seconds,
 )
 
@@ -475,6 +477,9 @@ class UploadWorker:
 
         logger.debug(f"Processing batch of {len(messages)} messages")
 
+        # Update concurrent uploads metric
+        update_uploads_concurrent(self.WORKER_NAME, len(messages))
+
         # Process all messages concurrently
         tasks = [
             asyncio.create_task(self._process_single_with_semaphore(msg))
@@ -482,6 +487,9 @@ class UploadWorker:
         ]
 
         results: List[UploadResult] = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Update concurrent uploads metric - all complete
+        update_uploads_concurrent(self.WORKER_NAME, 0)
 
         # Handle any exceptions
         for result in results:
@@ -620,6 +628,12 @@ class UploadWorker:
             # Track successful upload for cycle output
             self._records_succeeded += 1
             self._bytes_uploaded += cached_message.bytes_downloaded
+
+            # Record processing duration metric
+            duration = time.time() - start_time
+            message_processing_duration_seconds.labels(
+                topic=self.topic, consumer_group=consumer_group
+            ).observe(duration)
 
             return UploadResult(
                 message=message,

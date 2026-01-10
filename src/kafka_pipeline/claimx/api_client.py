@@ -24,6 +24,10 @@ from kafka_pipeline.common.resilience import (
 )
 from kafka_pipeline.common.exceptions import ErrorCategory
 from kafka_pipeline.common.logging import get_logger, logged_operation, LoggedClass
+from kafka_pipeline.common.metrics import (
+    claimx_api_requests_total,
+    claimx_api_request_duration_seconds,
+)
 
 logger = get_logger(__name__)
 
@@ -289,6 +293,7 @@ class ClaimXApiClient(LoggedClass):
         request_headers = {"Authorization": self._auth_header}
 
         async with self._semaphore:
+            start_time = asyncio.get_event_loop().time()
             try:
                 assert self._session is not None  # for mypy
                 async with self._session.request(
@@ -299,6 +304,17 @@ class ClaimXApiClient(LoggedClass):
                     headers=request_headers,
                     timeout=aiohttp.ClientTimeout(total=self.timeout_seconds),
                 ) as response:
+                    # Record duration
+                    duration = asyncio.get_event_loop().time() - start_time
+                    claimx_api_request_duration_seconds.labels(
+                        method=method, endpoint=endpoint
+                    ).observe(duration)
+
+                    status_tag = "success" if response.status == 200 else "error"
+                    claimx_api_requests_total.labels(
+                        method=method, endpoint=endpoint, status=status_tag
+                    ).inc()
+
                     if response.status != 200:
                         error = classify_api_error(response.status, url)
 
