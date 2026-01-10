@@ -12,6 +12,7 @@ from typing import Optional
 
 from aiokafka.structs import ConsumerRecord
 
+from core.errors.exceptions import DelayNotElapsedError
 from kafka_pipeline.config import KafkaConfig
 from kafka_pipeline.common.consumer import BaseKafkaConsumer
 from kafka_pipeline.common.producer import BaseKafkaProducer
@@ -190,7 +191,7 @@ class DeltaBatchRetryScheduler:
             message: ConsumerRecord from retry topic
 
         Raises:
-            RuntimeError: If delay not elapsed (prevents commit)
+            DelayNotElapsedError: If delay not elapsed (prevents commit, handled gracefully)
             Exception: If processing fails
         """
         # Parse message as FailedDeltaBatch
@@ -243,8 +244,10 @@ class DeltaBatchRetryScheduler:
                     },
                 )
                 # Raise to prevent commit - message will retry later
-                raise RuntimeError(
-                    f"Delay not elapsed, {seconds_remaining:.0f}s remaining"
+                # Using DelayNotElapsedError so consumer handles this gracefully
+                raise DelayNotElapsedError(
+                    seconds_remaining=seconds_remaining,
+                    batch_id=batch_id,
                 )
 
         # Delay elapsed - attempt Delta write

@@ -258,6 +258,37 @@ class AttachmentTokenExpiredError(DownloadError):
 
 
 # =============================================================================
+# Retry Scheduling Errors
+# =============================================================================
+
+
+class DelayNotElapsedError(PipelineError):
+    """
+    Raised when a retry message is consumed before its delay has elapsed.
+
+    This is an expected condition in retry scheduling, not a true error.
+    The message should remain uncommitted so it will be reprocessed later.
+
+    Attributes:
+        seconds_remaining: Time remaining until retry is ready
+    """
+
+    category = ErrorCategory.TRANSIENT  # Will be retried, but handled specially
+
+    def __init__(
+        self,
+        seconds_remaining: float,
+        batch_id: str = "",
+        cause: Optional[Exception] = None,
+        context: Optional[dict] = None,
+    ):
+        self.seconds_remaining = seconds_remaining
+        self.batch_id = batch_id
+        message = f"Delay not elapsed, {seconds_remaining:.0f}s remaining"
+        super().__init__(message, cause, context)
+
+
+# =============================================================================
 # Error Classification Utilities
 # =============================================================================
 

@@ -21,7 +21,7 @@ from aiokafka.structs import ConsumerRecord, TopicPartition
 
 from core.auth.kafka_oauth import create_kafka_oauth_callback
 from core.logging import get_logger, log_with_context, log_exception, KafkaLogContext
-from core.errors.exceptions import CircuitOpenError, ErrorCategory
+from core.errors.exceptions import CircuitOpenError, DelayNotElapsedError, ErrorCategory
 from core.errors.kafka_classifier import KafkaErrorClassifier
 from core.resilience.circuit_breaker import (
     CircuitBreaker,
@@ -501,6 +501,7 @@ class BaseKafkaConsumer:
         Handle message processing errors with intelligent routing.
 
         Classifies the error and determines appropriate action:
+        - DELAY_NOT_ELAPSED: Expected condition in retry scheduling (DEBUG log only)
         - TRANSIENT: Log and don't commit (message will be retried on next poll)
         - PERMANENT: Log for DLQ routing (future: send to DLQ topic)
         - AUTH: Log and don't commit (will reprocess after token refresh)
@@ -512,6 +513,20 @@ class BaseKafkaConsumer:
             error: The exception that occurred during processing
             duration: Processing duration in seconds before error occurred
         """
+        # Handle DelayNotElapsedError specially - this is expected behavior, not an error
+        # The message will be reprocessed later when the delay has elapsed
+        if isinstance(error, DelayNotElapsedError):
+            log_with_context(
+                logger,
+                logging.DEBUG,
+                "Retry delay not elapsed - message will be reprocessed later",
+                batch_id=error.batch_id,
+                seconds_remaining=error.seconds_remaining,
+                duration_ms=round(duration * 1000, 2),
+            )
+            # Don't commit offset - message will be reprocessed on next poll
+            return
+
         # Classify the error using Kafka error classifier
         classified_error = KafkaErrorClassifier.classify_consumer_error(
             error,
