@@ -247,8 +247,7 @@ class ClaimXDownloadWorker:
         # Initialize API client for URL refresh
         self.api_client = ClaimXApiClient(
             base_url=self.config.claimx_api_url or "https://api.test.claimxperience.com",
-            username=self.config.claimx_api_username or None,
-            password=self.config.claimx_api_password or None,
+            token=self.config.claimx_api_token,
             timeout_seconds=self.config.claimx_api_timeout_seconds,
             max_concurrent=self.config.claimx_api_concurrency,
         )
