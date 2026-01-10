@@ -1,0 +1,129 @@
+# =============================================================================
+# TASK TRIGGER PLUGIN CONFIGURATION
+# =============================================================================
+# Triggers actions when specific ClaimX task types (task_id) are assigned or
+# completed. Use this to integrate with external systems when important tasks
+# are processed.
+#
+# Plugin: TaskTriggerPlugin
+# Module: kafka_pipeline.plugins.task_trigger
+# Stages: ENRICHMENT_COMPLETE (ClaimX only)
+# Events: CUSTOM_TASK_ASSIGNED, CUSTOM_TASK_COMPLETED
+# =============================================================================
+
+# Plugin metadata
+name: "task_trigger"
+module: "kafka_pipeline.plugins.task_trigger"
+class: "TaskTriggerPlugin"
+enabled: true
+priority: 50  # Run early in the plugin chain
+
+# Plugin-specific configuration
+config:
+  # Include full task data in published payloads
+  include_task_data: true
+
+  # Include project data in published payloads
+  include_project_data: false
+
+  # Task trigger configuration
+  # Map of task_id (template ID) to trigger config
+  triggers:
+    # -------------------------------------------------------------------------
+    # Example: Photo Documentation Task
+    # -------------------------------------------------------------------------
+    # Uncomment and configure with your actual task_id
+    # 456:
+    #   name: "Photo Documentation Task"
+    #
+    #   # Trigger when task is assigned
+    #   on_assigned:
+    #     publish_to_topic: "claimx.task-456-assigned"
+    #     log:
+    #       level: "info"
+    #       message: "Photo documentation task assigned"
+    #
+    #   # Trigger when task is completed
+    #   on_completed:
+    #     publish_to_topic: "claimx.task-456-completed"
+    #
+    #     # Call webhook on completion
+    #     webhook:
+    #       url: "https://api.example.com/tasks/photo-complete"
+    #       method: "POST"
+    #       headers:
+    #         Authorization: "Bearer ${TASK_WEBHOOK_TOKEN}"
+    #
+    #     log:
+    #       level: "info"
+    #       message: "Photo documentation task completed - webhook triggered"
+
+    # -------------------------------------------------------------------------
+    # Example: Damage Assessment Task
+    # -------------------------------------------------------------------------
+    # 789:
+    #   name: "Damage Assessment Task"
+    #   on_completed:
+    #     publish_to_topic: "claimx.damage-assessment-complete"
+    #     log:
+    #       level: "info"
+    #       message: "Damage assessment completed"
+
+    # -------------------------------------------------------------------------
+    # Add your task triggers here
+    # -------------------------------------------------------------------------
+    # Replace the task_id with actual template IDs from your ClaimX instance
+    #
+    # Template:
+    # <task_id>:
+    #   name: "Human-readable task name"
+    #   on_assigned:  # Optional
+    #     publish_to_topic: "topic-name"
+    #     webhook: "https://..."
+    #     log: "Message"
+    #   on_completed:  # Optional
+    #     publish_to_topic: "topic-name"
+    #     webhook: "https://..."
+    #     log: "Message"
+    #   on_any:  # Optional - triggers for both assigned and completed
+    #     publish_to_topic: "topic-name"
+
+# =============================================================================
+# Configuration Notes
+# =============================================================================
+#
+# Task IDs:
+#   - Find task_id values in the claimx_task_templates Delta table
+#   - Or query the ClaimX API to get template information
+#
+# Available Actions:
+#   - publish_to_topic: Send message to Kafka topic
+#   - webhook: Call HTTP endpoint (supports POST, PUT, GET)
+#   - log: Write log message (levels: debug, info, warning, error)
+#
+# Payload Structure:
+#   Messages published to Kafka or sent to webhooks include:
+#   - trigger_name: Name from config
+#   - event_id: Unique event ID
+#   - event_type: CUSTOM_TASK_ASSIGNED or CUSTOM_TASK_COMPLETED
+#   - project_id: ClaimX project ID
+#   - task_id: Task template ID
+#   - assignment_id: Task assignment instance ID
+#   - task_name: Task name from ClaimX
+#   - task_status: Current task status
+#   - timestamp: ISO 8601 timestamp
+#   - task: Full task row data (if include_task_data: true)
+#   - project: Project row data (if include_project_data: true)
+#
+# Environment Variables:
+#   Use ${VAR_NAME} syntax in webhook headers to reference environment variables
+#   Example: Authorization: "Bearer ${WEBHOOK_TOKEN}"
+#
+# Testing:
+#   1. Set enabled: true
+#   2. Configure at least one trigger with a real task_id
+#   3. Start the enrichment worker
+#   4. Process ClaimX events that match your task types
+#   5. Check logs for plugin execution and action results
+#
+# =============================================================================
