@@ -186,6 +186,170 @@ claim_media_bytes_total = Counter(
     ["type"],  # type: image, video, document
 )
 
+# =============================================================================
+# Event Ingestion Metrics (WP1)
+# =============================================================================
+event_ingestion_total = Counter(
+    "kafka_events_ingested_total",
+    "Total events ingested",
+    ["domain", "status"],  # domain: claimx/xact, status: success/parse_error/validation_error
+)
+
+event_ingestion_duration_seconds = Histogram(
+    "kafka_event_ingestion_duration_seconds",
+    "Time to ingest and process event",
+    ["domain"],
+    buckets=(0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0),
+)
+
+event_tasks_produced_total = Counter(
+    "kafka_event_tasks_produced_total",
+    "Total downstream tasks produced from events",
+    ["domain", "task_type"],  # task_type: download_task, enrichment_task
+)
+
+# =============================================================================
+# OneLake Storage Metrics (WP2)
+# =============================================================================
+onelake_operations_total = Counter(
+    "onelake_operations_total",
+    "Total OneLake operations",
+    ["operation", "status"],  # operation: upload/download/delete, status: success/error
+)
+
+onelake_operation_duration_seconds = Histogram(
+    "onelake_operation_duration_seconds",
+    "Duration of OneLake operations",
+    ["operation"],
+    buckets=(0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0),
+)
+
+onelake_bytes_transferred_total = Counter(
+    "onelake_bytes_transferred_total",
+    "Total bytes transferred to/from OneLake",
+    ["operation"],  # upload/download
+)
+
+onelake_operation_errors_total = Counter(
+    "onelake_operation_errors_total",
+    "Total OneLake operation errors by type",
+    ["operation", "error_type"],  # error_type: timeout/auth/not_found/unknown
+)
+
+# =============================================================================
+# Retry Mechanism Metrics (WP6)
+# =============================================================================
+retry_attempts_total = Counter(
+    "kafka_retry_attempts_total",
+    "Total retry attempts by domain and error category",
+    ["domain", "error_category"],  # error_category: transient/auth/circuit_open/unknown
+)
+
+retry_exhausted_total = Counter(
+    "kafka_retry_exhausted_total",
+    "Total retries exhausted (sent to DLQ after max retries)",
+    ["domain", "error_category"],
+)
+
+dlq_messages_total = Counter(
+    "kafka_dlq_messages_total",
+    "Total messages sent to dead-letter queue",
+    ["domain", "reason"],  # reason: exhausted/permanent/error
+)
+
+retry_delay_seconds = Histogram(
+    "kafka_retry_delay_seconds",
+    "Retry delay distribution",
+    ["domain"],
+    buckets=(60, 120, 300, 600, 1200, 2400, 3600),  # 1m to 1h
+)
+
+
+def record_event_ingested(domain: str, status: str = "success") -> None:
+    """
+    Record an event ingestion.
+
+    Args:
+        domain: Domain identifier (e.g., "claimx", "xact")
+        status: Ingestion status (success, parse_error, validation_error)
+    """
+    event_ingestion_total.labels(domain=domain, status=status).inc()
+
+
+def record_event_task_produced(domain: str, task_type: str) -> None:
+    """
+    Record a downstream task produced from event.
+
+    Args:
+        domain: Domain identifier (e.g., "claimx", "xact")
+        task_type: Type of task produced (download_task, enrichment_task)
+    """
+    event_tasks_produced_total.labels(domain=domain, task_type=task_type).inc()
+
+
+def record_onelake_operation(
+    operation: str, status: str, duration: float, bytes_transferred: int = 0
+) -> None:
+    """
+    Record a OneLake operation.
+
+    Args:
+        operation: Operation type (upload, download, delete, exists)
+        status: Operation status (success, error)
+        duration: Operation duration in seconds
+        bytes_transferred: Number of bytes transferred (for upload/download)
+    """
+    onelake_operations_total.labels(operation=operation, status=status).inc()
+    onelake_operation_duration_seconds.labels(operation=operation).observe(duration)
+    if bytes_transferred > 0:
+        onelake_bytes_transferred_total.labels(operation=operation).inc(bytes_transferred)
+
+
+def record_onelake_error(operation: str, error_type: str) -> None:
+    """
+    Record a OneLake operation error.
+
+    Args:
+        operation: Operation type (upload, download, delete, exists)
+        error_type: Error category (timeout, auth, not_found, unknown)
+    """
+    onelake_operation_errors_total.labels(operation=operation, error_type=error_type).inc()
+
+
+def record_retry_attempt(domain: str, error_category: str, delay_seconds: int = 0) -> None:
+    """
+    Record a retry attempt.
+
+    Args:
+        domain: Domain identifier (e.g., "claimx", "xact")
+        error_category: Error category (transient, auth, circuit_open, unknown)
+        delay_seconds: Delay before retry in seconds
+    """
+    retry_attempts_total.labels(domain=domain, error_category=error_category).inc()
+    if delay_seconds > 0:
+        retry_delay_seconds.labels(domain=domain).observe(delay_seconds)
+
+
+def record_retry_exhausted(domain: str, error_category: str) -> None:
+    """
+    Record when retries are exhausted (sent to DLQ).
+
+    Args:
+        domain: Domain identifier (e.g., "claimx", "xact")
+        error_category: Error category that exhausted retries
+    """
+    retry_exhausted_total.labels(domain=domain, error_category=error_category).inc()
+
+
+def record_dlq_message(domain: str, reason: str) -> None:
+    """
+    Record a message sent to dead-letter queue.
+
+    Args:
+        domain: Domain identifier (e.g., "claimx", "xact")
+        reason: Reason for DLQ (exhausted, permanent, error)
+    """
+    dlq_messages_total.labels(domain=domain, reason=reason).inc()
 
 
 def record_message_produced(topic: str, message_bytes: int, success: bool = True) -> None:
@@ -398,6 +562,25 @@ __all__ = [
     "delta_writes_total",
     "delta_events_written_total",
     "delta_write_duration_seconds",
+    # Event ingestion metrics (WP1)
+    "event_ingestion_total",
+    "event_ingestion_duration_seconds",
+    "event_tasks_produced_total",
+    "record_event_ingested",
+    "record_event_task_produced",
+    # OneLake metrics (WP2)
+    "onelake_operations_total",
+    "onelake_operation_duration_seconds",
+    "onelake_bytes_transferred_total",
+    "onelake_operation_errors_total",
+    # Retry mechanism metrics (WP6)
+    "retry_attempts_total",
+    "retry_exhausted_total",
+    "dlq_messages_total",
+    "retry_delay_seconds",
+    "record_retry_attempt",
+    "record_retry_exhausted",
+    "record_dlq_message",
     # Helper functions
     "record_message_produced",
     "record_message_consumed",
@@ -412,6 +595,9 @@ __all__ = [
     "update_downloads_concurrent",
     "update_downloads_batch_size",
     "record_delta_write",
+    # OneLake helper functions
+    "record_onelake_operation",
+    "record_onelake_error",
     "claimx_api_requests_total",
     "claimx_api_request_duration_seconds",
     "claim_processing_seconds",

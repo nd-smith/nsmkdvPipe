@@ -32,6 +32,7 @@ from aiokafka.structs import ConsumerRecord
 from core.logging.setup import get_logger
 from kafka_pipeline.config import KafkaConfig
 from kafka_pipeline.common.consumer import BaseKafkaConsumer
+from kafka_pipeline.common.health import HealthCheckServer
 from kafka_pipeline.common.producer import BaseKafkaProducer
 from kafka_pipeline.common.metrics import record_delta_write
 from kafka_pipeline.xact.retry.handler import DeltaRetryHandler
@@ -140,6 +141,13 @@ class DeltaEventsWorker:
             dlq_topic=self._dlq_topic,
         )
 
+        # Health check server - use worker-specific port from config
+        health_port = processing_config.get("health_port", 8093)
+        self.health_server = HealthCheckServer(
+            port=health_port,
+            worker_name="xact-delta-events",
+        )
+
         logger.info(
             "Initialized DeltaEventsWorker",
             extra={
@@ -175,6 +183,9 @@ class DeltaEventsWorker:
         )
         self._running = True
 
+        # Start health check server first
+        await self.health_server.start()
+
         # Start cycle output background task
         self._cycle_task = asyncio.create_task(self._periodic_cycle_output())
 
@@ -189,6 +200,9 @@ class DeltaEventsWorker:
             message_handler=self._handle_event_message,
             enable_message_commit=False,
         )
+
+        # Update health check readiness
+        self.health_server.set_ready(kafka_connected=True)
 
         try:
             # Start consumer (this blocks until stopped)
@@ -225,6 +239,9 @@ class DeltaEventsWorker:
         # Stop consumer
         if self.consumer:
             await self.consumer.stop()
+
+        # Stop health check server
+        await self.health_server.stop()
 
         logger.info(
             "DeltaEventsWorker stopped successfully",

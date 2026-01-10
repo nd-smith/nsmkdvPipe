@@ -27,6 +27,7 @@ from core.logging.context import set_log_context
 from core.logging.setup import get_logger
 from kafka_pipeline.config import KafkaConfig
 from kafka_pipeline.common.consumer import BaseKafkaConsumer
+from kafka_pipeline.common.health import HealthCheckServer
 from kafka_pipeline.common.writers.base import BaseDeltaWriter
 from kafka_pipeline.common.metrics import (
     record_message_consumed,
@@ -125,6 +126,14 @@ class ClaimXResultProcessor:
 
         self._running = False
 
+        # Health check server - use worker-specific port from config
+        processing_config = config.get_worker_config(self.domain, self.worker_name, "processing")
+        health_port = processing_config.get("health_port", 8087)
+        self.health_server = HealthCheckServer(
+            port=health_port,
+            worker_name="claimx-result-processor",
+        )
+
         logger.info(
             "Initialized ClaimXResultProcessor",
             extra={
@@ -153,6 +162,9 @@ class ClaimXResultProcessor:
         logger.info("Starting ClaimXResultProcessor")
         self._running = True
 
+        # Start health check server first
+        await self.health_server.start()
+
         # Create and start consumer with message handler
         # Disable auto-commit to allow manual commit after batch write
         self.consumer = BaseKafkaConsumer(
@@ -167,6 +179,9 @@ class ClaimXResultProcessor:
         # Start periodic background tasks
         self._cycle_task = asyncio.create_task(self._periodic_cycle_output())
         self._flush_task = asyncio.create_task(self._periodic_flush())
+
+        # Update health check readiness
+        self.health_server.set_ready(kafka_connected=True)
 
         try:
             # Start consumer (this blocks until stopped)
@@ -205,6 +220,9 @@ class ClaimXResultProcessor:
         # Stop consumer
         if self.consumer:
             await self.consumer.stop()
+
+        # Stop health check server
+        await self.health_server.stop()
 
         logger.info(
             "ClaimXResultProcessor stopped successfully",

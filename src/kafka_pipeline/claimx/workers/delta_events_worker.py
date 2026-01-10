@@ -32,6 +32,7 @@ from aiokafka.structs import ConsumerRecord
 from core.logging.setup import get_logger
 from kafka_pipeline.config import KafkaConfig
 from kafka_pipeline.common.consumer import BaseKafkaConsumer
+from kafka_pipeline.common.health import HealthCheckServer
 from kafka_pipeline.common.producer import BaseKafkaProducer
 from kafka_pipeline.common.metrics import record_delta_write
 from kafka_pipeline.claimx.retry.handler import DeltaRetryHandler
@@ -125,6 +126,13 @@ class ClaimXDeltaEventsWorker:
             table_path=events_table_path,
         )
 
+        # Health check server - use worker-specific port from config
+        health_port = processing_config.get("health_port", 8085)
+        self.health_server = HealthCheckServer(
+            port=health_port,
+            worker_name="claimx-delta-events-worker",
+        )
+
         # Initialize retry handler
         # Note: We use ClaimX-specific DeltaRetryHandler if it exists, otherwise Xact one or make common?
         # Checking imports... from kafka_pipeline.claimx.retry import DeltaRetryHandler
@@ -177,6 +185,9 @@ class ClaimXDeltaEventsWorker:
         logger.info("Starting ClaimXDeltaEventsWorker")
         self._running = True
 
+        # Start health check server first
+        await self.health_server.start()
+
         # Start cycle output background task
         self._cycle_task = asyncio.create_task(self._periodic_cycle_output())
 
@@ -193,6 +204,9 @@ class ClaimXDeltaEventsWorker:
             message_handler=self._handle_event_message,
             enable_message_commit=False,
         )
+
+        # Update health check readiness
+        self.health_server.set_ready(kafka_connected=True)
 
         try:
             await self.consumer.start()
@@ -223,6 +237,9 @@ class ClaimXDeltaEventsWorker:
         # Stop consumer
         if self.consumer:
             await self.consumer.stop()
+
+        # Stop health check server
+        await self.health_server.stop()
 
         logger.info("ClaimXDeltaEventsWorker stopped successfully")
 

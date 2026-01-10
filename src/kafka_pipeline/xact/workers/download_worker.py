@@ -39,6 +39,7 @@ from core.download.models import DownloadTask, DownloadOutcome
 from core.errors.exceptions import CircuitOpenError
 from core.types import ErrorCategory
 from kafka_pipeline.config import KafkaConfig
+from kafka_pipeline.common.health import HealthCheckServer
 from kafka_pipeline.common.producer import BaseKafkaProducer
 from kafka_pipeline.common.retry.handler import RetryHandler
 from kafka_pipeline.xact.schemas.cached import CachedDownloadMessage
@@ -175,6 +176,13 @@ class DownloadWorker:
         # Create retry handler for error routing (lazy initialized in start())
         self.retry_handler: Optional[RetryHandler] = None
 
+        # Health check server - use worker-specific port from config
+        health_port = processing_config.get("health_port", 8090)
+        self.health_server = HealthCheckServer(
+            port=health_port,
+            worker_name="xact-downloader",
+        )
+
         # Cycle output tracking
         self._records_processed = 0
         self._records_succeeded = 0
@@ -221,6 +229,9 @@ class DownloadWorker:
             },
         )
 
+        # Start health check server first
+        await self.health_server.start()
+
         # Initialize concurrency control
         self._semaphore = asyncio.Semaphore(self.concurrency)
         self._shutdown_event = asyncio.Event()
@@ -249,6 +260,9 @@ class DownloadWorker:
 
         # Start cycle output background task
         self._cycle_task = asyncio.create_task(self._periodic_cycle_output())
+
+        # Update health check readiness
+        self.health_server.set_ready(kafka_connected=True)
 
         # Update connection status
         update_connection_status("consumer", connected=True)
@@ -402,6 +416,9 @@ class DownloadWorker:
 
         # Clear retry handler reference
         self.retry_handler = None
+
+        # Stop health check server
+        await self.health_server.stop()
 
         # Update metrics
         update_connection_status("consumer", connected=False)

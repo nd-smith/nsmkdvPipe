@@ -28,6 +28,7 @@ from core.logging.context import set_log_context
 from core.logging.setup import get_logger
 from kafka_pipeline.config import KafkaConfig
 from kafka_pipeline.common.consumer import BaseKafkaConsumer
+from kafka_pipeline.common.health import HealthCheckServer
 from kafka_pipeline.common.metrics import record_delta_write
 from kafka_pipeline.common.producer import BaseKafkaProducer
 from kafka_pipeline.xact.retry.handler import DeltaRetryHandler
@@ -168,6 +169,14 @@ class ResultProcessor:
         self._flush_task: Optional[asyncio.Task] = None
         self._running = False
 
+        # Health check server - use worker-specific port from config
+        processing_config = config.get_worker_config(self.domain, self.worker_name, "processing")
+        health_port = processing_config.get("health_port", 8094)
+        self.health_server = HealthCheckServer(
+            port=health_port,
+            worker_name="xact-result-processor",
+        )
+
         logger.info(
             "Initialized result processor",
             extra={
@@ -198,8 +207,14 @@ class ResultProcessor:
         logger.info("Starting result processor")
         self._running = True
 
+        # Start health check server first
+        await self.health_server.start()
+
         # Start background flush task for timeout-based flushing
         self._flush_task = asyncio.create_task(self._periodic_flush())
+
+        # Update health check readiness
+        self.health_server.set_ready(kafka_connected=True)
 
         try:
             # Start consumer (blocks until stopped)
@@ -257,6 +272,9 @@ class ResultProcessor:
 
             # Stop consumer
             await self._consumer.stop()
+
+            # Stop health check server
+            await self.health_server.stop()
 
             logger.info(
                 "Result processor stopped successfully",

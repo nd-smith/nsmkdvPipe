@@ -15,6 +15,7 @@ from core.logging.setup import get_logger
 from core.types import ErrorCategory
 from kafka_pipeline.config import KafkaConfig
 from kafka_pipeline.common.consumer import BaseKafkaConsumer
+from kafka_pipeline.common.health import HealthCheckServer
 from kafka_pipeline.common.metrics import record_delta_write
 from kafka_pipeline.common.producer import BaseKafkaProducer
 from kafka_pipeline.claimx.retry.handler import DeltaRetryHandler
@@ -99,8 +100,18 @@ class ClaimXEntityDeltaWorker(BaseKafkaConsumer):
         self._batches_written = 0
         self._records_succeeded = 0
 
+        # Health check server - use worker-specific port from config
+        health_port = processing_config.get("health_port", 8086)
+        self.health_server = HealthCheckServer(
+            port=health_port,
+            worker_name="claimx-entity-delta-worker",
+        )
+
     async def start(self) -> None:
         """Start the worker."""
+        # Start health check server first
+        await self.health_server.start()
+
         # Start producer for retries
         self.producer = BaseKafkaProducer(
             config=self.producer_config,
@@ -122,6 +133,9 @@ class ClaimXEntityDeltaWorker(BaseKafkaConsumer):
         # Start batch timer for periodic flushing
         self._reset_batch_timer()
 
+        # Update health check readiness
+        self.health_server.set_ready(kafka_connected=True)
+
         await super().start()
 
     async def stop(self) -> None:
@@ -138,6 +152,9 @@ class ClaimXEntityDeltaWorker(BaseKafkaConsumer):
 
         if self.producer:
             await self.producer.stop()
+
+        # Stop health check server
+        await self.health_server.stop()
 
     async def _handle_message(self, record: ConsumerRecord) -> None:
         """

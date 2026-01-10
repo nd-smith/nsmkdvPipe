@@ -7,22 +7,25 @@ Migrated from verisk_pipeline.storage.onelake for kafka_pipeline reorganization 
 """
 
 import logging
+import os
 import socket
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlparse
+
 import requests
-from requests.adapters import HTTPAdapter
-from azure.core.pipeline.transport import RequestsTransport
-import os
 from azure.core.credentials import AccessToken
+from azure.core.pipeline.transport import RequestsTransport
 from azure.storage.filedatalake import DataLakeServiceClient  # type: ignore
+from requests.adapters import HTTPAdapter
 
 from kafka_pipeline.common.auth import get_auth, clear_token_cache
-from kafka_pipeline.common.retry import RetryConfig, with_retry
 from kafka_pipeline.common.logging import LoggedClass, logged_operation
+from kafka_pipeline.common.metrics import record_onelake_error, record_onelake_operation
+from kafka_pipeline.common.retry import RetryConfig, with_retry
 
 # Retry config for OneLake operations
 ONELAKE_RETRY_CONFIG = RetryConfig(
@@ -37,11 +40,45 @@ CONNECTION_TIMEOUT = 300
 # Auth error markers for detection
 AUTH_ERROR_MARKERS = ("401", "unauthorized", "authentication", "token expired")
 
+# Error classification markers
+TIMEOUT_ERROR_MARKERS = ("timeout", "timed out", "timedout", "connection aborted")
+NOT_FOUND_ERROR_MARKERS = ("404", "not found", "notfound", "does not exist")
+
 
 def _is_auth_error(error: Exception) -> bool:
     """Check if exception is auth-related."""
     error_str = str(error).lower()
     return any(marker in error_str for marker in AUTH_ERROR_MARKERS)
+
+
+def _classify_error(error: Exception) -> str:
+    """
+    Classify an exception into an error category for metrics.
+
+    Args:
+        error: The exception to classify
+
+    Returns:
+        Error category: timeout, auth, not_found, or unknown
+    """
+    error_str = str(error).lower()
+    error_type = type(error).__name__.lower()
+
+    # Check for timeout errors
+    if any(marker in error_str for marker in TIMEOUT_ERROR_MARKERS):
+        return "timeout"
+    if "timeout" in error_type:
+        return "timeout"
+
+    # Check for auth errors
+    if any(marker in error_str for marker in AUTH_ERROR_MARKERS):
+        return "auth"
+
+    # Check for not found errors
+    if any(marker in error_str for marker in NOT_FOUND_ERROR_MARKERS):
+        return "not_found"
+
+    return "unknown"
 
 
 @dataclass
@@ -626,22 +663,41 @@ class OneLakeClient(LoggedClass):
 
         full_path = self._full_path(relative_path)
         directory, filename = self._split_path(full_path)
+        bytes_count = len(data)
+        start_time = time.perf_counter()
 
         try:
             dir_client = self._file_system_client.get_directory_client(directory)  # type: ignore
             file_client = dir_client.get_file_client(filename)
             file_client.upload_data(data, overwrite=overwrite)
 
+            duration = time.perf_counter() - start_time
+            record_onelake_operation(
+                operation="upload",
+                status="success",
+                duration=duration,
+                bytes_transferred=bytes_count,
+            )
+
             result_path = f"{self.base_path}/{relative_path}"
             self._log(
                 logging.DEBUG,
                 "Upload complete",
                 blob_path=relative_path,
-                bytes_written=len(data),
+                bytes_written=bytes_count,
             )
             return result_path
 
         except Exception as e:
+            duration = time.perf_counter() - start_time
+            error_type = _classify_error(e)
+            record_onelake_operation(
+                operation="upload",
+                status="error",
+                duration=duration,
+                bytes_transferred=0,
+            )
+            record_onelake_error(operation="upload", error_type=error_type)
             self._handle_auth_error(e)
             raise
 
@@ -719,6 +775,7 @@ class OneLakeClient(LoggedClass):
 
         full_path = self._full_path(relative_path)
         directory, filename = self._split_path(full_path)
+        start_time = time.perf_counter()
 
         try:
             dir_client = self._file_system_client.get_directory_client(directory)  # type: ignore
@@ -727,15 +784,33 @@ class OneLakeClient(LoggedClass):
             download = file_client.download_file()
             content = download.readall()
 
+            duration = time.perf_counter() - start_time
+            bytes_count = len(content)
+            record_onelake_operation(
+                operation="download",
+                status="success",
+                duration=duration,
+                bytes_transferred=bytes_count,
+            )
+
             self._log(
                 logging.DEBUG,
                 "Download complete",
                 blob_path=relative_path,
-                bytes_downloaded=len(content),
+                bytes_downloaded=bytes_count,
             )
             return content
 
         except Exception as e:
+            duration = time.perf_counter() - start_time
+            error_type = _classify_error(e)
+            record_onelake_operation(
+                operation="download",
+                status="error",
+                duration=duration,
+                bytes_transferred=0,
+            )
+            record_onelake_error(operation="download", error_type=error_type)
             self._handle_auth_error(e)
             raise
 
@@ -763,6 +838,10 @@ class OneLakeClient(LoggedClass):
         full_path = self._full_path(relative_path)
         directory, filename = self._split_path(full_path)
 
+        # Get file size before upload for metrics
+        file_size = os.path.getsize(local_path)
+        start_time = time.perf_counter()
+
         try:
             dir_client = self._file_system_client.get_directory_client(directory)  # type: ignore
             file_client = dir_client.get_file_client(filename)
@@ -770,9 +849,14 @@ class OneLakeClient(LoggedClass):
             with open(local_path, "rb") as f:
                 file_client.upload_data(f, overwrite=overwrite)
 
-            import os
+            duration = time.perf_counter() - start_time
+            record_onelake_operation(
+                operation="upload",
+                status="success",
+                duration=duration,
+                bytes_transferred=file_size,
+            )
 
-            file_size = os.path.getsize(local_path)
             result_path = f"{self.base_path}/{relative_path}"
             self._log(
                 logging.DEBUG,
@@ -783,6 +867,15 @@ class OneLakeClient(LoggedClass):
             return result_path
 
         except Exception as e:
+            duration = time.perf_counter() - start_time
+            error_type = _classify_error(e)
+            record_onelake_operation(
+                operation="upload",
+                status="error",
+                duration=duration,
+                bytes_transferred=0,
+            )
+            record_onelake_error(operation="upload", error_type=error_type)
             self._handle_auth_error(e)
             raise
 
@@ -801,18 +894,41 @@ class OneLakeClient(LoggedClass):
 
         full_path = self._full_path(relative_path)
         directory, filename = self._split_path(full_path)
+        start_time = time.perf_counter()
 
         try:
             dir_client = self._file_system_client.get_directory_client(directory)  # type: ignore
             file_client = dir_client.get_file_client(filename)
             file_client.get_file_properties()
+
+            duration = time.perf_counter() - start_time
+            record_onelake_operation(
+                operation="exists",
+                status="success",
+                duration=duration,
+            )
             return True
         except Exception as e:
+            duration = time.perf_counter() - start_time
             # 404 is expected for non-existent files, not an error
             error_str = str(e).lower()
             if "404" in error_str or "not found" in error_str:
+                # File not existing is a successful check, not an error
+                record_onelake_operation(
+                    operation="exists",
+                    status="success",
+                    duration=duration,
+                )
                 self._log(logging.DEBUG, "File does not exist", blob_path=relative_path)
                 return False
+            # Actual errors
+            error_type = _classify_error(e)
+            record_onelake_operation(
+                operation="exists",
+                status="error",
+                duration=duration,
+            )
+            record_onelake_error(operation="exists", error_type=error_type)
             # Auth errors should trigger refresh and retry
             self._handle_auth_error(e)
             raise
@@ -832,17 +948,40 @@ class OneLakeClient(LoggedClass):
 
         full_path = self._full_path(relative_path)
         directory, filename = self._split_path(full_path)
+        start_time = time.perf_counter()
 
         try:
             dir_client = self._file_system_client.get_directory_client(directory)  # type: ignore
             file_client = dir_client.get_file_client(filename)
             file_client.delete_file()
+
+            duration = time.perf_counter() - start_time
+            record_onelake_operation(
+                operation="delete",
+                status="success",
+                duration=duration,
+            )
             self._log(logging.DEBUG, "Deleted file", blob_path=relative_path)
             return True
         except Exception as e:
+            duration = time.perf_counter() - start_time
             error_str = str(e).lower()
             if "404" in error_str or "not found" in error_str:
+                # File not existing is a successful delete (idempotent)
+                record_onelake_operation(
+                    operation="delete",
+                    status="success",
+                    duration=duration,
+                )
                 return False
+            # Actual errors
+            error_type = _classify_error(e)
+            record_onelake_operation(
+                operation="delete",
+                status="error",
+                duration=duration,
+            )
+            record_onelake_error(operation="delete", error_type=error_type)
             self._handle_auth_error(e)
             raise
 

@@ -35,10 +35,16 @@ from core.paths.resolver import generate_blob_path
 from core.security.url_validation import validate_download_url
 from kafka_pipeline.config import KafkaConfig
 from kafka_pipeline.common.consumer import BaseKafkaConsumer
+from kafka_pipeline.common.health import HealthCheckServer
 from kafka_pipeline.common.producer import BaseKafkaProducer
 from kafka_pipeline.xact.schemas.events import EventMessage
 from kafka_pipeline.xact.schemas.tasks import DownloadTaskMessage
 from kafka_pipeline.common.security import sanitize_url
+from kafka_pipeline.common.metrics import (
+    event_ingestion_duration_seconds,
+    record_event_ingested,
+    record_event_task_produced,
+)
 
 logger = get_logger(__name__)
 
@@ -120,6 +126,14 @@ class EventIngesterWorker:
         self._dedup_cache_max_size = 100_000  # ~2MB memory for 100k entries
         self._dedup_cache_timestamps: dict[str, float] = {}  # trace_id -> timestamp
 
+        # Health check server - use worker-specific port from config
+        processing_config = config.get_worker_config(domain, "event_ingester", "processing")
+        health_port = processing_config.get("health_port", 8092)
+        self.health_server = HealthCheckServer(
+            port=health_port,
+            worker_name="xact-event-ingester",
+        )
+
         logger.info(
             "Initialized EventIngesterWorker",
             extra={
@@ -151,6 +165,9 @@ class EventIngesterWorker:
         logger.info("Starting EventIngesterWorker")
         self._running = True
 
+        # Start health check server first
+        await self.health_server.start()
+
         # Start producer first (uses producer_config for local Kafka)
         self.producer = BaseKafkaProducer(
             config=self.producer_config,
@@ -170,6 +187,9 @@ class EventIngesterWorker:
             topics=[self.consumer_config.get_topic(self.domain, "events")],
             message_handler=self._handle_event_message,
         )
+
+        # Update health check readiness
+        self.health_server.set_ready(kafka_connected=True)
 
         try:
             # Start consumer (this blocks until stopped)
@@ -203,6 +223,9 @@ class EventIngesterWorker:
         if self.producer:
             await self.producer.stop()
 
+        # Stop health check server
+        await self.health_server.stop()
+
         logger.info("EventIngesterWorker stopped successfully")
 
     async def _handle_event_message(self, record: ConsumerRecord) -> None:
@@ -219,6 +242,9 @@ class EventIngesterWorker:
         Raises:
             Exception: If message processing fails (will be handled by consumer error routing)
         """
+        # Start timing for metrics
+        start_time = time.perf_counter()
+
         # Track events received for cycle output
         self._records_processed += 1
 
@@ -237,6 +263,8 @@ class EventIngesterWorker:
                 },
                 exc_info=True,
             )
+            # Record parse error in metrics
+            record_event_ingested(domain=self.domain, status="parse_error")
             raise
 
         # Generate deterministic event_id from trace_id (UUID5)
@@ -331,6 +359,11 @@ class EventIngesterWorker:
         # Periodic cleanup of expired cache entries
         self._cleanup_dedup_cache()
 
+        # Record successful ingestion and duration
+        duration = time.perf_counter() - start_time
+        event_ingestion_duration_seconds.labels(domain=self.domain).observe(duration)
+        record_event_ingested(domain=self.domain, status="success")
+
     async def _process_attachment(
         self,
         event: EventMessage,
@@ -422,6 +455,9 @@ class EventIngesterWorker:
 
             # Track successful task creation for cycle output
             self._records_succeeded += 1
+
+            # Record task produced metric
+            record_event_task_produced(domain=self.domain, task_type="download_task")
 
             logger.info(
                 "Created download task",

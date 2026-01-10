@@ -10,6 +10,11 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from kafka_pipeline.config import KafkaConfig
+from kafka_pipeline.common.metrics import (
+    record_retry_attempt,
+    record_retry_exhausted,
+    record_dlq_message,
+)
 from kafka_pipeline.common.producer import BaseKafkaProducer
 from kafka_pipeline.xact.schemas.delta_batch import FailedDeltaBatch
 
@@ -62,6 +67,7 @@ class DeltaRetryHandler:
         retry_delays: Optional[List[int]] = None,
         retry_topic_prefix: str = "delta-events.retry",
         dlq_topic: str = "delta-events.dlq",
+        domain: str = "xact",
     ):
         """
         Initialize Delta retry handler.
@@ -73,10 +79,12 @@ class DeltaRetryHandler:
             retry_delays: List of delay seconds for each retry level
             retry_topic_prefix: Prefix for retry topic names
             dlq_topic: Topic name for dead-letter queue
+            domain: Domain identifier for metrics (default: "xact")
         """
         self.config = config
         self.producer = producer
         self.table_path = table_path
+        self.domain = domain
         self.retry_delays = retry_delays or DEFAULT_DELTA_RETRY_DELAYS
         self.max_retries = len(self.retry_delays)
         self.retry_topic_prefix = retry_topic_prefix
@@ -199,6 +207,8 @@ class DeltaRetryHandler:
                     "max_retries": self.max_retries,
                 },
             )
+            record_retry_exhausted(domain=self.domain, error_category=error_category)
+            record_dlq_message(domain=self.domain, reason="exhausted")
             await self._send_to_dlq(
                 batch=batch,
                 error_message=error_message,
@@ -246,6 +256,13 @@ class DeltaRetryHandler:
         retry_topic = self.get_retry_topic(retry_count)
         delay_seconds = self.retry_delays[retry_count]
         retry_at = datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)
+
+        # Record retry attempt metric
+        record_retry_attempt(
+            domain=self.domain,
+            error_category=error_category,
+            delay_seconds=delay_seconds,
+        )
 
         # Chunk batch if too large to avoid MessageSizeTooLargeError
         if len(batch) > self.max_events_per_message:

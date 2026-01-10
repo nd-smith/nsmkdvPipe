@@ -22,6 +22,11 @@ from typing import Optional
 
 from core.types import ErrorCategory
 from kafka_pipeline.config import KafkaConfig
+from kafka_pipeline.common.metrics import (
+    record_retry_attempt,
+    record_retry_exhausted,
+    record_dlq_message,
+)
 from kafka_pipeline.common.producer import BaseKafkaProducer
 from kafka_pipeline.xact.schemas.results import FailedDownloadMessage
 from kafka_pipeline.xact.schemas.tasks import DownloadTaskMessage
@@ -134,6 +139,7 @@ class RetryHandler:
                     "error": str(error)[:200],
                 },
             )
+            record_dlq_message(domain=self.domain, reason="permanent")
             await self._send_to_dlq(task, error, error_category)
             return
 
@@ -147,6 +153,8 @@ class RetryHandler:
                     "max_retries": self._max_retries,
                 },
             )
+            record_retry_exhausted(domain=self.domain, error_category=error_category.value)
+            record_dlq_message(domain=self.domain, reason="exhausted")
             await self._send_to_dlq(task, error, error_category)
             return
 
@@ -190,6 +198,13 @@ class RetryHandler:
         # Calculate retry timestamp
         retry_at = datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)
         updated_task.metadata["retry_at"] = retry_at.isoformat()
+
+        # Record retry attempt metric
+        record_retry_attempt(
+            domain=self.domain,
+            error_category=error_category.value,
+            delay_seconds=delay_seconds,
+        )
 
         logger.info(
             "Sending task to retry topic",

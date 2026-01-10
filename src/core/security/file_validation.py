@@ -33,6 +33,9 @@ ALLOWED_EXTENSIONS: Set[str] = {
     "tiff",
     "tif",
     "webp",
+    "mov",
+    "mp4",
+
 
 }
 
@@ -50,6 +53,8 @@ ALLOWED_CONTENT_TYPES: Set[str] = {
     "image/bmp",
     "image/tiff",
     "image/webp",
+    "video/quicktime",
+    "video/mp4",    
 }
 
 # Extension to primary MIME type mapping (for validation)
@@ -65,6 +70,8 @@ EXTENSION_TO_MIME = {
     "tiff": "image/tiff",
     "tif": "image/tiff",
     "webp": "image/webp",
+    "mov": "video/quicktime",
+    "mp4": "video/mp4",    
 }
 
 

@@ -28,6 +28,7 @@ from aiokafka.structs import ConsumerRecord
 from core.auth.kafka_oauth import create_kafka_oauth_callback
 from core.logging.setup import get_logger
 from kafka_pipeline.config import KafkaConfig
+from kafka_pipeline.common.health import HealthCheckServer
 from kafka_pipeline.common.producer import BaseKafkaProducer
 from kafka_pipeline.xact.schemas.cached import CachedDownloadMessage
 from kafka_pipeline.xact.schemas.results import DownloadResultMessage
@@ -142,6 +143,13 @@ class UploadWorker:
         # OneLake clients by domain (lazy initialized in start())
         self.onelake_clients: Dict[str, OneLakeClient] = {}
 
+        # Health check server - use worker-specific port from config
+        health_port = processing_config.get("health_port", 8091)
+        self.health_server = HealthCheckServer(
+            port=health_port,
+            worker_name="xact-uploader",
+        )
+
         # Cycle output tracking
         self._records_processed = 0
         self._records_succeeded = 0
@@ -189,6 +197,9 @@ class UploadWorker:
             },
         )
 
+        # Start health check server first
+        await self.health_server.start()
+
         # Initialize concurrency control
         self._semaphore = asyncio.Semaphore(self.concurrency)
         self._shutdown_event = asyncio.Event()
@@ -224,6 +235,9 @@ class UploadWorker:
         await self._create_consumer()
 
         self._running = True
+
+        # Update health check readiness
+        self.health_server.set_ready(kafka_connected=True)
 
         # Update connection status
         update_connection_status("consumer", connected=True)
@@ -310,6 +324,9 @@ class UploadWorker:
             except Exception as e:
                 logger.warning(f"Error closing OneLake client for '{domain}': {e}")
         self.onelake_clients.clear()
+
+        # Stop health check server
+        await self.health_server.stop()
 
         # Update metrics
         update_connection_status("consumer", connected=False)

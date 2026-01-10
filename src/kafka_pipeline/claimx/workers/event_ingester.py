@@ -30,6 +30,11 @@ from pydantic import ValidationError
 from core.logging.context import set_log_context
 from core.logging.setup import get_logger
 from kafka_pipeline.config import KafkaConfig
+from kafka_pipeline.common.metrics import (
+    event_ingestion_duration_seconds,
+    record_event_ingested,
+    record_event_task_produced,
+)
 from kafka_pipeline.common.consumer import BaseKafkaConsumer
 from kafka_pipeline.common.producer import BaseKafkaProducer
 from kafka_pipeline.claimx.monitoring import HealthCheckServer
@@ -378,6 +383,9 @@ class ClaimXEventIngesterWorker:
         Raises:
             Exception: If message processing fails (will be handled by consumer error routing)
         """
+        # Start timing for metrics
+        start_time = time.perf_counter()
+
         # Decode and parse ClaimXEventMessage
         try:
             message_data = json.loads(record.value.decode("utf-8"))
@@ -393,6 +401,8 @@ class ClaimXEventIngesterWorker:
                 },
                 exc_info=True,
             )
+            # Record parse error in metrics
+            record_event_ingested(domain=self.domain, status="parse_error")
             raise
 
         # Generate deterministic event_id from composite key (UUID5)
@@ -433,6 +443,11 @@ class ClaimXEventIngesterWorker:
         # Create enrichment task for this event
         # All events need enrichment (to fetch entity data from API)
         await self._create_enrichment_task(event)
+
+        # Record successful ingestion and duration
+        duration = time.perf_counter() - start_time
+        event_ingestion_duration_seconds.labels(domain=self.domain).observe(duration)
+        record_event_ingested(domain=self.domain, status="success")
 
     async def _create_enrichment_task(self, event: ClaimXEventMessage) -> None:
         """
@@ -478,6 +493,8 @@ class ClaimXEventIngesterWorker:
                 },
             )
             self._records_succeeded += 1
+            # Record task produced metric
+            record_event_task_produced(domain=self.domain, task_type="enrichment_task")
         except Exception as e:
             logger.error(
                 "Failed to produce ClaimX enrichment task",
