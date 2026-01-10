@@ -39,4 +39,3 @@ volumes:
 networks:
   default:
     name: kafka_pipeline_network
-    external: true
