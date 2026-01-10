@@ -1,99 +1,33 @@
 """
-Simplified logging utilities for kafka_pipeline.
+Backwards-compatibility shim for kafka_pipeline logging.
 
-Provides essential logging functions without the full verisk_pipeline infrastructure.
+This module redirects core logging utilities to their canonical location in
+core.logging while maintaining kafka_pipeline-specific utilities here.
+
+For new code, prefer importing directly from core.logging:
+    from core.logging import get_logger, log_with_context, log_exception
 """
 
 import functools
 import logging
 from typing import Any, Callable, Dict, Optional, TypeVar
 
+# Re-export core logging utilities from canonical location
+from core.logging import get_logger, log_exception, log_with_context
+
 F = TypeVar("F", bound=Callable[..., Any])
 
-
-def get_logger(name: str) -> logging.Logger:
-    """
-    Get a logger instance.
-
-    Args:
-        name: Logger name (typically __name__)
-
-    Returns:
-        Logger instance
-    """
-    return logging.getLogger(name)
-
-
-def log_with_context(
-    logger: logging.Logger,
-    level: int,
-    msg: str,
-    **kwargs: Any,
-) -> None:
-    """
-    Log with structured context fields.
-
-    Args:
-        logger: Logger instance
-        level: Log level (logging.INFO, etc.)
-        msg: Log message
-        **kwargs: Additional context fields (trace_id, duration_ms, etc.)
-
-    Example:
-        log_with_context(
-            logger, logging.INFO, "Download complete",
-            trace_id=task.trace_id,
-            duration_ms=elapsed,
-            http_status=200,
-        )
-    """
-    logger.log(level, msg, extra=kwargs)
-
-
-def log_exception(
-    logger: logging.Logger,
-    exc: Exception,
-    msg: str,
-    level: int = logging.ERROR,
-    include_traceback: bool = True,
-    **kwargs: Any,
-) -> None:
-    """
-    Log exception with context and optional traceback.
-
-    Automatically extracts error_category from PipelineError subclasses.
-
-    Args:
-        logger: Logger instance
-        exc: Exception to log
-        msg: Context message
-        level: Log level (default: ERROR)
-        include_traceback: Include full traceback (default: True)
-        **kwargs: Additional context fields
-
-    Example:
-        try:
-            download_file(url)
-        except Exception as e:
-            log_exception(logger, e, "Download failed", trace_id=task.trace_id)
-    """
-    # Extract error category if available
-    error_category = kwargs.get("error_category")
-    if error_category is None and hasattr(exc, "category"):
-        cat = exc.category
-        error_category = cat.value if hasattr(cat, "value") else str(cat)
-        kwargs["error_category"] = error_category
-
-    # Sanitize error message
-    error_msg = str(exc)
-    if len(error_msg) > 500:
-        error_msg = error_msg[:500] + "..."
-    kwargs["error_message"] = error_msg
-
-    if include_traceback:
-        logger.log(level, msg, exc_info=exc, extra=kwargs)
-    else:
-        logger.log(level, msg, extra=kwargs)
+__all__ = [
+    # Re-exported from core.logging
+    "get_logger",
+    "log_with_context",
+    "log_exception",
+    # kafka_pipeline-specific utilities
+    "LoggedClass",
+    "logged_operation",
+    "extract_log_context",
+    "with_api_error_handling",
+]
 
 
 def _is_coroutine_function(func: Callable) -> bool:
@@ -365,5 +299,3 @@ def with_api_error_handling(func: F) -> F:
                 raise
 
         return sync_wrapper  # type: ignore
-
-

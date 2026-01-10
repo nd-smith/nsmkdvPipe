@@ -15,8 +15,8 @@ from dataclasses import dataclass, field
 from functools import wraps
 from typing import Callable, Optional, Set, Type
 
-# Import ErrorCategory from the same place exceptions use it
-from kafka_pipeline.common.exceptions import ErrorCategory
+# Import ErrorCategory from core.errors.exceptions
+from core.errors.exceptions import ErrorCategory
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +74,7 @@ class RetryConfig:
             Delay in seconds
         """
         # Import here to avoid circular dependency
-        from kafka_pipeline.common.exceptions import ThrottlingError
+        from core.errors.exceptions import ThrottlingError
 
         # Check for explicit retry_after (e.g., from 429 response)
         if self.respect_retry_after and isinstance(error, ThrottlingError):
@@ -104,7 +104,7 @@ class RetryConfig:
             True if should retry
         """
         # Import here to avoid circular dependency
-        from kafka_pipeline.common.exceptions import (
+        from core.errors.exceptions import (
             PipelineError,
             classify_exception,
         )
@@ -269,7 +269,7 @@ def with_retry(
             ...
     """
     # Import here to avoid circular dependency
-    from kafka_pipeline.common.exceptions import (
+    from core.errors.exceptions import (
         PipelineError,
         ThrottlingError,
         classify_exception,
