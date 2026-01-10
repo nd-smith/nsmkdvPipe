@@ -26,6 +26,9 @@ Usage:
     python -m kafka_pipeline --worker claimx-delta-writer
     python -m kafka_pipeline --worker claimx-entity-writer
 
+    # Run dummy data source for testing (generates synthetic events)
+    python -m kafka_pipeline --worker dummy-source --dev
+
     # Run multiple worker instances (for horizontal scaling)
     python -m kafka_pipeline --worker xact-download --count 4
     python -m kafka_pipeline --worker xact-upload -c 3
@@ -40,6 +43,7 @@ Event Source Configuration:
     Set EVENT_SOURCE environment variable:
     - eventhub (default): Use Azure Event Hub via Kafka protocol
     - eventhouse: Poll Microsoft Fabric Eventhouse
+    - dummy: Generate synthetic test data (use --worker dummy-source)
 
 Architecture:
     xact Domain:
@@ -75,6 +79,7 @@ WORKER_STAGES = [
     "xact-poller", "xact-event-ingester", "xact-local-ingester", "xact-delta-writer", "xact-delta-retry", "xact-download", "xact-upload", "xact-result-processor",
     "claimx-poller", "claimx-ingester", "claimx-enricher", "claimx-downloader", "claimx-uploader", "claimx-result-processor",
     "claimx-delta-writer", "claimx-entity-writer",
+    "dummy-source",
 ]
 
 # Placeholder logger until setup_logging() is called in main()
@@ -162,6 +167,7 @@ Examples:
         choices=[
             "xact-poller", "xact-event-ingester", "xact-local-ingester", "xact-delta-writer", "xact-delta-retry", "xact-download", "xact-upload", "xact-result-processor",
             "claimx-poller", "claimx-ingester", "claimx-delta-writer", "claimx-entity-writer", "claimx-enricher", "claimx-downloader", "claimx-uploader", "claimx-result-processor",
+            "dummy-source",
             "all"
         ],
         default="all",
@@ -1417,6 +1423,17 @@ def main():
                 loop.run_until_complete(
                     run_claimx_entity_delta_worker(local_kafka_config, pipeline_config)
                 )
+        elif args.worker == "dummy-source":
+            # Dummy data source - generates synthetic test data
+            # Load dummy config from pipeline config or use defaults
+            import yaml
+            dummy_config = {}
+            config_path = Path("src/config.yaml")
+            if config_path.exists():
+                with open(config_path) as f:
+                    full_config = yaml.safe_load(f)
+                    dummy_config = full_config.get("dummy", {})
+            loop.run_until_complete(run_dummy_source(local_kafka_config, dummy_config))
         else:  # all
             loop.run_until_complete(
                 run_all_workers(pipeline_config, enable_delta_writes)
@@ -1540,6 +1557,55 @@ async def run_claimx_entity_delta_worker(
         except (asyncio.CancelledError, RuntimeError):
             pass
         await worker.stop()
+
+
+async def run_dummy_source(kafka_config, dummy_config: dict):
+    """Run the Dummy Data Source.
+
+    Generates realistic synthetic insurance claim data and produces events
+    to Kafka topics, allowing pipeline testing without external dependencies.
+
+    The dummy source includes:
+    - A file server for serving test attachments
+    - Realistic data generators for XACT and ClaimX domains
+    - Configurable event rates and burst modes
+
+    Supports graceful shutdown: when shutdown event is set, the source
+    stops generating events after completing any in-flight operations.
+    """
+    from kafka_pipeline.common.dummy.source import DummyDataSource, load_dummy_source_config
+
+    set_log_context(stage="dummy-source")
+    logger.info("Starting Dummy Data Source...")
+
+    # Load dummy source configuration
+    source_config = load_dummy_source_config(kafka_config, dummy_config)
+
+    source = DummyDataSource(source_config)
+    shutdown_event = get_shutdown_event()
+
+    async def shutdown_watcher():
+        """Wait for shutdown signal and stop source gracefully."""
+        await shutdown_event.wait()
+        logger.info("Shutdown signal received, stopping dummy data source...")
+        await source.stop()
+
+    # Start source and shutdown watcher
+    await source.start()
+    watcher_task = asyncio.create_task(shutdown_watcher())
+
+    try:
+        await source.run()
+    finally:
+        # Guard against event loop being closed during shutdown
+        try:
+            watcher_task.cancel()
+            await watcher_task
+        except (asyncio.CancelledError, RuntimeError):
+            pass
+        # Clean up resources after source exits
+        await source.stop()
+        logger.info(f"Dummy source stopped. Stats: {source.stats}")
 
 
 if __name__ == "__main__":
