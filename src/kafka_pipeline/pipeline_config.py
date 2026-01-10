@@ -25,8 +25,43 @@ import yaml
 
 from kafka_pipeline.config import KafkaConfig
 
-# Default config path: config.yaml in src/ directory
-DEFAULT_CONFIG_PATH = Path(__file__).parent.parent / "config.yaml"
+# Default config directory: config/ in src/ directory
+DEFAULT_CONFIG_DIR = Path(__file__).parent.parent / "config"
+
+
+def _load_config_data(config_path: Path) -> Dict[str, Any]:
+    """Load configuration data from config directory.
+
+    Args:
+        config_path: Path to config directory
+
+    Returns:
+        Merged configuration dictionary
+
+    Raises:
+        FileNotFoundError: If config directory doesn't exist
+        ValueError: If config_path is not a directory
+    """
+    if not config_path.exists():
+        raise FileNotFoundError(
+            f"Configuration directory not found: {config_path}\n"
+            f"Expected directory structure:\n"
+            f"  config/\n"
+            f"    shared.yaml\n"
+            f"    xact_config.yaml\n"
+            f"    claimx_config.yaml\n"
+        )
+
+    if not config_path.is_dir():
+        raise ValueError(
+            f"Configuration path must be a directory: {config_path}\n"
+            f"Single-file config.yaml is no longer supported."
+        )
+
+    # Load and merge from config directory
+    from kafka_pipeline.config import _load_multi_file_config
+    return _load_multi_file_config(config_path)
+
 
 
 class EventSourceType(str, Enum):
@@ -165,11 +200,11 @@ class LocalKafkaConfig:
 
     @classmethod
     def load_config(cls, config_path: Optional[Path] = None) -> "LocalKafkaConfig":
-        """Load local Kafka configuration from config.yaml and environment variables.
+        """Load local Kafka configuration from config directory and environment variables.
 
         Configuration priority (highest to lowest):
         1. Environment variables
-        2. config.yaml file (under 'kafka:' key)
+        2. Config files in config/ directory
         3. Dataclass defaults
 
         Optional env vars (all have defaults):
@@ -183,15 +218,12 @@ class LocalKafkaConfig:
             ONELAKE_CLAIMX_PATH: OneLake path for claimx domain
             DELTA_EVENTS_BATCH_SIZE: Events per batch for Delta writes (default: 1000)
         """
-        config_path = config_path or DEFAULT_CONFIG_PATH
+        # Use default config directory if not specified
+        resolved_path = config_path or DEFAULT_CONFIG_DIR
 
-        # Load from config.yaml
-        yaml_data: Dict[str, Any] = {}
-        kafka_data: Dict[str, Any] = {}
-        if config_path.exists():
-            with open(config_path, "r") as f:
-                yaml_data = yaml.safe_load(f) or {}
-            kafka_data = yaml_data.get("kafka", {})
+        # Load configuration data from config directory
+        yaml_data = _load_config_data(resolved_path)
+        kafka_data = yaml_data.get("kafka", {})
 
         # Get connection settings (support both flat and nested structure)
         connection_data = kafka_data.get("connection", kafka_data)
@@ -407,11 +439,11 @@ class EventhouseSourceConfig:
 
     @classmethod
     def load_config(cls, config_path: Optional[Path] = None) -> "EventhouseSourceConfig":
-        """Load Eventhouse configuration from config.yaml and environment variables.
+        """Load Eventhouse configuration from config directory and environment variables.
 
         Configuration priority (highest to lowest):
         1. Environment variables
-        2. config.yaml file (under 'xact_eventhouse:' key, fallback to 'eventhouse:')
+        2. Config files in config/ directory (under 'xact_eventhouse:' key, fallback to 'eventhouse:')
         3. Dataclass defaults
 
         Optional env var overrides:
@@ -423,19 +455,16 @@ class EventhouseSourceConfig:
             EVENTHOUSE_QUERY_TIMEOUT: Query timeout (default: 120)
             XACT_EVENTS_TABLE_PATH: Path to xact_events Delta table
         """
-        config_path = config_path or DEFAULT_CONFIG_PATH
+        # Use default config directory if not specified
+        resolved_path = config_path or DEFAULT_CONFIG_DIR
 
-        # Load from config.yaml
-        eventhouse_data: Dict[str, Any] = {}
-        poller_data: Dict[str, Any] = {}
-        dedup_data: Dict[str, Any] = {}
-        if config_path.exists():
-            with open(config_path, "r") as f:
-                yaml_data = yaml.safe_load(f) or {}
-            # Check for xact_eventhouse first, fallback to legacy eventhouse
-            eventhouse_data = yaml_data.get("xact_eventhouse", yaml_data.get("eventhouse", {}))
-            poller_data = eventhouse_data.get("poller", {})
-            dedup_data = eventhouse_data.get("dedup", {})
+        # Load configuration data from config directory
+        yaml_data = _load_config_data(resolved_path)
+
+        # Check for xact_eventhouse first, fallback to legacy eventhouse
+        eventhouse_data = yaml_data.get("xact_eventhouse", yaml_data.get("eventhouse", {}))
+        poller_data = eventhouse_data.get("poller", {})
+        dedup_data = eventhouse_data.get("dedup", {})
 
         cluster_url = os.getenv(
             "XACT_EVENTHOUSE_CLUSTER_URL",
@@ -556,11 +585,11 @@ class ClaimXEventhouseSourceConfig:
 
     @classmethod
     def load_config(cls, config_path: Optional[Path] = None) -> "ClaimXEventhouseSourceConfig":
-        """Load ClaimX Eventhouse configuration from config.yaml and environment variables.
+        """Load ClaimX Eventhouse configuration from config directory and environment variables.
 
         Configuration priority (highest to lowest):
         1. Environment variables
-        2. config.yaml file (under 'claimx_eventhouse:' key)
+        2. Config files in config/ directory (under 'claimx_eventhouse:' key)
         3. Dataclass defaults
 
         Optional env var overrides:
@@ -573,18 +602,15 @@ class ClaimXEventhouseSourceConfig:
             CLAIMX_EVENTS_TABLE_PATH: Path to claimx_events Delta table
             CLAIMX_EVENTS_TOPIC: Kafka topic (default: claimx.events.raw)
         """
-        config_path = config_path or DEFAULT_CONFIG_PATH
+        # Use default config directory if not specified
+        resolved_path = config_path or DEFAULT_CONFIG_DIR
 
-        # Load from config.yaml
-        claimx_eventhouse_data: Dict[str, Any] = {}
-        poller_data: Dict[str, Any] = {}
-        dedup_data: Dict[str, Any] = {}
-        if config_path.exists():
-            with open(config_path, "r") as f:
-                yaml_data = yaml.safe_load(f) or {}
-            claimx_eventhouse_data = yaml_data.get("claimx_eventhouse", {})
-            poller_data = claimx_eventhouse_data.get("poller", {})
-            dedup_data = claimx_eventhouse_data.get("dedup", {})
+        # Load configuration data from config directory
+        yaml_data = _load_config_data(resolved_path)
+
+        claimx_eventhouse_data = yaml_data.get("claimx_eventhouse", {})
+        poller_data = claimx_eventhouse_data.get("poller", {})
+        dedup_data = claimx_eventhouse_data.get("dedup", {})
 
         # Get cluster_url (no fallback to xact/global env vars)
         cluster_url = os.getenv(
@@ -715,27 +741,25 @@ class PipelineConfig:
 
     @classmethod
     def load_config(cls, config_path: Optional[Path] = None) -> "PipelineConfig":
-        """Load complete pipeline configuration from config.yaml and environment.
+        """Load complete pipeline configuration from config directory and environment.
 
         Configuration priority (highest to lowest):
         1. Environment variables
-        2. config.yaml file
+        2. Config files in config/ directory
         3. Dataclass defaults
 
-        The event_source field in config.yaml (or EVENT_SOURCE env var) determines
+        The event_source field in config files (or EVENT_SOURCE env var) determines
         which source is used:
         - eventhub: Use Azure Event Hub via Kafka protocol
         - eventhouse: Poll Microsoft Fabric Eventhouse
         """
-        config_path = config_path or DEFAULT_CONFIG_PATH
+        # Use default config directory if not specified
+        resolved_path = config_path or DEFAULT_CONFIG_DIR
 
-        # Load from config.yaml
-        yaml_data: Dict[str, Any] = {}
-        if config_path.exists():
-            with open(config_path, "r") as f:
-                yaml_data = yaml.safe_load(f) or {}
+        # Load configuration data from config directory
+        yaml_data = _load_config_data(resolved_path)
 
-        # Get event source from config.yaml first, then env var override
+        # Get event source from config files first, then env var override
         source_str = os.getenv(
             "EVENT_SOURCE",
             yaml_data.get("event_source", "eventhub")
@@ -748,7 +772,7 @@ class PipelineConfig:
                 f"Invalid event_source '{source_str}'. Must be 'eventhub' or 'eventhouse'"
             )
 
-        local_kafka = LocalKafkaConfig.load_config(config_path)
+        local_kafka = LocalKafkaConfig.load_config(resolved_path)
 
         eventhub_config = None
         eventhouse_config = None
@@ -757,7 +781,7 @@ class PipelineConfig:
         if event_source == EventSourceType.EVENTHUB:
             eventhub_config = EventHubConfig.from_env()
         else:
-            eventhouse_config = EventhouseSourceConfig.load_config(config_path)
+            eventhouse_config = EventhouseSourceConfig.load_config(resolved_path)
 
         # Optionally load ClaimX Eventhouse config if configured
         # Check for config section or env vars
@@ -768,7 +792,7 @@ class PipelineConfig:
         )
         if has_claimx_config:
             try:
-                claimx_eventhouse_config = ClaimXEventhouseSourceConfig.load_config(config_path)
+                claimx_eventhouse_config = ClaimXEventhouseSourceConfig.load_config(resolved_path)
             except ValueError:
                 # ClaimX config not fully specified, leave as None
                 pass
@@ -828,7 +852,7 @@ class PipelineConfig:
 
 
 def get_pipeline_config(config_path: Optional[Path] = None) -> PipelineConfig:
-    """Get pipeline configuration from config.yaml and environment.
+    """Get pipeline configuration from config directory and environment.
 
     This is the main entry point for loading configuration.
     """
@@ -838,17 +862,15 @@ def get_pipeline_config(config_path: Optional[Path] = None) -> PipelineConfig:
 def get_event_source_type(config_path: Optional[Path] = None) -> EventSourceType:
     """Get the configured event source type.
 
-    Quick check without loading full config. Reads from config.yaml first,
+    Quick check without loading full config. Reads from config directory first,
     then checks EVENT_SOURCE env var for override.
     """
-    config_path = config_path or DEFAULT_CONFIG_PATH
+    # Use default config directory if not specified
+    resolved_path = config_path or DEFAULT_CONFIG_DIR
 
-    # Load from config.yaml first
-    yaml_source = "eventhub"
-    if config_path.exists():
-        with open(config_path, "r") as f:
-            yaml_data = yaml.safe_load(f) or {}
-        yaml_source = yaml_data.get("event_source", "eventhub")
+    # Load configuration data from config directory
+    yaml_data = _load_config_data(resolved_path)
+    yaml_source = yaml_data.get("event_source", "eventhub")
 
     source_str = os.getenv("EVENT_SOURCE", yaml_source).lower()
     return EventSourceType(source_str)

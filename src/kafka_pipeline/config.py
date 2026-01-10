@@ -1,16 +1,27 @@
-"""Kafka pipeline configuration from YAML file.
+"""Kafka pipeline configuration from YAML files.
 
-Configuration loads ONLY from config.yaml.
+Loads from config/ directory with separate files:
+- shared.yaml: Connection settings and defaults
+- xact_config.yaml: XACT domain configuration
+- claimx_config.yaml: ClaimX domain configuration
+- plugins/*.yaml: Plugin configurations
+
 Environment variables are NOT supported (except for ClaimX API credentials).
 """
 
+import json
+import logging
 import os
+import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import yaml
+
+# Configure module logger
+logger = logging.getLogger(__name__)
 
 
 def _get_default_cache_dir() -> str:
@@ -25,8 +36,16 @@ def _get_default_cache_dir() -> str:
     return str(Path(tempfile.gettempdir()) / "kafka_pipeline_cache")
 
 
-# Default config path: config.yaml in src/ directory
-DEFAULT_CONFIG_PATH = Path(__file__).parent.parent / "config.yaml"
+def load_yaml(path: Path) -> Dict[str, Any]:
+    """Load YAML file and return dict."""
+    if not path.exists():
+        return {}
+    with open(path, 'r') as f:
+        return yaml.safe_load(f) or {}
+
+
+# Default config directory: config/ in src/ directory
+DEFAULT_CONFIG_DIR = Path(__file__).parent.parent / "config"
 
 
 @dataclass
@@ -477,13 +496,19 @@ def load_config(
     config_path: Optional[Path] = None,
     overrides: Optional[Dict[str, Any]] = None,
 ) -> KafkaConfig:
-    """Load Kafka configuration from YAML file.
+    """Load Kafka configuration from YAML files in config/ directory.
 
-    Configuration loads ONLY from YAML file.
-    Environment variables are NOT supported.
+    Loads from config/ directory with separate files:
+    - shared.yaml: Connection settings and defaults
+    - xact_config.yaml: XACT domain configuration
+    - claimx_config.yaml: ClaimX domain configuration
+    - plugins/*.yaml: Plugin configurations
+
+    Configuration loads ONLY from YAML files.
+    Environment variables are NOT supported (except ClaimX API credentials).
 
     Args:
-        config_path: Path to YAML config file. Defaults to config.yaml in src/
+        config_path: Path to config directory. Defaults to DEFAULT_CONFIG_DIR
         overrides: Optional dict of overrides to apply (for testing)
 
     Returns:
@@ -491,40 +516,40 @@ def load_config(
 
     Raises:
         ValueError: If configuration is invalid
-        FileNotFoundError: If config file doesn't exist
+        FileNotFoundError: If config directory doesn't exist
 
-    Example config.yaml:
-        kafka:
-          connection:
-            bootstrap_servers: "localhost:9092"
-            security_protocol: "PLAINTEXT"
-          consumer_defaults:
-            max_poll_records: 100
-            session_timeout_ms: 30000
-          producer_defaults:
-            acks: "all"
-            retries: 3
-          xact:
-            topics:
-              events: "xact.events.raw"
-              downloads_pending: "xact.downloads.pending"
-            download_worker:
-              consumer:
-                max_poll_records: 50
-              processing:
-                concurrency: 10
+    Example config structure:
+        config/
+          shared.yaml          # Connection + defaults
+          xact_config.yaml     # XACT domain
+          claimx_config.yaml   # ClaimX domain
+          plugins/             # Plugin configs
+            monitoring.yaml
     """
-    config_path = config_path or DEFAULT_CONFIG_PATH
+    # Use default config directory if not specified
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_DIR
 
-    # Load YAML
+    # Verify config directory exists
     if not config_path.exists():
         raise FileNotFoundError(
-            f"Configuration file not found: {config_path}\n"
-            f"Create config.yaml based on config.yaml.example"
+            f"Configuration directory not found: {config_path}\n"
+            f"Expected directory structure:\n"
+            f"  config/\n"
+            f"    shared.yaml\n"
+            f"    xact_config.yaml\n"
+            f"    claimx_config.yaml\n"
         )
 
-    with open(config_path, "r") as f:
-        yaml_data = yaml.safe_load(f) or {}
+    if not config_path.is_dir():
+        raise ValueError(
+            f"Configuration path must be a directory: {config_path}\n"
+            f"Single-file config.yaml is no longer supported."
+        )
+
+    # Load from multi-file config directory
+    logger.info(f"Loading configuration from directory: {config_path}")
+    yaml_data = _load_multi_file_config(config_path)
 
     # Extract kafka section
     if "kafka" not in yaml_data:
@@ -537,6 +562,7 @@ def load_config(
 
     # Apply overrides (for testing)
     if overrides:
+        logger.debug(f"Applying overrides: {list(overrides.keys())}")
         kafka_config = _deep_merge(kafka_config, overrides)
 
     # Extract connection settings (support both flat and nested structure)
@@ -613,10 +639,75 @@ def load_config(
         claimx_api_concurrency=claimx_api.get("max_concurrent", 20),
     )
 
+    # Log final merged configuration summary
+    logger.debug(f"Configuration merge complete:")
+    logger.debug(f"  - Bootstrap servers: {config.bootstrap_servers}")
+    logger.debug(f"  - XACT domain configured: {bool(config.xact)}")
+    logger.debug(f"  - ClaimX domain configured: {bool(config.claimx)}")
+    top_level_keys = ['connection', 'consumer_defaults', 'producer_defaults']
+    if config.xact:
+        top_level_keys.append('xact')
+    if config.claimx:
+        top_level_keys.append('claimx')
+    top_level_keys.append('storage')
+    logger.debug(f"  - Top-level keys: {', '.join(top_level_keys)}")
+
     # Validate configuration
+    logger.debug("Validating configuration...")
     config.validate()
+    logger.debug("Configuration validation passed")
 
     return config
+
+
+def _load_multi_file_config(config_dir: Path) -> Dict[str, Any]:
+    """Load and merge configuration from multiple YAML files.
+
+    Loads files in order:
+    1. shared.yaml (connection settings and defaults)
+    2. xact_config.yaml (XACT domain configuration)
+    3. claimx_config.yaml (ClaimX domain configuration)
+    4. plugins/*.yaml (plugin configurations)
+
+    Args:
+        config_dir: Path to config directory
+
+    Returns:
+        Merged configuration dictionary
+    """
+    merged = {}
+    loaded_files = []
+
+    # Load core config files in order
+    core_files = [
+        "shared.yaml",
+        "xact_config.yaml",
+        "claimx_config.yaml"
+    ]
+
+    for filename in core_files:
+        file_path = config_dir / filename
+        if file_path.exists():
+            logger.debug(f"Loading {filename}")
+            file_data = load_yaml(file_path)
+            merged = _deep_merge(merged, file_data)
+            loaded_files.append(filename)
+        else:
+            logger.debug(f"Skipping {filename} (not found)")
+
+    # Load plugin configs
+    plugins_dir = config_dir / "plugins"
+    if plugins_dir.exists() and plugins_dir.is_dir():
+        plugin_files = sorted(plugins_dir.glob("*.yaml"))
+        for plugin_file in plugin_files:
+            logger.debug(f"Loading plugin config: {plugin_file.name}")
+            plugin_data = load_yaml(plugin_file)
+            merged = _deep_merge(merged, plugin_data)
+            loaded_files.append(f"plugins/{plugin_file.name}")
+
+    logger.info(f"Loaded {len(loaded_files)} configuration file(s): {', '.join(loaded_files)}")
+
+    return merged
 
 
 # Singleton instance
@@ -656,3 +747,165 @@ def reset_config() -> None:
     """
     global _kafka_config
     _kafka_config = None
+
+
+def _cli_main() -> int:
+    """CLI entry point for config validation and debugging.
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    import argparse
+
+    from kafka_pipeline.config_validator import (
+        get_config_summary,
+        validate_merged_config,
+    )
+
+    parser = argparse.ArgumentParser(
+        description="Kafka Pipeline Configuration Tool",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Validate configuration
+  python -m kafka_pipeline.config --validate
+
+  # Show merged configuration
+  python -m kafka_pipeline.config --show-merged
+
+  # Both validate and show
+  python -m kafka_pipeline.config --validate --show-merged
+
+  # Use custom config directory
+  python -m kafka_pipeline.config --config /path/to/config --validate
+
+  # JSON output for automation
+  python -m kafka_pipeline.config --validate --json
+
+  # Enable debug logging
+  python -m kafka_pipeline.config --validate --verbose
+        """,
+    )
+
+    parser.add_argument(
+        "--validate",
+        action="store_true",
+        help="Validate configuration structure and completeness",
+    )
+    parser.add_argument(
+        "--show-merged",
+        action="store_true",
+        help="Display merged configuration as YAML",
+    )
+    parser.add_argument(
+        "--config",
+        type=Path,
+        help="Path to config directory (default: src/config/)",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output in JSON format instead of human-readable",
+    )
+    parser.add_argument(
+        "--verbose",
+        "-v",
+        action="store_true",
+        help="Enable debug logging",
+    )
+
+    args = parser.parse_args()
+
+    # Configure logging
+    log_level = logging.DEBUG if args.verbose else logging.INFO
+    logging.basicConfig(
+        level=log_level,
+        format="%(levelname)s: %(message)s",
+    )
+
+    # If no action specified, show help
+    if not args.validate and not args.show_merged:
+        parser.print_help()
+        return 0
+
+    try:
+        # Load configuration
+        config = load_config(config_path=args.config)
+
+        # Load merged config dict for validation
+        config_path = args.config or DEFAULT_CONFIG_DIR
+        config_dict = _load_multi_file_config(config_path)
+
+        success = True
+        output = {}
+
+        # Validate if requested
+        if args.validate:
+            errors = validate_merged_config(config_dict)
+
+            if args.json:
+                output["validation"] = {
+                    "passed": len(errors) == 0,
+                    "errors": errors,
+                }
+            else:
+                if errors:
+                    print("✗ Configuration validation failed:")
+                    for error in errors:
+                        print(f"  - {error}")
+                    success = False
+                else:
+                    print("✓ Configuration validation passed")
+                    print("  - Shared settings: OK")
+                    if config.xact:
+                        print("  - XACT domain: OK")
+                    if config.claimx:
+                        print("  - ClaimX domain: OK")
+                    print("  - Merge integrity: OK")
+
+        # Show merged config if requested
+        if args.show_merged:
+            if args.json:
+                output["merged_config"] = config_dict
+            else:
+                print("\nMerged configuration:")
+                print("=" * 80)
+                print(yaml.dump(config_dict, default_flow_style=False, sort_keys=False))
+                print("=" * 80)
+                print("\nConfiguration summary:")
+                print(get_config_summary(config_dict))
+
+        # Output JSON if requested
+        if args.json:
+            print(json.dumps(output, indent=2))
+
+        return 0 if success else 1
+
+    except FileNotFoundError as e:
+        if args.json:
+            print(json.dumps({"error": str(e)}))
+        else:
+            print(f"✗ Error: {e}", file=sys.stderr)
+        return 1
+
+    except ValueError as e:
+        if args.json:
+            print(json.dumps({"error": str(e)}))
+        else:
+            print(f"✗ Validation error: {e}", file=sys.stderr)
+        return 1
+
+    except Exception as e:
+        if args.json:
+            print(json.dumps({"error": f"Unexpected error: {e}"}))
+        else:
+            print(f"✗ Unexpected error: {e}", file=sys.stderr)
+            if args.verbose:
+                import traceback
+
+                traceback.print_exc()
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(_cli_main())

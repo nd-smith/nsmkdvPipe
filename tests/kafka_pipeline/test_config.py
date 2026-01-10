@@ -11,7 +11,7 @@ from kafka_pipeline.config import (
     get_config,
     set_config,
     reset_config,
-    DEFAULT_CONFIG_PATH,
+    DEFAULT_CONFIG_DIR,
 )
 
 
@@ -210,19 +210,32 @@ class TestYamlConfigLoading:
 
     def test_load_config_from_yaml(self, tmp_path):
         """Test loading configuration from YAML file."""
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text("""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+
+        (config_dir / "shared.yaml").write_text("""
 kafka:
   connection:
     bootstrap_servers: "yaml-kafka:9092"
     security_protocol: "PLAINTEXT"
+""")
+
+        (config_dir / "xact_config.yaml").write_text("""
+kafka:
   xact:
     topics:
       events: "yaml.events"
       downloads_pending: "yaml.downloads.pending"
 """)
 
-        config = load_config(config_path=config_file)
+        (config_dir / "claimx_config.yaml").write_text("""
+kafka:
+  claimx:
+    topics:
+      events: "claimx.events"
+""")
+
+        config = load_config(config_path=config_dir)
 
         assert config.bootstrap_servers == "yaml-kafka:9092"
         assert config.security_protocol == "PLAINTEXT"
@@ -230,29 +243,56 @@ kafka:
 
     def test_load_config_missing_kafka_section_raises(self, tmp_path):
         """Test loading config without 'kafka:' section raises ValueError."""
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text("""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+
+        (config_dir / "shared.yaml").write_text("""
 bootstrap_servers: "flat-kafka:9092"
 security_protocol: "SASL_SSL"
 """)
 
+        (config_dir / "xact_config.yaml").write_text("""
+xact:
+  topics:
+    downloads_pending: "test.pending"
+""")
+
+        (config_dir / "claimx_config.yaml").write_text("""
+claimx:
+  topics:
+    events: "claimx.events"
+""")
+
         with pytest.raises(ValueError, match="missing 'kafka:' section"):
-            load_config(config_path=config_file)
+            load_config(config_path=config_dir)
 
     def test_overrides_parameter(self, tmp_path):
         """Test that overrides parameter works."""
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text("""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+
+        (config_dir / "shared.yaml").write_text("""
 kafka:
   connection:
     bootstrap_servers: "yaml-kafka:9092"
+""")
+
+        (config_dir / "xact_config.yaml").write_text("""
+kafka:
   xact:
     topics:
       downloads_pending: "test.downloads.pending"
 """)
 
+        (config_dir / "claimx_config.yaml").write_text("""
+kafka:
+  claimx:
+    topics:
+      events: "claimx.events"
+""")
+
         config = load_config(
-            config_path=config_file,
+            config_path=config_dir,
             overrides={"connection": {"bootstrap_servers": "override:9092"}}
         )
 
@@ -260,29 +300,59 @@ kafka:
 
     def test_missing_bootstrap_servers_raises(self, tmp_path):
         """Test that missing bootstrap_servers raises ValueError."""
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text("""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+
+        (config_dir / "shared.yaml").write_text("""
 kafka:
-  security_protocol: "PLAINTEXT"
+  connection:
+    security_protocol: "PLAINTEXT"
+""")
+
+        (config_dir / "xact_config.yaml").write_text("""
+kafka:
+  xact:
+    topics:
+      downloads_pending: "test.pending"
+""")
+
+        (config_dir / "claimx_config.yaml").write_text("""
+kafka:
+  claimx:
+    topics:
+      events: "claimx.events"
 """)
 
         with pytest.raises(ValueError, match="bootstrap_servers is required"):
-            load_config(config_path=config_file)
+            load_config(config_path=config_dir)
 
     def test_retry_delays_from_yaml(self, tmp_path):
         """Test loading retry_delays list from YAML."""
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text("""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+
+        (config_dir / "shared.yaml").write_text("""
 kafka:
   connection:
     bootstrap_servers: "kafka:9092"
+""")
+
+        (config_dir / "xact_config.yaml").write_text("""
+kafka:
   xact:
     topics:
       downloads_pending: "test.downloads.pending"
     retry_delays: [60, 120, 240]
 """)
 
-        config = load_config(config_path=config_file)
+        (config_dir / "claimx_config.yaml").write_text("""
+kafka:
+  claimx:
+    topics:
+      events: "claimx.events"
+""")
+
+        config = load_config(config_path=config_dir)
 
         assert config.get_retry_delays("xact") == [60, 120, 240]
 
@@ -299,19 +369,37 @@ class TestConfigSingleton:
 
     def test_get_config_returns_same_instance(self, tmp_path, monkeypatch):
         """Test that get_config returns the same instance."""
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text("""
+        # Create config directory structure
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+
+        # Write shared.yaml
+        (config_dir / "shared.yaml").write_text("""
 kafka:
   connection:
     bootstrap_servers: "singleton-kafka:9092"
+""")
+
+        # Write xact_config.yaml
+        (config_dir / "xact_config.yaml").write_text("""
+kafka:
   xact:
     topics:
       downloads_pending: "test.pending"
 """)
-        # Point to our test config
+
+        # Write claimx_config.yaml (minimal)
+        (config_dir / "claimx_config.yaml").write_text("""
+kafka:
+  claimx:
+    topics:
+      events: "claimx.events"
+""")
+
+        # Point to our test config directory
         monkeypatch.setattr(
-            "kafka_pipeline.config.DEFAULT_CONFIG_PATH",
-            config_file
+            "kafka_pipeline.config.DEFAULT_CONFIG_DIR",
+            config_dir
         )
 
         config1 = get_config()
@@ -332,31 +420,45 @@ kafka:
 
     def test_reset_config_clears_singleton(self, tmp_path, monkeypatch):
         """Test that reset_config clears the singleton."""
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text("""
+        # Create config directory structure
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+
+        # Write initial config files
+        shared_file = config_dir / "shared.yaml"
+        shared_file.write_text("""
 kafka:
   connection:
     bootstrap_servers: "first:9092"
+""")
+
+        (config_dir / "xact_config.yaml").write_text("""
+kafka:
   xact:
     topics:
       downloads_pending: "test.pending"
 """)
+
+        (config_dir / "claimx_config.yaml").write_text("""
+kafka:
+  claimx:
+    topics:
+      events: "claimx.events"
+""")
+
         monkeypatch.setattr(
-            "kafka_pipeline.config.DEFAULT_CONFIG_PATH",
-            config_file
+            "kafka_pipeline.config.DEFAULT_CONFIG_DIR",
+            config_dir
         )
 
         first = get_config()
         assert first.bootstrap_servers == "first:9092"
 
-        # Update config file
-        config_file.write_text("""
+        # Update shared config file
+        shared_file.write_text("""
 kafka:
   connection:
     bootstrap_servers: "second:9092"
-  xact:
-    topics:
-      downloads_pending: "test.pending"
 """)
 
         reset_config()

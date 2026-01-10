@@ -1,0 +1,771 @@
+# =============================================================================
+# DEPRECATED: This file is no longer supported. Use config/ directory instead.
+# =============================================================================
+# Single-file config.yaml has been replaced by multi-file configuration in
+# the config/ directory. See config/README.md for migration instructions.
+#
+# This file is kept as a historical reference only.
+# =============================================================================
+# Kafka Pipeline Configuration (LEGACY)
+# =============================================================================
+# This file configures the Kafka-based event processing pipeline for both
+# XACT and ClaimX domains. Each consumer and producer can be individually
+# configured with batch sizes, time windows, and performance settings.
+#
+# Configuration is loaded ONLY from this YAML file.
+# Environment variables are NOT supported.
+# =============================================================================
+
+# =============================================================================
+# PIPELINE EVENT SOURCE
+# =============================================================================
+# Determines which event source the Kafka pipeline uses for ingestion
+event_source: "eventhouse"  # Options: "eventhouse" or "eventhub"
+
+# =============================================================================
+# KAFKA PIPELINE CONFIGURATION
+# =============================================================================
+kafka:
+  # ===========================================================================
+  # SHARED CONNECTION SETTINGS
+  # Applied to all consumers and producers across all domains
+  # ===========================================================================
+  connection:
+    # Comma-separated list of Kafka broker addresses (host:port)
+    bootstrap_servers: "localhost:9094"
+
+    # Security protocol for broker communication
+    # Options: PLAINTEXT, SSL, SASL_PLAINTEXT, SASL_SSL
+    security_protocol: "PLAINTEXT"
+
+    # SASL authentication mechanism
+    # Options: PLAIN, SCRAM-SHA-256, SCRAM-SHA-512, OAUTHBEARER
+    sasl_mechanism: "OAUTHBEARER"
+
+    # Username for SASL/PLAIN authentication or Azure Event Hubs
+    sasl_plain_username: ""
+
+    # Password for SASL/PLAIN authentication or Azure Event Hubs
+    sasl_plain_password: ""
+
+    # Maximum time to wait for any request to complete (milliseconds)
+    # Prevents requests from hanging indefinitely during network issues
+    request_timeout_ms: 120000  # 2 minutes
+
+    # How often to refresh cluster metadata (milliseconds)
+    # Lower values detect broker changes faster, but increase overhead
+    metadata_max_age_ms: 300000  # 5 minutes
+
+    # Close idle connections after this duration (milliseconds)
+    # Should be longer than max_poll_interval_ms to avoid reconnects
+    connections_max_idle_ms: 540000  # 9 minutes
+
+  # ===========================================================================
+  # DEFAULT CONSUMER SETTINGS
+  # Applied to all consumers unless overridden in worker-specific config
+  # ===========================================================================
+  consumer_defaults:
+    # Where to start consuming if no committed offset exists
+    # Options: earliest (start from beginning), latest (only new messages), none (error)
+    auto_offset_reset: "earliest"
+
+    # Automatically commit offsets after processing
+    # false = manual commit (recommended for at-least-once processing)
+    enable_auto_commit: false
+
+    # Maximum number of records returned in a single poll() call
+    # Higher = more throughput but more memory. Lower = less latency
+    max_poll_records: 1000
+
+    # Maximum time between poll() calls before consumer is considered dead (milliseconds)
+    # Must be > session_timeout_ms. Increase for slow message processing
+    max_poll_interval_ms: 300000
+
+    # Minimum bytes to accumulate before returning from a fetch request
+    # Higher = better throughput, higher latency. 1 = return immediately
+    fetch_min_bytes: 1
+
+    # Maximum time to wait for fetch_min_bytes to accumulate (milliseconds)
+    # Controls how long broker waits before returning data
+    fetch_max_wait_ms: 500
+
+    # Timeout for detecting consumer failures (milliseconds)
+    # Consumer is removed from group if no heartbeat received within this time
+    session_timeout_ms: 60000
+
+    # How often to send heartbeats to the broker (milliseconds)
+    # Must be < session_timeout_ms / 3 to avoid false timeouts
+    heartbeat_interval_ms: 3000
+
+    # Strategy for assigning partitions to consumers in a group
+    # Options: RoundRobin, Range, Sticky
+    partition_assignment_strategy: "RoundRobin"
+
+  # ===========================================================================
+  # DEFAULT PRODUCER SETTINGS
+  # Applied to all producers unless overridden in worker-specific config
+  # ===========================================================================
+  producer_defaults:
+    # Number of acknowledgments producer requires before considering send successful
+    # Options: 0 (no ack), 1 (leader only), all (all in-sync replicas)
+    # all = most durable but slowest, 0 = fastest but may lose data
+    acks: "all"
+
+    # Maximum number of retry attempts for failed sends
+    # Producer will retry transient errors up to this many times
+    retries: 3
+
+    # Delay between retry attempts (milliseconds)
+    # Exponential backoff may be applied on top of this base delay
+    retry_backoff_ms: 1000
+
+    # Maximum size of a batch in bytes before sending
+    # Larger batches = better throughput but higher latency and memory
+    batch_size: 16384  # 16 KB
+
+    # Time to wait for batch to fill before sending (milliseconds)
+    # 0 = send immediately, >0 = wait up to this long to batch more records
+    linger_ms: 10
+
+    # Compression algorithm for message batches
+    # Options: none, gzip, snappy, lz4, zstd
+    # Compression reduces network bandwidth but increases CPU usage
+    compression_type: "lz4"
+
+    # Maximum number of unacknowledged requests per connection
+    # Lower values provide stronger ordering guarantees
+    max_in_flight_requests_per_connection: 5
+
+    # Total bytes of buffer memory for producer (bytes)
+    # Producer will block if buffer fills up
+    buffer_memory: 33554432  # 32 MB
+
+  # ===========================================================================
+  # XACT DOMAIN CONFIGURATION
+  # Verisk XACT pipeline - property claim assignments and attachments
+  # ===========================================================================
+  xact:
+    # -------------------------------------------------------------------------
+    # Topic Configuration
+    # -------------------------------------------------------------------------
+    topics:
+      events: "xact.events.raw"                  # Raw events from Event Hub/Eventhouse
+      downloads_pending: "xact.downloads.pending"  # Download tasks awaiting processing
+      downloads_cached: "xact.downloads.cached"    # Downloads cached locally, awaiting upload
+      downloads_results: "xact.downloads.results"  # Upload results for Delta processing
+      events_ingested: "xact.events.ingested"        # Events after ingestion processing
+      dlq: "xact.downloads.dlq"                    # Dead letter queue for failed messages
+
+    # Prefix for consumer group names in this domain
+    # Group names will be: {prefix}-{worker_name}
+    consumer_group_prefix: "xact"
+
+    # Retry configuration for download retry topics
+    # Delays in seconds for each retry attempt: 5min, 10min
+    retry_delays: [300, 600]
+
+    # Maximum number of retry attempts before sending to DLQ
+    max_retries: 4
+
+    # -------------------------------------------------------------------------
+    # Event Ingester Worker
+    # Consumes: xact.events.raw
+    # Produces to: xact.downloads.pending
+    # Purpose: Parse events, extract attachment metadata, create download tasks
+    # -------------------------------------------------------------------------
+    event_ingester:
+      consumer:
+        # Consumer group name (overrides default pattern)
+        group_id: "xact-event-ingester"
+
+        # Larger batches for high-volume event ingestion
+        max_poll_records: 1000
+
+        # Longer processing window for batch processing
+        max_poll_interval_ms: 3000000  # 10 minutes
+
+        # More tolerance for processing delays
+        session_timeout_ms: 45000  # 45 seconds
+
+        # Wait for more data to accumulate before returning
+        fetch_min_bytes: 10240  # 10 KB
+
+        # Maximum wait time for batch accumulation
+        fetch_max_wait_ms: 1000  # 1 second
+
+      producer:
+        # Only wait for leader acknowledgment (faster, slightly less durable)
+        acks: "1"
+
+        # Larger batches for better throughput
+        batch_size: 32768  # 32 KB
+
+        # Wait briefly for batch to fill
+        linger_ms: 100  # 100 milliseconds
+
+        # Fast compression for high throughput
+        compression_type: "lz4"
+
+      processing:
+        # Application-level batch size for event processing
+        batch_size: 1000
+
+        # Optional limit on number of batches to process (for testing)
+        # null = unlimited, integer = stop after N batches
+        max_batches: null
+
+        # Health check port
+        health_port: 8080
+
+    # -------------------------------------------------------------------------
+    # Download Worker
+    # Consumes: xact.downloads.pending + xact.downloads.retry.*
+    # Produces to: xact.downloads.cached
+    # Purpose: Download attachments from S3, cache locally for upload
+    # -------------------------------------------------------------------------
+    download_worker:
+      consumer:
+        group_id: "xact-download-worker"
+
+        # Smaller batches - downloads are slow operations
+        max_poll_records: 20
+
+        # Very long processing window - downloads can take time
+        max_poll_interval_ms: 900000  # 15 minutes
+
+        # Longer timeout for slow downloads
+        session_timeout_ms: 60000  # 60 seconds
+
+        # Wait longer for batch to accumulate
+        fetch_max_wait_ms: 2000  # 2 seconds
+
+      producer:
+        # Ensure cached download metadata is durable
+        acks: "all"
+
+        # No compression for small metadata messages
+        compression_type: "none"
+
+      processing:
+        # Maximum number of concurrent downloads (1-50)
+        # Higher = more throughput but more memory and connections
+        concurrency: 20
+
+        # Application batch size for download processing
+        batch_size: 20
+
+        # Timeout for individual download operations (seconds)
+        timeout_seconds: 60
+
+    # -------------------------------------------------------------------------
+    # Upload Worker
+    # Consumes: xact.downloads.cached
+    # Produces to: xact.downloads.results
+    # Purpose: Upload cached files to OneLake, produce results
+    # -------------------------------------------------------------------------
+    upload_worker:
+      consumer:
+        group_id: "xact-upload-worker"
+
+        # Smaller batches - uploads are slow operations
+        max_poll_records: 30
+
+        # Very long processing window - uploads can take time
+        max_poll_interval_ms: 900000  # 15 minutes
+
+        # Longer timeout for slow uploads
+        session_timeout_ms: 60000  # 60 seconds
+
+      producer:
+        # Ensure results are durable
+        acks: "all"
+
+        # No compression for metadata
+        compression_type: "none"
+
+      processing:
+        # Maximum number of concurrent uploads (1-50)
+        concurrency: 50
+
+        # Application batch size for upload processing
+        batch_size: 30
+
+    # -------------------------------------------------------------------------
+    # Delta Events Writer Worker
+    # Consumes: xact.downloads.results
+    # Produces to: delta-events.retry.*, delta-events.dlq
+    # Purpose: Write events to Delta tables in batches
+    # -------------------------------------------------------------------------
+    delta_events_writer:
+      consumer:
+        group_id: "xact-delta-events-writer"
+
+        # Large batches for efficient Delta writes
+        max_poll_records: 4000
+
+        # Longer processing window for batch writing
+        max_poll_interval_ms: 3000000  # 10 minutes
+
+        # More tolerance for batch processing
+        session_timeout_ms: 45000  # 45 seconds
+
+      producer:
+        # Ensure retry/DLQ messages are durable
+        acks: "all"
+
+        # Good compression for retry/DLQ topics
+        compression_type: "snappy"
+
+        max_request_size_bytes: 10485760  # 10 
+
+      processing:
+        # Number of events per Delta batch write
+        batch_size: 4000
+
+        # Optional limit for testing (null = unlimited)
+        max_batches: null
+
+        # Flush pending events after this many seconds without a write (seconds)
+        # Ensures events are written even during low-traffic periods
+        flush_timeout_seconds: 60  # 2 minutes
+
+        # Retry delays for failed Delta writes (seconds)
+        retry_delays: [300, 600]  # 5m, 10m
+
+        # Maximum retries before DLQ
+        max_retries: 2
+
+        # Topic prefix for retry topics
+        retry_topic_prefix: "delta-events.retry"        
+
+        # Dead letter queue topic
+        dlq_topic: "delta-events.dlq"
+
+  # ===========================================================================
+  # CLAIMX DOMAIN CONFIGURATION
+  # Verisk ClaimXperience pipeline - claim enrichment and media
+  # ===========================================================================
+  claimx:
+    # -------------------------------------------------------------------------
+    # Topic Configuration
+    # -------------------------------------------------------------------------
+    topics:
+      events: "claimx.events.raw"                      # Raw events from Eventhouse
+      enrichment_pending: "claimx.enrichment.pending"  # Events awaiting API enrichment
+      downloads_pending: "claimx.downloads.pending"    # Download tasks awaiting processing
+      downloads_cached: "claimx.downloads.cached"      # Downloads cached locally
+      downloads_results: "claimx.downloads.results"    # Upload results
+      dlq: "claimx.downloads.dlq"                      # Dead letter queue
+      entities_rows: "claimx.entities.rows"        # Enriched entity rows for Delta
+
+    consumer_group_prefix: "claimx"
+
+    retry_delays: [300, 600]
+    max_retries: 2
+
+    # -------------------------------------------------------------------------
+    # Event Ingester Worker
+    # Consumes: claimx.events.raw
+    # Produces to: claimx.enrichment.pending
+    # Purpose: Parse events, route to enrichment
+    # -------------------------------------------------------------------------
+    event_ingester:
+      consumer:
+        group_id: "claimx-event-ingester"
+        max_poll_records: 1000
+        max_poll_interval_ms: 300000  # 5 minutes
+
+      producer:
+        acks: "1"
+        batch_size: 32768  # 32 KB
+        linger_ms: 100
+        compression_type: "lz4"
+
+      processing:
+        batch_size: 100
+
+        # Health check port
+        health_port: 8084
+
+    # -------------------------------------------------------------------------
+    # Enrichment Worker
+    # Consumes: claimx.enrichment.pending
+    # Produces to: claimx.downloads.pending
+    # Purpose: Enrich events with ClaimX API data
+    # -------------------------------------------------------------------------
+    enrichment_worker:
+      consumer:
+        group_id: "claimx-enrichment-worker"
+        max_poll_records: 2000
+
+        # Longer window - API calls can be slow
+        max_poll_interval_ms: 3000000  # 10 minutes
+        session_timeout_ms: 45000  # 45 seconds
+
+      producer:
+        acks: "1"
+        compression_type: "lz4"
+
+      processing:
+        # Maximum concurrent API requests
+        api_concurrency: 20
+
+        # Timeout per API request (seconds)
+        api_timeout_seconds: 30
+
+        # Batch size for processing
+        batch_size: 3000
+
+        # Batch timeout in seconds
+        batch_timeout_seconds: 5.0
+
+        # Health check port
+        health_port: 8081
+
+    # -------------------------------------------------------------------------
+    # Download Worker
+    # Consumes: claimx.downloads.pending + retry topics
+    # Produces to: claimx.downloads.cached
+    # Purpose: Download attachments from ClaimX S3
+    # -------------------------------------------------------------------------
+    download_worker:
+      consumer:
+        group_id: "claimx-download-worker"
+        max_poll_records: 40
+        max_poll_interval_ms: 900000  # 15 minutes
+        session_timeout_ms: 60000  # 60 seconds
+
+      producer:
+        acks: "all"
+
+      processing:
+        # ClaimX may need higher concurrency
+        concurrency: 40
+        batch_size: 40
+
+        # ClaimX files may be larger, need longer timeout
+        timeout_seconds: 120
+
+        # Health check port
+        health_port: 8082
+
+    # -------------------------------------------------------------------------
+    # Upload Worker
+    # Consumes: claimx.downloads.cached
+    # Produces to: claimx.downloads.results
+    # Purpose: Upload cached files to OneLake
+    # -------------------------------------------------------------------------
+    upload_worker:
+      consumer:
+        group_id: "claimx-upload-worker"
+        max_poll_records: 30
+        max_poll_interval_ms: 900000  # 15 minutes
+        session_timeout_ms: 60000  # 60 seconds
+
+      producer:
+        acks: "all"
+
+      processing:
+        concurrency: 25
+        batch_size: 30
+
+        # Health check port
+        health_port: 8083
+
+    # -------------------------------------------------------------------------
+    # Delta Events Writer Worker
+    # Consumes: claimx.downloads.results
+    # Produces to: delta-events.retry.*, delta-events.dlq
+    # Purpose: Write events to Delta tables
+    # -------------------------------------------------------------------------
+    delta_events_writer:
+      consumer:
+        group_id: "claimx-delta-events-writer"
+        max_poll_records: 4000
+        max_poll_interval_ms: 3000000  # 10 minutes
+
+      producer:
+        acks: "all"
+        compression_type: "snappy"
+
+      processing:
+        batch_size: 4000
+
+        # Flush pending events after this many seconds without a write (seconds)
+        # Ensures events are written even during low-traffic periods
+        flush_timeout_seconds: 60  # 2 minutes
+
+        retry_delays: [300, 600]
+        max_retries: 2
+
+        # Topic prefix for retry topics
+        retry_topic_prefix: "claimx-delta-events.retry"
+
+        # Dead letter queue topic
+        dlq_topic: "claimx-delta-events.dlq"
+
+  # ===========================================================================
+  # SHARED STORAGE CONFIGURATION
+  # ===========================================================================
+  storage:
+    # OneLake paths by domain (abfss:// URIs)
+    # Format: abfss://workspace@onelake.dfs.fabric.microsoft.com/lakehouse/Files/{domain}
+    onelake_domain_paths:
+      xact: "abfss://7729c159-0674-42ba-abf7-a6756723c62f@onelake.dfs.fabric.microsoft.com/584315ee-2f41-4943-949f-901d438bcd36/Files/veriskPipeline/xact"
+      claimx: "abfss://7729c159-0674-42ba-abf7-a6756723c62f@onelake.dfs.fabric.microsoft.com/584315ee-2f41-4943-949f-901d438bcd36/Files/veriskPipeline/claimx"
+
+    # Fallback path if domain not in onelake_domain_paths
+    onelake_base_path: "abfss://7729c159-0674-42ba-abf7-a6756723c62f@onelake.dfs.fabric.microsoft.com/584315ee-2f41-4943-949f-901d438bcd36/Files/veriskPipeline"
+
+    # Local directory for caching downloads awaiting upload
+    cache_dir: "/tmp/kafka_pipeline_cache"
+
+
+# =============================================================================
+# DELTA LAKE TABLE CONFIGURATION
+# =============================================================================
+# Paths to Delta tables for the pipeline. These support both xact and claimx domains.
+# Format: abfss://workspace@onelake.dfs.fabric.microsoft.com/lakehouse/Tables/{table}
+delta:
+  # Enable/disable Delta Lake writes globally
+  enable_writes: true
+
+  # XACT domain tables
+  xact:
+    # Path to xact_events table (for deduplication and analytics)
+    events_table_path: "abfss://7729c159-0674-42ba-abf7-a6756723c62f@onelake.dfs.fabric.microsoft.com/584315ee-2f41-4943-949f-901d438bcd36/Tables/dbo/xact_events"
+
+    # Path to xact_attachments table (for tracking downloaded attachments)
+    inventory_table_path: "abfss://7729c159-0674-42ba-abf7-a6756723c62f@onelake.dfs.fabric.microsoft.com/584315ee-2f41-4943-949f-901d438bcd36/Tables/dbo/xact_attachments"
+
+    # Path to xact_attachments_failed table (for tracking permanent failures)
+    # Optional: If not set, permanent failures are only tracked in DLQ
+    failed_table_path: ""
+
+  # ClaimX domain tables
+  claimx:
+    # Path to claimx_events table
+    events_table_path: "abfss://7729c159-0674-42ba-abf7-a6756723c62f@onelake.dfs.fabric.microsoft.com/584315ee-2f41-4943-949f-901d438bcd36/Tables/dbo/claimx_events"
+    inventory_table_path: "abfss://7729c159-0674-42ba-abf7-a6756723c62f@onelake.dfs.fabric.microsoft.com/584315ee-2f41-4943-949f-901d438bcd36/Tables/dbo/claimx_attachments"
+    projects_table_path: "abfss://7729c159-0674-42ba-abf7-a6756723c62f@onelake.dfs.fabric.microsoft.com/584315ee-2f41-4943-949f-901d438bcd36/Tables/dbo/claimx_projects"
+    contacts_table_path: "abfss://7729c159-0674-42ba-abf7-a6756723c62f@onelake.dfs.fabric.microsoft.com/584315ee-2f41-4943-949f-901d438bcd36/Tables/dbo/claimx_contacts"
+    media_table_path: "abfss://7729c159-0674-42ba-abf7-a6756723c62f@onelake.dfs.fabric.microsoft.com/584315ee-2f41-4943-949f-901d438bcd36/Tables/dbo/claimx_attachments_metadata"
+    tasks_table_path: "abfss://7729c159-0674-42ba-abf7-a6756723c62f@onelake.dfs.fabric.microsoft.com/584315ee-2f41-4943-949f-901d438bcd36/Tables/dbo/claimx_tasks"
+    task_templates_table_path: "abfss://7729c159-0674-42ba-abf7-a6756723c62f@onelake.dfs.fabric.microsoft.com/584315ee-2f41-4943-949f-901d438bcd36/Tables/dbo/claimx_task_templates"
+    external_links_table_path: "abfss://7729c159-0674-42ba-abf7-a6756723c62f@onelake.dfs.fabric.microsoft.com/584315ee-2f41-4943-949f-901d438bcd36/Tables/dbo/claimx_external_link"
+    video_collab_table_path: "abfss://7729c159-0674-42ba-abf7-a6756723c62f@onelake.dfs.fabric.microsoft.com/584315ee-2f41-4943-949f-901d438bcd36/Tables/dbo/claimx_video_collab"
+
+# =============================================================================
+# CLAIMX API CONFIGURATION
+# =============================================================================
+claimx:
+  api:
+    # Base URL for ClaimX API
+    base_url: "https://www.claimxperience.com/service/cxedirest"
+
+    # Timeout for API requests (seconds)
+    timeout_seconds: 30
+
+    # Maximum concurrent API requests
+    max_concurrent: 20
+
+    # Credentials are loaded from environment variables ONLY:
+    CLAIMX_API_USERNAME: "nsmkd"
+    CLAIMX_API_PASSWORD:
+    CLAIMX_API_TOKEN: "Basic am9yZGFuc211aW46cERIZjF5ZnhkVXpKMU1aSnROcno="
+
+# =============================================================================
+# EVENTHOUSE INTEGRATION (for Kafka pipeline event source)
+# =============================================================================
+xact_eventhouse:
+  # ---------------------------------------------------------------------------
+  # Connection Settings
+  # ---------------------------------------------------------------------------
+  # Eventhouse cluster URL
+  cluster_url: "https://trd-atjd28cdnn65pbxjek.z8.kusto.fabric.microsoft.com"
+
+  # Database name
+  database: "VERISK_XACTANALYSIS_DB"
+
+  # ---------------------------------------------------------------------------
+  # Query Settings
+  # ---------------------------------------------------------------------------
+  # Maximum time for query execution (seconds)
+  query_timeout_seconds: 240
+
+  # Maximum retry attempts for failed queries
+  max_retries: 2
+
+  # Base delay for exponential backoff (seconds)
+  retry_base_delay_seconds: 10
+
+  # Maximum delay between retries (seconds)
+  retry_max_delay_seconds: 30.0
+
+  # Maximum concurrent connections
+  max_connections: 5
+
+  # ---------------------------------------------------------------------------
+  # Poller Settings
+  # ---------------------------------------------------------------------------
+  poller:
+    # How often to poll for new events (seconds)
+    poll_interval_seconds: 3
+
+    # Number of events to fetch per poll
+    batch_size: 8000
+
+    # Source table to query for events
+    source_table: "tbl_VERISK_XACTANALYSIS_STATUS_EXPORT"
+
+    # Path to events table for tracking processed events
+    events_table_path: ""
+
+    # Backfill settings
+    backfill_start_stamp: null
+    backfill_stop_stamp: null
+    bulk_backfill: false
+
+    # Backpressure: pause polling if Kafka lag exceeds this
+    max_kafka_lag: 500000
+
+    # How often to check Kafka lag (seconds)
+    lag_check_interval_seconds: 60 
+
+
+
+
+# -----------------------------------------------------------------------------
+# ClaimX Domain Eventhouse
+# -----------------------------------------------------------------------------
+claimx_eventhouse:
+  # ---------------------------------------------------------------------------
+  # Connection Settings
+  # ---------------------------------------------------------------------------
+  cluster_url: "https://trd-atjd28cdnn65pbxjek.z8.kusto.fabric.microsoft.com"
+  database: "VERISK_CLAIMXPERIENCE_DB"
+  
+  # ---------------------------------------------------------------------------
+  # Query Settings
+  # ---------------------------------------------------------------------------
+  query_timeout_seconds: 120
+  
+  # ---------------------------------------------------------------------------
+  # Poller Settings
+  # ---------------------------------------------------------------------------
+  poller:
+    poll_interval_seconds: 30
+    batch_size: 1000
+    source_table: "tbl_CLAIMXPERIENCE_EVENTS"
+    events_table_path: "abfss://7729c159-0674-42ba-abf7-a6756723c62f@onelake.dfs.fabric.microsoft.com/584315ee-2f41-4943-949f-901d438bcd36/Tables/dbo/claimx_events"
+    
+    # Backfill settings
+    backfill_start_stamp: null
+    backfill_stop_stamp: null
+    bulk_backfill: false
+  
+  # ---------------------------------------------------------------------------
+  # Deduplication Settings
+  # ---------------------------------------------------------------------------
+  dedup:
+    claimx_events_window_hours: 24
+    eventhouse_query_window_hours: 1
+    overlap_minutes: 5
+
+# =============================================================================
+# DUMMY DATA SOURCE (for testing without external dependencies)
+# =============================================================================
+# When event_source is set to "dummy", the pipeline generates realistic
+# synthetic insurance claim data instead of connecting to external sources.
+# This allows testing the full pipeline locally without access to production
+# systems like Eventhouse, Event Hub, or the ClaimX API.
+
+dummy:
+  # ---------------------------------------------------------------------------
+  # Generator Settings
+  # ---------------------------------------------------------------------------
+  generator:
+    # Random seed for reproducible data (null = random each run)
+    seed: null
+
+    # Base URL for the dummy file server (auto-configured when running)
+    base_url: "http://localhost:8765"
+
+    # Include some failing scenarios for testing error handling
+    include_failures: false
+
+    # Percentage of events that will have simulated failures (0.0-1.0)
+    failure_rate: 0.05
+
+  # ---------------------------------------------------------------------------
+  # File Server Settings
+  # ---------------------------------------------------------------------------
+  # The dummy file server provides downloadable test files for attachments
+  file_server:
+    host: "0.0.0.0"
+    port: 8765
+
+    # Default size for generated files (bytes)
+    default_file_size: 100000  # 100KB
+
+    # Maximum file size to generate (bytes)
+    max_file_size: 10000000  # 10MB
+
+  # ---------------------------------------------------------------------------
+  # Event Generation Settings
+  # ---------------------------------------------------------------------------
+  # Which domains to generate events for
+  domains:
+    - "xact"
+    - "claimx"
+
+  # Events generated per minute (per domain)
+  events_per_minute: 10000000
+
+  # Burst mode: generate events in batches for load testing
+  burst_mode: false
+  burst_size: 200000
+  burst_interval_seconds: 89
+
+  # Generate all ClaimX event types (PROJECT_CREATED, PROJECT_FILE_ADDED, etc.)
+  include_all_event_types: true
+
+  # Maximum number of concurrent simulated claims to track
+  max_active_claims: 100000000000
+
+  # ---------------------------------------------------------------------------
+  # Runtime Limits (for controlled testing)
+  # ---------------------------------------------------------------------------
+  # Stop after generating this many events (null = unlimited)
+  max_events: null
+
+  # Stop after running for this many seconds (null = unlimited)
+  max_runtime_seconds: null
+
+# =============================================================================
+# SHARED SETTINGS
+# =============================================================================
+health:
+  enabled: true
+  host: "127.0.0.1"
+  port: 8080
+
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  log_dir: "logs"
+
+observability:
+  json_logs: true
+  log_upload_enabled: true
+  log_upload_interval_cycles: 10
+  log_retention_days: 7
+  memory_checkpoints_enabled: true
+  memory_checkpoint_level: "DEBUG"
+  memory_profiling_enabled: true
+  memory_snapshot_interval: 5
+  memory_alert_threshold_mb: 4096
+
+# Runtime metadata
+worker_id: "worker-01"
+test_mode: false

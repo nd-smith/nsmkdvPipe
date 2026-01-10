@@ -110,23 +110,73 @@ class TestEventhouseSourceConfig:
 
     def test_load_config_missing_cluster_url(self, tmp_path):
         """Test error when cluster URL is missing."""
-        # Create empty config file without cluster_url
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text("xact_eventhouse:\n  database: testdb\n")
+        # Create config directory with files
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+
+        # Create shared.yaml with minimal kafka config
+        (config_dir / "shared.yaml").write_text("""
+kafka:
+  connection:
+    bootstrap_servers: "localhost:9092"
+""")
+
+        # Create xact_config.yaml with eventhouse config missing cluster_url
+        (config_dir / "xact_config.yaml").write_text("""
+xact_eventhouse:
+  database: testdb
+kafka:
+  xact:
+    topics:
+      downloads_pending: "test.pending"
+""")
+
+        # Create claimx_config.yaml with minimal config
+        (config_dir / "claimx_config.yaml").write_text("""
+kafka:
+  claimx:
+    topics:
+      events: "claimx.events"
+""")
 
         with patch.dict(os.environ, {"EVENTHOUSE_DATABASE": "testdb"}, clear=True):
             with pytest.raises(ValueError, match="cluster_url is required"):
-                EventhouseSourceConfig.load_config(config_path=config_file)
+                EventhouseSourceConfig.load_config(config_path=config_dir)
 
     def test_load_config_missing_database(self, tmp_path):
         """Test error when database is missing."""
-        # Create config file without database
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text("xact_eventhouse:\n  cluster_url: https://test.kusto.windows.net\n")
+        # Create config directory with files
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+
+        # Create shared.yaml with minimal kafka config
+        (config_dir / "shared.yaml").write_text("""
+kafka:
+  connection:
+    bootstrap_servers: "localhost:9092"
+""")
+
+        # Create xact_config.yaml with eventhouse config missing database
+        (config_dir / "xact_config.yaml").write_text("""
+xact_eventhouse:
+  cluster_url: https://test.kusto.windows.net
+kafka:
+  xact:
+    topics:
+      downloads_pending: "test.pending"
+""")
+
+        # Create claimx_config.yaml with minimal config
+        (config_dir / "claimx_config.yaml").write_text("""
+kafka:
+  claimx:
+    topics:
+      events: "claimx.events"
+""")
 
         with patch.dict(os.environ, {"EVENTHOUSE_CLUSTER_URL": "https://test.kusto.windows.net"}, clear=True):
             with pytest.raises(ValueError, match="database is required"):
-                EventhouseSourceConfig.load_config(config_path=config_file)
+                EventhouseSourceConfig.load_config(config_path=config_dir)
 
 
 class TestPipelineConfig:
@@ -160,9 +210,34 @@ class TestPipelineConfig:
 
     def test_load_config_eventhub_default(self, tmp_path):
         """Test loading Event Hub config (when configured)."""
-        # Create config file with eventhub as source
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text("event_source: eventhub\n")
+        # Create config directory with files
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+
+        # Create shared.yaml with event_source
+        (config_dir / "shared.yaml").write_text("""
+event_source: eventhub
+kafka:
+  connection:
+    bootstrap_servers: "localhost:9092"
+""")
+
+        # Create xact_config.yaml
+        (config_dir / "xact_config.yaml").write_text("""
+kafka:
+  xact:
+    topics:
+      downloads_pending: "test.pending"
+""")
+
+        # Create claimx_config.yaml
+        (config_dir / "claimx_config.yaml").write_text("""
+kafka:
+  claimx:
+    topics:
+      events: "claimx.events"
+""")
+
         env = {
             "EVENTHUB_BOOTSTRAP_SERVERS": "namespace.servicebus.windows.net:9093",
             "EVENTHUB_CONNECTION_STRING": "Endpoint=sb://...",
@@ -170,7 +245,7 @@ class TestPipelineConfig:
         }
 
         with patch.dict(os.environ, env, clear=True):
-            config = PipelineConfig.load_config(config_path=config_file)
+            config = PipelineConfig.load_config(config_path=config_dir)
 
         assert config.event_source == EventSourceType.EVENTHUB
         assert config.eventhub is not None
@@ -236,34 +311,106 @@ class TestGetEventSourceType:
 
     def test_default_from_config_file(self, tmp_path):
         """Test default event source from config file."""
-        # Create config file with eventhub (the original default)
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text("event_source: eventhub\n")
+        # Create config directory with files
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+
+        # Create shared.yaml with eventhub (the original default)
+        (config_dir / "shared.yaml").write_text("""
+event_source: eventhub
+kafka:
+  connection:
+    bootstrap_servers: "localhost:9092"
+""")
+
+        # Create xact_config.yaml
+        (config_dir / "xact_config.yaml").write_text("""
+kafka:
+  xact:
+    topics:
+      downloads_pending: "test.pending"
+""")
+
+        # Create claimx_config.yaml
+        (config_dir / "claimx_config.yaml").write_text("""
+kafka:
+  claimx:
+    topics:
+      events: "claimx.events"
+""")
 
         with patch.dict(os.environ, {}, clear=True):
-            source = get_event_source_type(config_path=config_file)
+            source = get_event_source_type(config_path=config_dir)
 
         assert source == EventSourceType.EVENTHUB
 
     def test_eventhouse_from_config_file(self, tmp_path):
         """Test eventhouse event source from config file."""
-        # Create config file with eventhouse
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text("event_source: eventhouse\n")
+        # Create config directory with files
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+
+        # Create shared.yaml with eventhouse
+        (config_dir / "shared.yaml").write_text("""
+event_source: eventhouse
+kafka:
+  connection:
+    bootstrap_servers: "localhost:9092"
+""")
+
+        # Create xact_config.yaml
+        (config_dir / "xact_config.yaml").write_text("""
+kafka:
+  xact:
+    topics:
+      downloads_pending: "test.pending"
+""")
+
+        # Create claimx_config.yaml
+        (config_dir / "claimx_config.yaml").write_text("""
+kafka:
+  claimx:
+    topics:
+      events: "claimx.events"
+""")
 
         with patch.dict(os.environ, {}, clear=True):
-            source = get_event_source_type(config_path=config_file)
+            source = get_event_source_type(config_path=config_dir)
 
         assert source == EventSourceType.EVENTHOUSE
 
     def test_env_var_override(self, tmp_path):
         """Test environment variable override."""
-        # Create config file with eventhouse
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text("event_source: eventhouse\n")
+        # Create config directory with files
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+
+        # Create shared.yaml with eventhouse
+        (config_dir / "shared.yaml").write_text("""
+event_source: eventhouse
+kafka:
+  connection:
+    bootstrap_servers: "localhost:9092"
+""")
+
+        # Create xact_config.yaml
+        (config_dir / "xact_config.yaml").write_text("""
+kafka:
+  xact:
+    topics:
+      downloads_pending: "test.pending"
+""")
+
+        # Create claimx_config.yaml
+        (config_dir / "claimx_config.yaml").write_text("""
+kafka:
+  claimx:
+    topics:
+      events: "claimx.events"
+""")
 
         with patch.dict(os.environ, {"EVENT_SOURCE": "EVENTHUB"}, clear=False):
-            source = get_event_source_type(config_path=config_file)
+            source = get_event_source_type(config_path=config_dir)
 
         assert source == EventSourceType.EVENTHUB
 
