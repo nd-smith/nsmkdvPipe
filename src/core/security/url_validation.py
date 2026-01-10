@@ -24,11 +24,12 @@ DEFAULT_ALLOWED_DOMAINS: Set[str] = {
     "www.claimxperience.com",
     "claimxperience.com",
     "xactware-claimx-us-prod.s3.us-west-1.amazonaws.com",
+    "localhost",  # For local testing with dummy source
 }
 
 # Hosts to block (metadata endpoints, localhost, etc.)
 BLOCKED_HOSTS: Set[str] = {
-    "localhost",
+    #"localhost",
     "127.0.0.1",
     "0.0.0.0",
     "metadata.google.internal",
@@ -116,10 +117,6 @@ def validate_download_url(
     else:
         allowed_domains = {d.lower() for d in allowed_domains}
 
-    # Require HTTPS
-    if parsed.scheme.lower() != "https":
-        return False, f"Must be HTTPS, got {parsed.scheme}"
-
     # Extract hostname
     hostname = parsed.hostname
     if not hostname:
@@ -127,6 +124,13 @@ def validate_download_url(
 
     # Normalize hostname to lowercase for comparison
     hostname_lower = hostname.lower()
+
+    # Require HTTPS (except for localhost in testing)
+    scheme = parsed.scheme.lower()
+    if scheme not in ALLOWED_SCHEMES:
+        return False, f"Invalid scheme: {scheme}"
+    if scheme == "http" and hostname_lower != "localhost":
+        return False, f"Must be HTTPS for non-localhost, got {scheme}"
 
     # Check allowlist
     if hostname_lower not in allowed_domains:

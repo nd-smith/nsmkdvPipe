@@ -15,13 +15,9 @@ from kafka_pipeline.claimx.api_client import ClaimXApiClient, ClaimXApiError
 from kafka_pipeline.claimx.schemas.events import ClaimXEventMessage
 from kafka_pipeline.claimx.schemas.entities import EntityRowsMessage
 
-from kafka_pipeline.common.exceptions import ErrorCategory
-from kafka_pipeline.common.logging import (
-    get_logger,
-    extract_log_context,
-    log_exception,
-    log_with_context,
-)
+from core.types import ErrorCategory
+from core.logging import get_logger, log_exception, log_with_context
+from kafka_pipeline.common.logging import extract_log_context
 
 logger = get_logger(__name__)
 

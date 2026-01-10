@@ -75,7 +75,15 @@ class DummyDataSource:
                 "domains": self.config.domains,
                 "events_per_minute": self.config.events_per_minute,
                 "burst_mode": self.config.burst_mode,
+                "max_active_claims": self.config.max_active_claims,
+                "include_all_event_types": self.config.include_all_event_types,
             },
+        )
+        # Log the effective rate for clarity
+        total_events_per_min = self.config.events_per_minute * len(self.config.domains)
+        logger.info(
+            f"Event generation rate: {self.config.events_per_minute}/min per domain, "
+            f"{total_events_per_min}/min total across {len(self.config.domains)} domains"
         )
 
         # Start file server
@@ -169,8 +177,9 @@ class DummyDataSource:
                     await self._generate_and_send_event(domain)
                 except Exception as e:
                     logger.error(
-                        "Error generating event",
+                        f"Error generating event for {domain}: {e}",
                         extra={"domain": domain, "error": str(e)},
+                        exc_info=True,
                     )
 
             # Wait for next interval

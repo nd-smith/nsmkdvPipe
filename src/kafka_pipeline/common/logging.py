@@ -1,10 +1,13 @@
 """
-Backwards-compatibility shim for kafka_pipeline logging.
+kafka_pipeline-specific logging utilities.
 
-This module redirects core logging utilities to their canonical location in
-core.logging while maintaining kafka_pipeline-specific utilities here.
+Provides pipeline-specific abstractions built on top of core.logging:
+- LoggedClass: Mixin for classes with logging infrastructure
+- logged_operation: Decorator for automatic operation logging
+- extract_log_context: Extract identifiers from pipeline objects for logging
+- with_api_error_handling: Decorator for API error handling
 
-For new code, prefer importing directly from core.logging:
+For core logging functions, import directly from core.logging:
     from core.logging import get_logger, log_with_context, log_exception
 """
 
@@ -12,17 +15,11 @@ import functools
 import logging
 from typing import Any, Callable, Dict, Optional, TypeVar
 
-# Re-export core logging utilities from canonical location
 from core.logging import get_logger, log_exception, log_with_context
 
 F = TypeVar("F", bound=Callable[..., Any])
 
 __all__ = [
-    # Re-exported from core.logging
-    "get_logger",
-    "log_with_context",
-    "log_exception",
-    # kafka_pipeline-specific utilities
     "LoggedClass",
     "logged_operation",
     "extract_log_context",

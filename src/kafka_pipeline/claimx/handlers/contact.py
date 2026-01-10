@@ -17,7 +17,8 @@ from kafka_pipeline.claimx.handlers.base import (
 )
 from kafka_pipeline.claimx.handlers.utils import elapsed_ms, now_datetime
 
-from kafka_pipeline.common.logging import get_logger, log_with_context, extract_log_context
+from core.logging import get_logger, log_with_context
+from kafka_pipeline.common.logging import extract_log_context
 
 logger = get_logger(__name__)
 

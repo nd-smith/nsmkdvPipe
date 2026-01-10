@@ -22,13 +22,9 @@ from deltalake import DeltaTable, write_deltalake as _write_deltalake
 from kafka_pipeline.common.auth import get_storage_options
 from kafka_pipeline.common.retry import RetryConfig, with_retry
 from kafka_pipeline.common.storage.onelake import _refresh_all_credentials
-from kafka_pipeline.common.resilience.circuit_breaker import CircuitBreakerConfig
-from kafka_pipeline.common.logging import (
-    get_logger,
-    logged_operation,
-    LoggedClass,
-    log_with_context,
-)
+from core.resilience.circuit_breaker import CircuitBreakerConfig
+from core.logging import get_logger, log_with_context
+from kafka_pipeline.common.logging import logged_operation, LoggedClass
 
 logger = get_logger(__name__)
 

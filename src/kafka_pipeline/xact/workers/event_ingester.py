@@ -32,14 +32,13 @@ from pydantic import ValidationError
 from core.logging.context import set_log_context
 from core.logging.setup import get_logger
 from core.paths.resolver import generate_blob_path
-from core.security.url_validation import validate_download_url
+from core.security.url_validation import validate_download_url, sanitize_url
 from kafka_pipeline.config import KafkaConfig
 from kafka_pipeline.common.consumer import BaseKafkaConsumer
 from kafka_pipeline.common.health import HealthCheckServer
 from kafka_pipeline.common.producer import BaseKafkaProducer
 from kafka_pipeline.xact.schemas.events import EventMessage
 from kafka_pipeline.xact.schemas.tasks import DownloadTaskMessage
-from kafka_pipeline.common.security import sanitize_url
 from kafka_pipeline.common.metrics import (
     event_ingestion_duration_seconds,
     record_event_ingested,

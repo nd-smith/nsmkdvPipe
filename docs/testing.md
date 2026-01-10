@@ -136,6 +136,22 @@ Key fixtures:
 - `mock_onelake_client`: In-memory file storage
 - `mock_delta_events_writer`: In-memory Delta Lake mock
 
+### In-Memory Delta Testing
+
+For E2E testing without cloud dependencies, use the in-memory Delta table implementation:
+
+```python
+def test_pipeline(inmemory_xact_events):
+    # Write data (same API as production)
+    df = pl.DataFrame({"trace_id": ["t1"], "event_type": ["A"]})
+    inmemory_xact_events.append(df)
+
+    # Read back for assertions
+    assert len(inmemory_xact_events) == 1
+```
+
+See **[In-Memory Delta Testing TLDR](inmemory-delta-testing-tldr.md)** for complete guide.
+
 ### Performance Tests (`tests/kafka_pipeline/performance/`)
 
 - Measure throughput, latency, resource usage

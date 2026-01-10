@@ -18,12 +18,13 @@ from typing import Any, Callable, Dict, List, Optional
 
 import aiohttp
 
-from kafka_pipeline.common.resilience import (
+from core.resilience.circuit_breaker import (
     get_circuit_breaker,
     CLAIMX_API_CIRCUIT_CONFIG,
 )
-from kafka_pipeline.common.exceptions import ErrorCategory
-from kafka_pipeline.common.logging import get_logger, logged_operation, LoggedClass
+from core.types import ErrorCategory
+from core.logging import get_logger
+from kafka_pipeline.common.logging import logged_operation, LoggedClass
 from kafka_pipeline.common.metrics import (
     claimx_api_requests_total,
     claimx_api_request_duration_seconds,

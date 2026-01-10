@@ -25,8 +25,9 @@ from kafka_pipeline.claimx.handlers.utils import (
     elapsed_ms,
 )
 
-from kafka_pipeline.common.exceptions import ErrorCategory
-from kafka_pipeline.common.logging import get_logger, extract_log_context, log_exception, log_with_context
+from core.types import ErrorCategory
+from core.logging import get_logger, log_exception, log_with_context
+from kafka_pipeline.common.logging import extract_log_context
 from kafka_pipeline.common.utils import extract_expires_at_iso
 
 logger = get_logger(__name__)

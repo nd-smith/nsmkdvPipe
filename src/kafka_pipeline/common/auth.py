@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
 
-from kafka_pipeline.common.logging import get_logger, log_with_context
+from core.logging import get_logger, log_with_context
 
 logger = get_logger(__name__)
 

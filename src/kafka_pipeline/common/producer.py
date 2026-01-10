@@ -155,7 +155,9 @@ class BaseKafkaProducer:
         if "linger_ms" in self.producer_config:
             kafka_producer_config["linger_ms"] = self.producer_config["linger_ms"]
         if "compression_type" in self.producer_config:
-            kafka_producer_config["compression_type"] = self.producer_config["compression_type"]
+            # Convert string "none" to Python None for aiokafka compatibility
+            compression = self.producer_config["compression_type"]
+            kafka_producer_config["compression_type"] = None if compression == "none" else compression
         if "max_in_flight_requests_per_connection" in self.producer_config:
             kafka_producer_config["max_in_flight_requests_per_connection"] = \
                 self.producer_config["max_in_flight_requests_per_connection"]

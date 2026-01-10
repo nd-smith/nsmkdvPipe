@@ -9,7 +9,7 @@ Provides:
 
 from kafka_pipeline.common.retry.handler import RetryHandler
 from kafka_pipeline.common.retry.scheduler import DelayedRedeliveryScheduler
-from kafka_pipeline.common.retry.decorators import RetryConfig, with_retry, DEFAULT_RETRY, AUTH_RETRY
+from core.resilience.retry import RetryConfig, with_retry, DEFAULT_RETRY, AUTH_RETRY
 
 __all__ = [
     "RetryHandler",

@@ -12,8 +12,24 @@ services:
       - '--storage.tsdb.path=/prometheus'
       - '--web.console.libraries=/usr/share/prometheus/console_libraries'
       - '--web.console.templates=/usr/share/prometheus/consoles'
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - default
+
+  monitoring-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: kafka-pipeline-monitoring
+    ports:
+      - "9091:9091"
+    command: python -m kafka_pipeline.common.monitoring_service --prometheus-url http://prometheus:9090 --port 9091
+    networks:
+      - default
+    depends_on:
+      - prometheus
+    restart: unless-stopped
 
   grafana:
     image: grafana/grafana:10.4.0
