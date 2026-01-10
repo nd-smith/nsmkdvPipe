@@ -132,6 +132,12 @@ downloads_batch_size = Gauge(
     ["worker"],
 )
 
+uploads_concurrent = Gauge(
+    "kafka_uploads_concurrent",
+    "Number of uploads currently in progress",
+    ["worker"],
+)
+
 # Delta Lake write metrics
 delta_writes_total = Counter(
     "delta_writes_total",
@@ -151,6 +157,35 @@ delta_write_duration_seconds = Histogram(
     ["table"],
     buckets=(0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0),  # From 100ms to 2min
 )
+
+# ClaimX API metrics
+claimx_api_requests_total = Counter(
+    "claimx_api_requests_total",
+    "Total number of requests to ClaimX API",
+    ["method", "endpoint", "status"],  # status: success, error
+)
+
+claimx_api_request_duration_seconds = Histogram(
+    "claimx_api_request_duration_seconds",
+    "Time spent waiting for ClaimX API responses",
+    ["method", "endpoint"],
+    buckets=(0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0),
+)
+
+# ClaimX Business Logic metrics
+claim_processing_seconds = Histogram(
+    "claim_processing_seconds",
+    "Time spent processing claim artifacts",
+    ["step"],  # step: download, enrichment, upload
+    buckets=(0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0),
+)
+
+claim_media_bytes_total = Counter(
+    "claim_media_bytes_total",
+    "Total bytes of media processed",
+    ["type"],  # type: image, video, document
+)
+
 
 
 def record_message_produced(topic: str, message_bytes: int, success: bool = True) -> None:
@@ -331,6 +366,17 @@ def update_downloads_batch_size(worker: str, size: int) -> None:
     downloads_batch_size.labels(worker=worker).set(size)
 
 
+def update_uploads_concurrent(worker: str, count: int) -> None:
+    """
+    Update the number of concurrent uploads in progress.
+
+    Args:
+        worker: Worker identifier (e.g., "upload_worker")
+        count: Number of uploads currently in progress
+    """
+    uploads_concurrent.labels(worker=worker).set(count)
+
+
 __all__ = [
     # Metrics
     "messages_produced_total",
@@ -366,4 +412,10 @@ __all__ = [
     "update_downloads_concurrent",
     "update_downloads_batch_size",
     "record_delta_write",
+    "claimx_api_requests_total",
+    "claimx_api_request_duration_seconds",
+    "claim_processing_seconds",
+    "claim_media_bytes_total",
+    "update_uploads_concurrent",
+    "uploads_concurrent",
 ]

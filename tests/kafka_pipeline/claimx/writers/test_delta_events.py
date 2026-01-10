@@ -1,4 +1,5 @@
-"""Tests for ClaimX Delta events writer.
+"""
+Tests for ClaimX Delta events writer.
 
 Tests cover:
 - Initialization

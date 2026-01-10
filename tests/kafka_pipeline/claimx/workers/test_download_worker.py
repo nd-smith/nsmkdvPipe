@@ -1,4 +1,5 @@
-"""Unit tests for ClaimXDownloadWorker with concurrent processing.
+"""
+Unit tests for ClaimXDownloadWorker with concurrent processing.
 
 Tests download task consumption, AttachmentDownloader integration,
 task conversion, batch processing, and concurrency control.

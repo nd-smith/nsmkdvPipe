@@ -10,8 +10,8 @@ This worker is decoupled from the Download Worker to allow:
 - Cache buffer if OneLake has temporary issues
 
 Architecture:
-- Download Worker: downloads -> local cache -> ClaimXCachedDownloadMessage
-- Upload Worker: ClaimXCachedDownloadMessage -> OneLake -> ClaimXUploadResultMessage
+- Download Worker: downloads → local cache → ClaimXCachedDownloadMessage
+- Upload Worker: ClaimXCachedDownloadMessage → OneLake → ClaimXUploadResultMessage
 """
 
 import asyncio
@@ -149,14 +149,10 @@ class ClaimXUploadWorker:
         self.onelake_client: Optional[OneLakeClient] = None
 
         # Health check server - use worker-specific port from config
-        # Use port=0 by default for dynamic port assignment (avoids conflicts with multiple workers)
-        # Set health_enabled=False to disable health checks entirely
-        health_port = processing_config.get("health_port", 0)
-        health_enabled = processing_config.get("health_enabled", True)
+        health_port = processing_config.get("health_port", 8083)
         self.health_server = HealthCheckServer(
             port=health_port,
             worker_name="claimx-uploader",
-            enabled=health_enabled,
         )
 
         logger.info(

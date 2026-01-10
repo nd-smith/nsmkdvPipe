@@ -1,4 +1,5 @@
-"""Unit tests for ClaimXEntityDeltaWorker.
+"""
+Unit tests for ClaimXEntityDeltaWorker.
 
 Tests entity row consumption, batch processing, and Delta Lake writes.
 """

@@ -1,4 +1,5 @@
-"""Tests for ClaimX Delta entity writer.
+"""
+Tests for ClaimX Delta entity writer.
 
 Tests cover:
 - Initialization with multiple table paths

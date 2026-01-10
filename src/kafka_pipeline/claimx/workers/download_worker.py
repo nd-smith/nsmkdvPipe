@@ -53,7 +53,9 @@ from kafka_pipeline.common.metrics import (
     update_assigned_partitions,
     update_downloads_concurrent,
     update_downloads_batch_size,
+    update_downloads_batch_size,
     message_processing_duration_seconds,
+    claim_processing_seconds,
 )
 
 logger = get_logger(__name__)
@@ -148,14 +150,7 @@ class ClaimXDownloadWorker:
         self._in_flight_tasks: Set[str] = set()  # Track by media_id
         self._in_flight_lock = asyncio.Lock()
         self._shutdown_event: Optional[asyncio.Event] = None
-
-        # Simple in-memory dedup cache (same as xact download worker)
-        # Maps media_id -> timestamp for TTL-based eviction
-        # Prevents duplicate downloads when source sends duplicates
-        self._dedup_cache: dict[str, float] = {}
-        self._dedup_cache_ttl_seconds = 86400  # 24 hours
-        self._dedup_cache_max_size = 100_000  # ~1MB memory for 100k entries
-
+        
         # Cycle output tracking
         self._records_processed = 0
         self._records_succeeded = 0
@@ -185,14 +180,10 @@ class ClaimXDownloadWorker:
         self.retry_handler: Optional[DownloadRetryHandler] = None
 
         # Health check server - use worker-specific port from config
-        # Use port=0 by default for dynamic port assignment (avoids conflicts with multiple workers)
-        # Set health_enabled=False to disable health checks entirely
-        health_port = processing_config.get("health_port", 0)
-        health_enabled = processing_config.get("health_enabled", True)
+        health_port = processing_config.get("health_port", 8082)
         self.health_server = HealthCheckServer(
             port=health_port,
             worker_name="claimx-downloader",
-            enabled=health_enabled,
         )
 
         logger.info(
@@ -256,7 +247,8 @@ class ClaimXDownloadWorker:
         # Initialize API client for URL refresh
         self.api_client = ClaimXApiClient(
             base_url=self.config.claimx_api_url or "https://api.test.claimxperience.com",
-            token=self.config.claimx_api_token,
+            username=self.config.claimx_api_username or None,
+            password=self.config.claimx_api_password or None,
             timeout_seconds=self.config.claimx_api_timeout_seconds,
             max_concurrent=self.config.claimx_api_concurrency,
         )
@@ -580,9 +572,6 @@ class ClaimXDownloadWorker:
                         extra={"batch_size": len(messages)},
                     )
 
-                # Periodic cleanup of expired dedup cache entries
-                self._cleanup_dedup_cache()
-
                 # Reset batch size metric
                 update_downloads_batch_size(self.WORKER_NAME, 0)
 
@@ -714,30 +703,6 @@ class ClaimXDownloadWorker:
             self._in_flight_tasks.add(task_message.media_id)
 
         try:
-            # Check dedup cache (simple in-memory duplicate prevention)
-            if self._is_duplicate(task_message.media_id):
-                logger.info(
-                    "Skipping duplicate download (already processed recently)",
-                    extra={
-                        "media_id": task_message.media_id,
-                        "project_id": task_message.project_id,
-                        "download_url": task_message.download_url,
-                    },
-                )
-                self._records_skipped += 1
-                # Return success result without downloading (already processed)
-                return TaskResult(
-                    message=message,
-                    task_message=task_message,
-                    outcome=DownloadOutcome(
-                        success=True,
-                        error_message=None,
-                        error_category=None,
-                    ),
-                    processing_time_ms=int((time.perf_counter() - start_time) * 1000),
-                    success=True,
-                )
-
             logger.info(
                 "Processing ClaimX download task",
                 extra={
@@ -767,11 +732,12 @@ class ClaimXDownloadWorker:
                 topic=message.topic, consumer_group=consumer_group
             ).observe(duration)
 
+            # Record business logic metrics
+            claim_processing_seconds.labels(step="download").observe(duration)
+
             # Handle outcome: cache and produce cached message
             if outcome.success:
                 await self._handle_success(task_message, outcome, processing_time_ms)
-                # Mark as processed in dedup cache to prevent future duplicates
-                self._mark_processed(task_message.media_id)
                 record_message_consumed(
                     message.topic, consumer_group, len(message.value), success=True
                 )
@@ -1170,79 +1136,6 @@ class ClaimXDownloadWorker:
                 extra={
                     "directory": str(dir_path),
                     "error": str(e),
-                },
-            )
-
-    def _is_duplicate(self, media_id: str) -> bool:
-        """
-        Check if media_id is in dedup cache (already processed recently).
-
-        Args:
-            media_id: Media ID to check (unique per attachment)
-
-        Returns:
-            True if duplicate (already in cache), False otherwise
-        """
-        now = time.time()
-
-        # Check if in cache and not expired
-        if media_id in self._dedup_cache:
-            cached_time = self._dedup_cache[media_id]
-            if now - cached_time < self._dedup_cache_ttl_seconds:
-                return True
-            # Expired - remove from cache
-            del self._dedup_cache[media_id]
-
-        return False
-
-    def _mark_processed(self, media_id: str) -> None:
-        """
-        Add media_id to dedup cache to prevent re-processing.
-
-        Implements simple LRU eviction if cache is full.
-
-        Args:
-            media_id: Media ID to mark as processed (unique per attachment)
-        """
-        now = time.time()
-
-        # If cache is full, evict oldest entries (simple LRU)
-        if len(self._dedup_cache) >= self._dedup_cache_max_size:
-            # Sort by timestamp and remove oldest 10%
-            sorted_items = sorted(self._dedup_cache.items(), key=lambda x: x[1])
-            evict_count = self._dedup_cache_max_size // 10
-            for media_id_to_evict, _ in sorted_items[:evict_count]:
-                del self._dedup_cache[media_id_to_evict]
-
-            logger.debug(
-                "Evicted old entries from dedup cache",
-                extra={
-                    "evicted_count": evict_count,
-                    "cache_size": len(self._dedup_cache),
-                },
-            )
-
-        # Add to cache
-        self._dedup_cache[media_id] = now
-
-    def _cleanup_dedup_cache(self) -> None:
-        """Remove expired entries from dedup cache (TTL-based cleanup)."""
-        now = time.time()
-        expired_keys = [
-            media_id
-            for media_id, cached_time in self._dedup_cache.items()
-            if now - cached_time >= self._dedup_cache_ttl_seconds
-        ]
-
-        for media_id in expired_keys:
-            del self._dedup_cache[media_id]
-
-        if expired_keys:
-            logger.debug(
-                "Cleaned up expired dedup cache entries",
-                extra={
-                    "expired_count": len(expired_keys),
-                    "cache_size": len(self._dedup_cache),
                 },
             )
 
