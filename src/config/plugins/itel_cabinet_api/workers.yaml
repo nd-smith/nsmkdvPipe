@@ -1,0 +1,456 @@
+# =============================================================================
+# iTel Cabinet Workers Configuration
+# =============================================================================
+# Two independent workers process iTel cabinet task events:
+#
+# 1. itel_cabinet_tracking_worker - Writes to Delta table for historical tracking
+# 2. itel_cabinet_api_worker - Sends data to iTel Cabinet API
+#
+# Both consume from the same topic (itel.cabinet.task.tracking) with different
+# consumer groups, processing independently with separate logs and error handling.
+#
+# Architecture:
+#   Plugin → Kafka Topic (itel.cabinet.task.tracking)
+#                ↓
+#        ┌───────┴────────┐
+#        ↓                ↓
+#   Tracking Worker   API Worker
+#   (Delta Table)     (iTel API)
+#
+# Related Files:
+#   - config.yaml - Plugin configuration (triggers and publishes events)
+#   - config/plugins/shared/connections/claimx.yaml - ClaimX API connection
+#   - config/plugins/shared/connections/app.itel.yaml - iTel API connection
+#   - SPEC.md - Technical specification
+#   - README.md - User documentation
+# =============================================================================
+
+workers:
+  # ===========================================================================
+  # iTel Cabinet Task Tracking Worker
+  # ===========================================================================
+  # Consumes task events published by the iTel Cabinet plugin, enriches them
+  # with complete task details from ClaimX API, and writes to Delta table.
+  #
+  # Prerequisites:
+  #   - Kafka topic 'itel.cabinet.task.tracking' must exist
+  #   - ClaimX API connection configured (see config/plugins/shared/connections/claimx.yaml)
+  #   - Delta table 'itel_cabinet_task_tracking' must be created
+  #   - Environment variables: CLAIMX_API_BASE_URL, CLAIMX_API_TOKEN
+  #
+  # Startup Command:
+  #   python -m kafka_pipeline.workers.itel_cabinet_tracking_worker
+  # ===========================================================================
+  itel_cabinet_tracking_worker:
+    name: itel_cabinet_tracking_worker
+
+    # =========================================================================
+    # Kafka Configuration
+    # =========================================================================
+    input_topic: itel.cabinet.task.tracking
+    consumer_group: itel_cabinet_tracking_worker_group
+    batch_size: 100                   # Process up to 100 messages per batch
+    enable_auto_commit: false         # Manual commit for exactly-once semantics
+
+    # =========================================================================
+    # Destination Configuration
+    # =========================================================================
+    # NOTE: We're writing to Delta table, not an HTTP endpoint
+    # The DeltaTableWriter handler (step 4 in pipeline) handles the write
+    # These fields are intentionally omitted:
+    # destination_connection: null
+    # destination_path: null
+    # destination_method: null
+
+    # =========================================================================
+    # Result Topics (Optional - for monitoring and debugging)
+    # =========================================================================
+    success_topic: itel.cabinet.task.tracking.success
+    error_topic: itel.cabinet.task.tracking.errors
+
+    # =========================================================================
+    # Enrichment Pipeline
+    # =========================================================================
+    # Data flows through 4 stages:
+    #   1. Transform - Extract and structure fields from event
+    #   2. Validate - Ensure data integrity
+    #   3. Lookup - Enrich with ClaimX API data
+    #   4. Delta Write - Persist to Delta table
+    # =========================================================================
+    enrichment_handlers:
+
+      # -----------------------------------------------------------------------
+      # Stage 1: Transform Handler
+      # -----------------------------------------------------------------------
+      # Extract fields from the plugin event payload and add metadata
+      # -----------------------------------------------------------------------
+      - type: transform
+        config:
+          mappings:
+            # Event metadata
+            event_id: event_id
+            event_type: event_type
+            event_timestamp: timestamp
+
+            # Task identifiers
+            task_id: task_id
+            assignment_id: assignment_id
+            project_id: project_id
+
+            # Task status tracking
+            task_name: task_name
+            task_status: task_status
+
+            # User tracking (if available in event)
+            assigned_to_user_id: task.assigned_to_user_id
+            assigned_by_user_id: task.assigned_by_user_id
+
+            # Timestamps
+            task_created_at: task.created_at
+            task_completed_at: task.completed_at
+
+          defaults:
+            tracking_version: "1.0"
+            source: "claimx_itel_plugin"
+
+      # -----------------------------------------------------------------------
+      # Stage 2: Validation Handler
+      # -----------------------------------------------------------------------
+      # Validate required fields and data integrity
+      # -----------------------------------------------------------------------
+      - type: validation
+        config:
+          required_fields:
+            - event_id
+            - task_id
+            - event_type
+            - task_status
+            - project_id
+
+          field_rules:
+            task_id:
+              equals: 32513           # Extra validation - only task 32513
+
+          # Track all status changes - don't skip any messages
+          # skip_if: null
+
+      # -----------------------------------------------------------------------
+      # Stage 3: ClaimX API Lookup Handler
+      # -----------------------------------------------------------------------
+      # Fetch complete task details from ClaimX REST API
+      # Connection defined in: config/plugins/shared/connections/claimx.yaml
+      # -----------------------------------------------------------------------
+      - type: lookup
+        config:
+          connection: claimx_api                    # Named connection
+          endpoint: /api/v1/tasks/{task_id}         # API endpoint
+          path_params:
+            task_id: task_id                        # Use task_id from event
+          result_field: claimx_task_details         # Store result here
+          cache_ttl: 60                             # Cache for 1 minute
+
+          # Error handling - don't fail entire message if API is down
+          on_error: log_and_continue
+
+      # -----------------------------------------------------------------------
+      # Stage 4: Form Parser
+      # -----------------------------------------------------------------------
+      # Parse iTel Cabinet form response to extract submission and attachments data
+      # Location: kafka_pipeline/plugins/itel_cabinet_api/handlers/form_parser.py
+      # -----------------------------------------------------------------------
+      - type: kafka_pipeline.plugins.itel_cabinet_api.handlers.form_parser:ItelFormParser
+        config: {}
+
+      # -----------------------------------------------------------------------
+      # Stage 5: Media Downloader
+      # -----------------------------------------------------------------------
+      # Download media files for form attachments and store to OneLake
+      # Location: kafka_pipeline/plugins/itel_cabinet_api/handlers/media_downloader.py
+      # -----------------------------------------------------------------------
+      - type: kafka_pipeline.plugins.itel_cabinet_api.handlers.media_downloader:ItelMediaDownloader
+        config:
+          blob_path_template: "abfss://7729c159-0674-42ba-abf7-a6756723c62f@onelake.dfs.fabric.microsoft.com/584315ee-2f41-4943-949f-901d438bcd36/Files/veriskPipeline/itel_cabinet_form_attachments/{project_id}/{task_id}/"
+          claimx_connection: claimx_api
+          concurrent_downloads: 5
+          skip_download: false  # Set to true for testing without downloads
+
+      # -----------------------------------------------------------------------
+      # Stage 6: Dual Table Writer
+      # -----------------------------------------------------------------------
+      # Write parsed form data to two Delta tables:
+      # - claimx_itel_forms (submissions)
+      # - claimx_itel_attachments (media attachments with blob_path)
+      # Location: kafka_pipeline/plugins/itel_cabinet_api/handlers/dual_table_writer.py
+      # -----------------------------------------------------------------------
+      - type: kafka_pipeline.plugins.itel_cabinet_api.handlers.dual_table_writer:ItelDualTableWriter
+        config:
+          submissions_table: claimx_itel_forms
+          attachments_table: claimx_itel_attachments
+          mode: append
+
+# =============================================================================
+# Configuration Notes
+# =============================================================================
+#
+# Worker Lifecycle:
+#   1. Start: python -m kafka_pipeline.workers.itel_cabinet_tracking_worker
+#   2. Connects to Kafka and subscribes to itel.cabinet.task.tracking
+#   3. Processes messages through enrichment pipeline
+#   4. Commits offsets after successful Delta write
+#   5. Publishes success/error events for monitoring
+#
+# Environment Variables Required:
+#   export CLAIMX_API_BASE_URL="https://api.claimx.com"
+#   export CLAIMX_API_TOKEN="your-bearer-token"
+#
+# Kafka Topics:
+#   - Input: itel.cabinet.task.tracking (retention: 7 days)
+#   - Success: itel.cabinet.task.tracking.success (retention: 3 days)
+#   - Error: itel.cabinet.task.tracking.errors (retention: 30 days, DLQ)
+#
+# Performance Tuning:
+#   - batch_size: Increase for higher throughput (100-500)
+#   - cache_ttl: Increase to reduce API calls (60-300 seconds)
+#   - Partition count: Scale topic partitions for parallel processing
+#
+# Error Handling:
+#   - API failures: Logged and message continues (on_error: log_and_continue)
+#   - Validation failures: Skipped and sent to error topic
+#   - Delta write failures: Message retried, then sent to error topic
+#
+# Monitoring:
+#   - Consumer lag: kafka-consumer-groups --describe
+#   - Worker logs: tail -f logs/itel/tracking_worker.log
+#   - Metrics: itel_worker_messages_processed_total, etc.
+#
+# Troubleshooting:
+#   - No messages consumed: Check topic name and Kafka connectivity
+#   - API errors: Check CLAIMX_API_TOKEN is valid and not expired
+#   - Delta write errors: Check table exists and write permissions
+#   - High consumer lag: Scale worker instances or increase batch_size
+#
+# =============================================================================
+
+  # ===========================================================================
+  # iTel Cabinet API Worker
+  # ===========================================================================
+  # Consumes task events and sends them to iTel Cabinet API.
+  # Runs independently from the tracking worker - if one fails, the other continues.
+  #
+  # Prerequisites:
+  #   - Kafka topic 'itel.cabinet.task.tracking' must exist (same as tracking worker)
+  #   - ClaimX API connection configured (for task enrichment)
+  #   - iTel API connection configured (see config/plugins/shared/connections/app.itel.yaml)
+  #   - Environment variables: CLAIMX_API_BASE_URL, CLAIMX_API_TOKEN, ITEL_CABINET_API_BASE_URL, ITEL_CABINET_API_TOKEN
+  #
+  # Startup Command:
+  #   python -m kafka_pipeline.workers.itel_cabinet_api_worker
+  # ===========================================================================
+  itel_cabinet_api_worker:
+    name: itel_cabinet_api_worker
+
+    # =========================================================================
+    # Kafka Configuration
+    # =========================================================================
+    # IMPORTANT: Different consumer group from tracking worker
+    # This allows both workers to process the same messages independently
+    input_topic: itel.cabinet.task.tracking      # Same topic as tracking worker
+    consumer_group: itel_cabinet_api_worker_group  # Different group!
+    batch_size: 50                                 # Smaller batch for API calls
+    enable_auto_commit: false                      # Manual commit
+
+    # =========================================================================
+    # Destination Configuration
+    # =========================================================================
+    # Not used - ItelApiSender handler handles API calls directly
+    # destination_connection: null
+    # destination_path: null
+
+    # =========================================================================
+    # Result Topics
+    # =========================================================================
+    # Separate error/success topics from tracking worker
+    success_topic: itel.cabinet.api.success
+    error_topic: itel.cabinet.api.errors          # DLQ for failed API calls
+
+    # =========================================================================
+    # Enrichment Pipeline
+    # =========================================================================
+    # Similar to tracking worker but sends to API instead of Delta
+    # Pipeline: Transform → Validate → ClaimX Lookup → iTel API Send
+    # =========================================================================
+    enrichment_handlers:
+
+      # -----------------------------------------------------------------------
+      # Stage 1: Transform Handler
+      # -----------------------------------------------------------------------
+      # Extract fields from plugin event (same as tracking worker)
+      # -----------------------------------------------------------------------
+      - type: transform
+        config:
+          mappings:
+            # Event metadata
+            event_id: event_id
+            event_type: event_type
+            event_timestamp: timestamp
+
+            # Task identifiers
+            task_id: task_id
+            assignment_id: assignment_id
+            project_id: project_id
+
+            # Task status tracking
+            task_name: task_name
+            task_status: task_status
+
+            # User tracking
+            assigned_to_user_id: task.assigned_to_user_id
+            assigned_by_user_id: task.assigned_by_user_id
+
+            # Timestamps
+            task_created_at: task.created_at
+            task_completed_at: task.completed_at
+
+          defaults:
+            source: "claimx_itel_plugin"
+
+      # -----------------------------------------------------------------------
+      # Stage 2: Validation Handler
+      # -----------------------------------------------------------------------
+      # Validate required fields (same as tracking worker)
+      # -----------------------------------------------------------------------
+      - type: validation
+        config:
+          required_fields:
+            - event_id
+            - task_id
+            - event_type
+            - task_status
+            - project_id
+
+          field_rules:
+            task_id:
+              equals: 32513  # Only task 32513
+
+      # -----------------------------------------------------------------------
+      # Stage 3: ClaimX API Lookup Handler
+      # -----------------------------------------------------------------------
+      # Fetch complete task details (same as tracking worker)
+      # Connection defined in: config/plugins/shared/connections/claimx.yaml
+      # -----------------------------------------------------------------------
+      - type: lookup
+        config:
+          connection: claimx_api
+          endpoint: /api/v1/tasks/{task_id}
+          path_params:
+            task_id: task_id
+          result_field: claimx_task_details
+          cache_ttl: 60  # Cache for 1 minute
+
+          # Don't fail if ClaimX API is down - log and continue
+          on_error: log_and_continue
+
+      # -----------------------------------------------------------------------
+      # Stage 4: iTel API Sender
+      # -----------------------------------------------------------------------
+      # Transform enriched data and send to iTel Cabinet API
+      # Connection defined in: config/plugins/shared/connections/app.itel.yaml
+      # -----------------------------------------------------------------------
+      - type: kafka_pipeline.plugins.itel_cabinet_api.handlers.itel_api_sender:ItelApiSender
+        config:
+          # iTel API connection
+          connection: itel_cabinet_api
+
+          # API endpoint - PLACEHOLDER
+          # TODO: Update with actual iTel Cabinet API endpoint
+          endpoint: /api/v1/tasks
+          method: POST
+
+          # Payload builder strategy
+          # Options: "default" (built-in), or custom class path
+          payload_builder: default
+
+          # Include full raw ClaimX data in payload (for debugging)
+          # Set to false in production to reduce payload size
+          include_raw_data: false
+
+# =============================================================================
+# iTel API Worker Configuration Notes
+# =============================================================================
+#
+# Worker Lifecycle:
+#   1. Start: python -m kafka_pipeline.workers.itel_cabinet_api_worker
+#   2. Connects to Kafka (same topic, different consumer group)
+#   3. Processes messages through enrichment pipeline
+#   4. Sends to iTel Cabinet API
+#   5. Commits offset after successful API call
+#
+# Environment Variables Required:
+#   export CLAIMX_API_BASE_URL="https://api.claimx.com"
+#   export CLAIMX_API_TOKEN="your-claimx-token"
+#   export ITEL_CABINET_API_BASE_URL="https://api.itelcabinet.com"
+#   export ITEL_CABINET_API_TOKEN="your-itel-token"
+#
+# Kafka Topics:
+#   - Input: itel.cabinet.task.tracking (shared with tracking worker)
+#   - Success: itel.cabinet.api.success (API call successful)
+#   - Error: itel.cabinet.api.errors (DLQ for failed API calls)
+#
+# Independent Processing:
+#   - Uses different consumer group from tracking worker
+#   - If tracking worker fails, API worker continues (and vice versa)
+#   - Each worker has its own consumer lag
+#   - Each worker has separate error/success topics
+#   - Each worker can be scaled independently
+#
+# API Payload:
+#   The ItelApiSender builds a payload from enriched data:
+#   {
+#     "task_id": 32513,
+#     "assignment_id": 12345,
+#     "project_id": "ABC-123",
+#     "task_status": "completed",
+#     "event_timestamp": "2026-01-10T12:34:56Z",
+#     "task_created_at": "2026-01-09T10:00:00Z",
+#     "task_completed_at": "2026-01-10T12:34:56Z",
+#     "assigned_to_user_id": 789,
+#     "repair_details": { /* extracted from ClaimX task */ },
+#     "source_system": "claimx",
+#     "integration_version": "1.0"
+#   }
+#
+# Customizing Payload:
+#   Update _build_payload() and _extract_repair_details() in
+#   kafka_pipeline/plugins/itel_cabinet_api/handlers/itel_api_sender.py
+#   to match iTel Cabinet API requirements.
+#
+# Error Handling:
+#   - ClaimX API failures: Logged, message continues (on_error: log_and_continue)
+#   - Validation failures: Sent to error topic
+#   - iTel API failures: Retried with exponential backoff, then sent to error topic
+#   - Network errors: Automatic retry via connection manager
+#
+# Performance Tuning:
+#   - batch_size: Smaller than tracking worker (50 vs 100) for faster API responses
+#   - cache_ttl: Same as tracking worker to share ClaimX API cache
+#   - Scaling: Run multiple instances with same consumer group for parallel processing
+#
+# Monitoring:
+#   - Consumer lag: kafka-consumer-groups --describe --group itel_cabinet_api_worker_group
+#   - Worker logs: tail -f logs/itel/api_worker.log
+#   - Metrics: itel_api_worker_messages_processed_total, itel_api_worker_api_calls_total
+#
+# Troubleshooting:
+#   - No messages consumed: Check topic and consumer group
+#   - iTel API errors: Check ITEL_CABINET_API_TOKEN and endpoint
+#   - High error rate: Check iTel API health and rate limits
+#   - Consumer lag: Scale worker instances or increase batch_size
+#
+# Testing:
+#   1. Start worker with valid env vars
+#   2. Trigger task 32513 event in ClaimX
+#   3. Check worker logs for API call
+#   4. Verify message in success or error topic
+#   5. Check iTel Cabinet API for received data
+#
+# =============================================================================

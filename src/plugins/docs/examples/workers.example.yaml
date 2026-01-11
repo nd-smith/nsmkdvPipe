@@ -1,0 +1,162 @@
+# Plugin Worker Configurations
+#
+# Define workers that consume from plugin-triggered Kafka topics,
+# enrich the data, and send to external APIs.
+#
+# Workers are configured declaratively - no code required.
+#
+
+workers:
+  # Example: Photo task worker
+  # Processes photo documentation tasks and sends to external API
+  photo_task_worker:
+    name: photo_task_worker
+
+    # Kafka configuration
+    input_topic: plugin.photo_tasks  # Topic that plugin publishes to
+    consumer_group: photo_task_worker_group
+    batch_size: 100
+    enable_auto_commit: false  # Manual commit for exactly-once
+
+    # Destination API
+    destination_connection: external_api  # Named connection from connections.yaml
+    destination_path: /v1/photo_tasks
+    destination_method: POST
+    max_retries: 3
+
+    # Result topics (optional)
+    success_topic: plugin.photo_tasks.success
+    error_topic: plugin.photo_tasks.errors
+
+    # Enrichment pipeline
+    # Handlers are executed in order
+    enrichment_handlers:
+      # Step 1: Transform/extract fields
+      - type: transform
+        config:
+          mappings:
+            event_id: event_id
+            project_id: project_id
+            task_id: task_id
+            task_name: task.task_name
+            task_status: task.status
+            assignment_id: assignment_id
+            assigned_to: task.assigned_to.name
+            completed_at: task.completed_at
+          defaults:
+            priority: normal
+            source: claimx_pipeline
+
+      # Step 2: Validate required fields
+      - type: validation
+        config:
+          required_fields:
+            - event_id
+            - project_id
+            - task_id
+          field_rules:
+            task_status:
+              allowed_values: [completed, verified]
+          skip_if:
+            field: task_status
+            equals: cancelled  # Don't send cancelled tasks
+
+      # Step 3: Lookup additional project data
+      - type: lookup
+        config:
+          connection: internal_service
+          endpoint: /api/projects/{project_id}/details
+          path_params:
+            project_id: project_id
+          query_params:
+            include: location,metadata
+          result_field: project_details
+          cache_ttl: 300  # Cache for 5 minutes
+
+  # Example: Batch event worker
+  # Collects events and sends in batches to reduce API calls
+  batch_event_worker:
+    name: batch_event_worker
+
+    input_topic: plugin.batch_events
+    consumer_group: batch_event_worker_group
+    batch_size: 50
+
+    destination_connection: external_api
+    destination_path: /v1/events/batch
+    destination_method: POST
+
+    enrichment_handlers:
+      # Transform individual events
+      - type: transform
+        config:
+          mappings:
+            id: event_id
+            type: event_type
+            timestamp: timestamp
+            data: data
+
+      # Batch multiple events
+      - type: batching
+        config:
+          batch_size: 10  # Send 10 events per API call
+          batch_timeout_seconds: 5.0  # Or send after 5 seconds
+          batch_field: events  # Resulting payload: {"events": [...]}
+
+  # Example: Enriched task worker with complex pipeline
+  enriched_task_worker:
+    name: enriched_task_worker
+
+    input_topic: plugin.enriched_tasks
+    consumer_group: enriched_task_worker_group
+
+    destination_connection: external_api
+    destination_path: /v1/tasks/enriched
+    destination_method: POST
+
+    error_topic: plugin.enriched_tasks.dlq
+
+    enrichment_handlers:
+      # Extract core fields
+      - type: transform
+        config:
+          mappings:
+            task_id: task_id
+            project_id: project_id
+            event_type: event_type
+
+      # Validate
+      - type: validation
+        config:
+          required_fields: [task_id, project_id]
+
+      # Enrich with project data
+      - type: lookup
+        config:
+          connection: internal_service
+          endpoint: /api/projects/{project_id}
+          path_params:
+            project_id: project_id
+          result_field: project
+          cache_ttl: 600
+
+      # Enrich with task details
+      - type: lookup
+        config:
+          connection: internal_service
+          endpoint: /api/tasks/{task_id}/full
+          path_params:
+            task_id: task_id
+          result_field: task_details
+          cache_ttl: 60
+
+      # Final transformation with enriched data
+      - type: transform
+        config:
+          mappings:
+            task_id: task_id
+            project_name: project.name
+            project_location: project.location
+            task_name: task_details.name
+            task_description: task_details.description
+            assignee: task_details.assignee.email

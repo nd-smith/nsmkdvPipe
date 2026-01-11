@@ -1,0 +1,113 @@
+{
+  "assignmentId": 5423723,
+  "projectId": 4895140,
+  "formId": "69417fcfa5e6b152c25253d0",
+  "formResponseId": "6962d069f8c664c2706b0bd0",
+  "status": "COMPLETED",
+  "dateAssigned": "2026-01-10T22:15:51.580+00:00",
+  "dateCompleted": "2026-01-10T22:30:06.243+00:00",
+  "customer": {
+    "firstName": "NICK",
+    "lastName": "Customer",
+    "email": "nicksmith.212@gmail.com",
+    "phone": "8016696956"
+  },
+  "assignorEmail": "nsmkd@allstate.com",
+  "damageDescription": "Water damage to kitchen cabinets from pipe burst",
+  "additionalNotes": "Customer mentioned cabinets were custom built in 2018",
+  "countertopsLf": 25,
+  "lowerCabinets": {
+    "damaged": true,
+    "linearFeet": 15,
+    "numDamagedBoxes": 3,
+    "detached": false,
+    "faceFramesDoorsDrawersAvailable": "Yes",
+    "faceFramesDoorsDrawersDamaged": true,
+    "finishedEndPanelsDamaged": true,
+    "endPanelDamagePresent": true,
+    "counterType": "Granite",
+    "media": [
+      {
+        "questionKey": "lower_cabinet_box",
+        "questionText": "Upload Lower Cabinet Box Photo(s)",
+        "claimMediaIds": [96264210, 96264211]
+      },
+      {
+        "questionKey": "lower_cabinet_end_panels",
+        "questionText": "Upload Lower Cabinet End Panel Photo(s)",
+        "claimMediaIds": [96264212]
+      }
+    ]
+  },
+  "upperCabinets": {
+    "damaged": true,
+    "linearFeet": 12,
+    "numDamagedBoxes": 2,
+    "detached": false,
+    "faceFramesDoorsDrawersAvailable": "Yes",
+    "faceFramesDoorsDrawersDamaged": false,
+    "finishedEndPanelsDamaged": true,
+    "endPanelDamagePresent": true,
+    "counterType": null,
+    "media": [
+      {
+        "questionKey": "upper_cabinet_box",
+        "questionText": "Upload Upper Cabinet Box Photo(s)",
+        "claimMediaIds": [96264220, 96264221, 96264222]
+      },
+      {
+        "questionKey": "upper_cabinet_end_panels",
+        "questionText": "Upload Upper Cabinet End Panel Photo(s)",
+        "claimMediaIds": [96264223]
+      }
+    ]
+  },
+  "fullHeightCabinets": {
+    "damaged": true,
+    "linearFeet": 3,
+    "numDamagedBoxes": 1,
+    "detached": false,
+    "faceFramesDoorsDrawersAvailable": "Yes",
+    "faceFramesDoorsDrawersDamaged": false,
+    "finishedEndPanelsDamaged": false,
+    "endPanelDamagePresent": null,
+    "counterType": null,
+    "media": [
+      {
+        "questionKey": "full_height_cabinet_box",
+        "questionText": "Upload Full Height Cabinet Box Photo(s)",
+        "claimMediaIds": [96264230]
+      }
+    ]
+  },
+  "islandCabinets": {
+    "damaged": true,
+    "linearFeet": 8,
+    "numDamagedBoxes": 2,
+    "detached": true,
+    "faceFramesDoorsDrawersAvailable": "Disposed Of",
+    "faceFramesDoorsDrawersDamaged": true,
+    "finishedEndPanelsDamaged": true,
+    "endPanelDamagePresent": true,
+    "counterType": "Quartz",
+    "media": [
+      {
+        "questionKey": "island_cabinet_box",
+        "questionText": "Upload Island Cabinet Box Photo(s)",
+        "claimMediaIds": [96264240, 96264241]
+      },
+      {
+        "questionKey": "island_cabinet_end_panels",
+        "questionText": "Upload Island Cabinet End Panel Photo(s)",
+        "claimMediaIds": [96264242, 96264243]
+      }
+    ]
+  },
+  "overviewMedia": [
+    {
+      "questionKey": "overview_photos",
+      "questionText": "Upload Overview Photo(s)",
+      "claimMediaIds": [96264202, 96264203, 96264204]
+    }
+  ]
+}

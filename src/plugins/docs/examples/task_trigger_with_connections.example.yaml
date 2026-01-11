@@ -1,0 +1,108 @@
+# Task Trigger Plugin Configuration - Using Named Connections
+#
+# This example shows how to use named connections (from connections.yaml)
+# in plugin webhook actions instead of hardcoded URLs.
+#
+# ✨ New in commit 6066082:
+# - ActionExecutor now supports connection_manager for named connections
+# - All plugins inherit from LoggedClass with built-in logging
+# - Use self._log() and self._log_exception() in custom plugins
+#
+# Benefits of Named Connections:
+# - Centralized connection management
+# - Automatic retry logic with exponential backoff
+# - Authentication handled automatically
+# - Connection pooling for efficiency
+# - Consistent error handling
+#
+
+name: task_trigger_connections
+module: kafka_pipeline.plugins.task_trigger
+class: TaskTriggerPlugin
+enabled: true
+priority: 50
+
+config:
+  # Include task and project data in payload
+  include_task_data: true
+  include_project_data: true
+
+  triggers:
+    # Photo Documentation Task (task template ID)
+    456:
+      name: Photo Documentation Task
+
+      # When task is assigned
+      on_assigned:
+        # Publish to Kafka topic for worker processing
+        publish_to_topic: plugin.photo_tasks
+
+        # Also send webhook to external API using named connection
+        webhook:
+          connection: external_api  # Named connection (not direct URL)
+          path: /v1/webhooks/task_assigned
+          method: POST
+          # Body will include full payload from plugin
+
+        log:
+          level: info
+          message: "Photo task assigned - published to topic and sent webhook"
+
+      # When task is completed
+      on_completed:
+        # Publish to processing topic
+        publish_to_topic: plugin.photo_tasks
+
+        # Send to multiple endpoints using named connections
+        webhooks:
+          - connection: external_api
+            path: /v1/webhooks/task_completed
+            method: POST
+
+          - connection: internal_service
+            path: /api/notifications/task_completed
+            method: POST
+            headers:
+              X-Notification-Type: task_completion
+
+        log:
+          level: info
+          message: "Photo task completed - sent to multiple webhooks"
+
+    # Inspection Task
+    789:
+      name: Inspection Task
+
+      on_completed:
+        # Use named connection with custom path
+        webhook:
+          connection: external_api
+          path: /v1/inspections/{project_id}/completed
+          method: POST
+          # Path params are auto-populated from payload
+
+        publish_to_topic: plugin.inspection_tasks
+
+    # Quality Assurance Task
+    321:
+      name: QA Task
+
+      on_assigned:
+        # Conditional webhook - only for high priority projects
+        webhook:
+          connection: internal_service
+          path: /api/quality/task_assigned
+          method: POST
+
+      on_completed:
+        # Batch processing topic
+        publish_to_topic: plugin.batch_events
+
+        # Success webhook
+        webhook:
+          connection: webhook_receiver
+          path: /qa/completed
+          method: POST
+
+# Alternative: Simple configuration using ONLY named connections
+# (No direct URLs needed anywhere)

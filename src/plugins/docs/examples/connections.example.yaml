@@ -1,0 +1,54 @@
+# Plugin Connection Definitions
+#
+# Define named HTTP connections for use in plugin workers and webhook actions.
+# Each connection includes authentication, retry policies, and endpoint configuration.
+#
+# Usage in plugins:
+#   - Webhook actions: Use 'connection' param instead of 'url'
+#   - Workers: Reference by name in worker config
+#
+
+connections:
+  # Example: External API with Bearer token authentication
+  external_api:
+    name: external_api
+    base_url: https://api.example.com
+    auth_type: bearer  # Options: none, bearer, api_key, basic
+    auth_token: ${EXTERNAL_API_TOKEN}  # Environment variable reference
+    timeout_seconds: 30
+    max_retries: 3
+    retry_backoff_base: 2  # Exponential backoff base (seconds)
+    retry_backoff_max: 60   # Maximum backoff between retries (seconds)
+    headers:
+      User-Agent: ClaimXPipeline/1.0
+      X-Client-ID: claimx-pipeline
+
+  # Example: Internal service with API key
+  internal_service:
+    name: internal_service
+    base_url: https://internal.company.com
+    auth_type: api_key
+    auth_token: ${INTERNAL_API_KEY}
+    auth_header: X-API-Key  # Custom header name for API key
+    timeout_seconds: 15
+    max_retries: 2
+    headers:
+      X-Service-Name: kafka-pipeline
+
+  # Example: Third-party webhook (no auth)
+  webhook_receiver:
+    name: webhook_receiver
+    base_url: https://webhooks.thirdparty.com
+    auth_type: none
+    timeout_seconds: 10
+    max_retries: 1  # Webhooks often shouldn't retry
+
+  # Example: Legacy system with Basic auth
+  legacy_api:
+    name: legacy_api
+    base_url: https://legacy.internal.com
+    auth_type: basic
+    auth_token: ${LEGACY_API_CREDENTIALS}  # Should be base64 encoded "user:pass"
+    timeout_seconds: 60  # Slow legacy system
+    max_retries: 5
+    retry_backoff_max: 120
