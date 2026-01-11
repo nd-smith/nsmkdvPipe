@@ -52,14 +52,19 @@ async def main() -> None:
     worker = ClaimXEnrichmentWorker(config=config)
 
     # Setup signal handlers for graceful shutdown
-    loop = asyncio.get_running_loop()
-
     def signal_handler() -> None:
         logger.info("Received shutdown signal")
         asyncio.create_task(worker.request_shutdown())
 
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, signal_handler)
+    # Signal handlers work differently on Windows vs Unix
+    if sys.platform != "win32":
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, signal_handler)
+    else:
+        # On Windows, we rely on KeyboardInterrupt for SIGINT (Ctrl+C)
+        # SIGTERM is not available on Windows
+        logger.info("Running on Windows - using KeyboardInterrupt for shutdown")
 
     # Start worker (blocks until stopped)
     try:
