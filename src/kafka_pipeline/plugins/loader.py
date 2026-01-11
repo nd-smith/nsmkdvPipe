@@ -11,28 +11,13 @@ from typing import Any, Dict, List, Optional, Type
 
 import yaml
 
+from core.logging import log_with_context
+
 from kafka_pipeline.plugins.base import Plugin, Domain, PipelineStage
 from kafka_pipeline.plugins.registry import PluginRegistry, get_plugin_registry
 from kafka_pipeline.plugins.task_trigger import TaskTriggerPlugin
 
 logger = logging.getLogger(__name__)
-
-
-def _log_with_context(
-    logger: logging.Logger,
-    level: int,
-    msg: str,
-    **kwargs,
-) -> None:
-    """Log with structured context."""
-    if kwargs:
-        extra_str = " ".join(f"{k}={v}" for k, v in kwargs.items() if v is not None)
-        logger.log(level, f"{msg} | {extra_str}")
-    else:
-        logger.log(level, msg)
-
-
-log_with_context = _log_with_context
 
 
 def load_plugins_from_directory(

@@ -8,6 +8,8 @@ import logging
 from collections import defaultdict
 from typing import Dict, List, Optional, Tuple, Type
 
+from core.logging import log_with_context
+
 from kafka_pipeline.plugins.base import (
     Plugin,
     PluginContext,
@@ -18,24 +20,6 @@ from kafka_pipeline.plugins.base import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _log_with_context(
-    logger: logging.Logger,
-    level: int,
-    msg: str,
-    **kwargs,
-) -> None:
-    """Log with structured context (standalone to avoid import issues)."""
-    if kwargs:
-        extra_str = " ".join(f"{k}={v}" for k, v in kwargs.items() if v is not None)
-        logger.log(level, f"{msg} | {extra_str}")
-    else:
-        logger.log(level, msg)
-
-
-# Alias for compatibility
-log_with_context = _log_with_context
 
 # Global registry instance
 _plugin_registry: Optional["PluginRegistry"] = None
@@ -270,16 +254,18 @@ class ActionExecutor:
     Override or extend to add custom action implementations.
     """
 
-    def __init__(self, producer=None, http_client=None):
+    def __init__(self, producer=None, http_client=None, connection_manager=None):
         """
         Initialize action executor.
 
         Args:
             producer: Kafka producer for publish actions (optional)
-            http_client: HTTP client for webhook actions (optional)
+            http_client: HTTP client for webhook actions (optional, legacy)
+            connection_manager: ConnectionManager for named connection webhooks (optional)
         """
         self.producer = producer
         self.http_client = http_client
+        self.connection_manager = connection_manager
 
     async def execute(self, action: PluginAction, context: PluginContext) -> None:
         """
@@ -343,43 +329,123 @@ class ActionExecutor:
         params: Dict,
         context: PluginContext,
     ) -> None:
-        """Call HTTP webhook."""
-        url = params["url"]
-        method = params.get("method", "POST")
-        body = params.get("body", {})
-        headers = params.get("headers", {})
+        """Call HTTP webhook.
 
-        log_with_context(
-            logger,
-            logging.INFO,
-            "Plugin action: HTTP webhook",
-            url=url,
-            method=method,
-            event_id=context.event_id,
-        )
+        Supports two modes:
+        1. Named connection (recommended): Use 'connection' and 'path' params
+        2. Direct URL (legacy): Use 'url' param with http_client
+        """
+        # Check if using named connection (new approach)
+        connection_name = params.get("connection")
 
-        if self.http_client:
-            async with self.http_client.request(
+        if connection_name:
+            # Use ConnectionManager for named connection
+            if not self.connection_manager:
+                log_with_context(
+                    logger,
+                    logging.ERROR,
+                    "Named connection specified but no connection manager configured",
+                    connection=connection_name,
+                )
+                return
+
+            path = params.get("path", "/")
+            method = params.get("method", "POST")
+            body = params.get("body", {})
+            headers = params.get("headers", {})
+
+            log_with_context(
+                logger,
+                logging.INFO,
+                "Plugin action: HTTP webhook (named connection)",
+                connection=connection_name,
+                path=path,
                 method=method,
-                url=url,
-                json=body,
-                headers=headers,
-            ) as response:
+                event_id=context.event_id,
+            )
+
+            try:
+                response = await self.connection_manager.request(
+                    connection_name=connection_name,
+                    method=method,
+                    path=path,
+                    json=body,
+                    headers=headers,
+                )
+
                 log_with_context(
                     logger,
                     logging.DEBUG,
                     "Webhook response",
                     status=response.status,
-                    url=url,
+                    connection=connection_name,
+                    path=path,
+                )
+
+                # Log error responses
+                if response.status >= 400:
+                    response_body = await response.text()
+                    log_with_context(
+                        logger,
+                        logging.WARNING,
+                        "Webhook returned error status",
+                        status=response.status,
+                        response=response_body[:200],
+                    )
+            except Exception as e:
+                log_with_context(
+                    logger,
+                    logging.ERROR,
+                    "Webhook request failed",
+                    connection=connection_name,
+                    error=str(e),
                 )
         else:
+            # Legacy mode: direct URL with http_client
+            url = params.get("url")
+            if not url:
+                log_with_context(
+                    logger,
+                    logging.ERROR,
+                    "HTTP webhook action requires either 'connection' or 'url' parameter",
+                )
+                return
+
+            method = params.get("method", "POST")
+            body = params.get("body", {})
+            headers = params.get("headers", {})
+
             log_with_context(
                 logger,
-                logging.WARNING,
-                "No HTTP client configured - webhook action logged only",
+                logging.INFO,
+                "Plugin action: HTTP webhook (direct URL)",
                 url=url,
                 method=method,
+                event_id=context.event_id,
             )
+
+            if self.http_client:
+                async with self.http_client.request(
+                    method=method,
+                    url=url,
+                    json=body,
+                    headers=headers,
+                ) as response:
+                    log_with_context(
+                        logger,
+                        logging.DEBUG,
+                        "Webhook response",
+                        status=response.status,
+                        url=url,
+                    )
+            else:
+                log_with_context(
+                    logger,
+                    logging.WARNING,
+                    "No HTTP client configured - webhook action logged only",
+                    url=url,
+                    method=method,
+                )
 
     def _log(self, params: Dict, context: PluginContext) -> None:
         """Log a message."""

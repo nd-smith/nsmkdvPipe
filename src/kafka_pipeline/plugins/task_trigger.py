@@ -47,25 +47,6 @@ from kafka_pipeline.plugins.base import (
     PipelineStage,
 )
 
-logger = logging.getLogger(__name__)
-
-
-def _log_with_context(
-    logger: logging.Logger,
-    level: int,
-    msg: str,
-    **kwargs,
-) -> None:
-    """Log with structured context."""
-    if kwargs:
-        extra_str = " ".join(f"{k}={v}" for k, v in kwargs.items() if v is not None)
-        logger.log(level, f"{msg} | {extra_str}")
-    else:
-        logger.log(level, msg)
-
-
-log_with_context = _log_with_context
-
 
 class TaskTriggerPlugin(Plugin):
     """
@@ -142,8 +123,7 @@ class TaskTriggerPlugin(Plugin):
         actions = self._build_actions(action_config, task, context, trigger_config)
 
         trigger_name = trigger_config.get("name", f"task_{task_id}")
-        log_with_context(
-            logger,
+        self._log(
             logging.INFO,
             "Task trigger matched",
             plugin_name=self.name,

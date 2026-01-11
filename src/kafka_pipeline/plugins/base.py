@@ -13,6 +13,8 @@ from typing import Any, Callable, Dict, List, Optional, Union
 
 from pydantic import BaseModel
 
+from kafka_pipeline.common.logging import LoggedClass
+
 
 class Domain(str, Enum):
     """Pipeline domains."""
@@ -264,13 +266,18 @@ class PluginContext:
         return obj
 
 
-class Plugin(ABC):
+class Plugin(LoggedClass, ABC):
     """
     Base class for plugins.
 
     Subclasses define:
       - Which domains/stages/event_types they handle
       - The execute() method with business logic
+
+    Provides logging infrastructure via LoggedClass:
+      - self._logger: Logger instance
+      - self._log(level, msg, **extra): Log with context
+      - self._log_exception(exc, msg, **extra): Exception logging
     """
 
     # Plugin metadata
@@ -297,6 +304,7 @@ class Plugin(ABC):
         Args:
             config: Config dict to merge with default_config
         """
+        super().__init__()
         self.config = {**self.default_config, **(config or {})}
         self._enabled = True
 
