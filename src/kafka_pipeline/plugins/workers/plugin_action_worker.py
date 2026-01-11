@@ -182,7 +182,21 @@ class PluginActionWorker:
             value_deserializer=lambda m: json.loads(m.decode("utf-8")),
         )
 
-        await self.consumer.start()
+        try:
+            await self.consumer.start()
+        except Exception as e:
+            # Clean up consumer on startup failure to prevent resource leak
+            if self.consumer:
+                try:
+                    await self.consumer.stop()
+                except Exception:
+                    pass  # Ignore errors during cleanup
+                self.consumer = None
+            raise RuntimeError(
+                f"Failed to start Kafka consumer for topic '{self.config.input_topic}': {e}. "
+                f"Ensure Kafka is running and the topic exists."
+            ) from e
+
         logger.info(
             f"Consumer started for topic '{self.config.input_topic}' "
             f"(group: {self.config.consumer_group})"

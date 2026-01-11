@@ -245,6 +245,11 @@ async def main() -> None:
         logger.exception(f"Worker failed with error: {e}")
         sys.exit(1)
     finally:
+        # Ensure worker is properly stopped to clean up resources
+        try:
+            await worker.stop()
+        except Exception as stop_error:
+            logger.debug(f"Error during worker cleanup: {stop_error}")
         await connection_manager.close()
         logger.info("Worker shutdown complete")
 
