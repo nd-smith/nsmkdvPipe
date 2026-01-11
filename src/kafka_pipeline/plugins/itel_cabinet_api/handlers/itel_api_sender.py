@@ -15,7 +15,7 @@ Features:
 
 import logging
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from kafka_pipeline.plugins.enrichment import EnrichmentContext, EnrichmentHandler, EnrichmentResult
 
