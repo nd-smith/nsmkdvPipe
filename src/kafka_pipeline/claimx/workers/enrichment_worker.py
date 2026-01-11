@@ -433,18 +433,20 @@ class ClaimXEnrichmentWorker:
         
         common_args = {
             "bootstrap_servers": self.consumer_config.bootstrap_servers,
-            "security_protocol": self.consumer_config.security_protocol,
-            "sasl_mechanism": self.consumer_config.sasl_mechanism,
             "group_id": group_id,
             "enable_auto_commit": False,  # Manual commit
             "auto_offset_reset": "earliest",
             "metadata_max_age_ms": 30000,
         }
-        
-        if self.consumer_config.security_protocol == "SASL_SSL":
-            common_args["sasl_oauth_token_provider"] = create_kafka_oauth_callback(
-                self.consumer_config
-            )
+
+        # Configure security based on protocol (only add SASL settings for non-PLAINTEXT)
+        if self.consumer_config.security_protocol != "PLAINTEXT":
+            common_args["security_protocol"] = self.consumer_config.security_protocol
+            common_args["sasl_mechanism"] = self.consumer_config.sasl_mechanism
+
+            # Add authentication based on mechanism
+            if self.consumer_config.sasl_mechanism == "OAUTHBEARER":
+                common_args["sasl_oauth_token_provider"] = create_kafka_oauth_callback()
             
         return AIOKafkaConsumer(
             *self.topics,
