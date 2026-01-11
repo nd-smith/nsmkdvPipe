@@ -22,7 +22,7 @@ import logging
 import signal
 import sys
 
-from kafka_pipeline.config import KafkaConfig
+from kafka_pipeline.config import load_config
 from kafka_pipeline.claimx.workers.enrichment_worker import ClaimXEnrichmentWorker
 
 # Configure logging
@@ -41,7 +41,7 @@ async def main() -> None:
 
     # Load Kafka configuration from environment
     try:
-        config = KafkaConfig.from_env()
+        config = load_config()
     except Exception as e:
         logger.error(f"Configuration error: {e}")
         sys.exit(1)
