@@ -213,7 +213,9 @@ python scripts/delta_tables/create_itel_cabinet_tracking_table.py --dry-run
 python scripts/delta_tables/create_itel_cabinet_tracking_table.py
 ```
 
-### Step 7: Test End-to-End
+### Step 7: Test End-to-End (TEST MODE - No API Required)
+
+**CURRENT CONFIG:** Test mode is ENABLED by default - payloads write to files instead of API
 
 1. Start all workers:
    ```bash
@@ -227,8 +229,70 @@ python scripts/delta_tables/create_itel_cabinet_tracking_table.py
 3. Verify:
    - Plugin publishes to topic ✓
    - Tracking worker writes to Delta ✓
-   - API worker sends to iTel API ✓
+   - Tracking worker downloads media to OneLake ✓
+   - API worker writes payload to `config/plugins/itel_cabinet_api/test/payload_{assignmentId}_{timestamp}.json` ✓
    - Check success topics ✓
+
+4. Inspect payload file:
+   ```bash
+   # View latest test payload
+   ls -t config/plugins/itel_cabinet_api/test/*.json | head -1 | xargs cat | jq
+   ```
+
+**To switch to production mode (send to actual API):**
+```yaml
+# In workers.yaml, change:
+test_mode: false  # Disable test mode
+```
+
+---
+
+## Test Mode Details
+
+### What is Test Mode?
+
+When `test_mode: true` is set in the API worker configuration, the `ItelApiSender` handler:
+- ✅ Builds the complete API payload (form parsing, media grouping, etc.)
+- ✅ Writes payload to JSON file in `config/plugins/itel_cabinet_api/test/`
+- ✅ Logs as if API call was successful (status=200)
+- ✅ Returns success to worker (commits offset, continues processing)
+- ❌ Does NOT make actual HTTP request to iTel API
+
+### Benefits
+
+1. **End-to-end testing** without needing iTel API endpoint
+2. **Inspect payloads** - See exact JSON being generated
+3. **Validate structure** - Ensure payload matches schema
+4. **Debug issues** - Test form parsing and media download separately
+
+### File Output
+
+Files are written to: `config/plugins/itel_cabinet_api/test/`
+
+Naming pattern: `payload_{assignmentId}_{timestamp}.json`
+
+Example:
+```json
+{
+  "assignmentId": 5423723,
+  "projectId": 4895140,
+  "formId": "69417fcfa5e6b152c25253d0",
+  "status": "COMPLETED",
+  "customer": { ... },
+  "lowerCabinets": { ... },
+  "overviewMedia": [ ... ]
+}
+```
+
+### Log Output
+
+```
+[TEST MODE] iTel API request successful (written to file) |
+  status=200 |
+  assignmentId=5423723 |
+  projectId=4895140 |
+  file=config/plugins/itel_cabinet_api/test/payload_5423723_20260110_153045.json
+```
 
 ---
 

@@ -374,6 +374,11 @@ workers:
           # Set to false in production to reduce payload size
           include_raw_data: false
 
+          # TEST MODE: Write payload to file instead of sending to API
+          # Set to true for end-to-end testing without actual API
+          test_mode: true
+          test_output_dir: "config/plugins/itel_cabinet_api/test"
+
 # =============================================================================
 # iTel API Worker Configuration Notes
 # =============================================================================

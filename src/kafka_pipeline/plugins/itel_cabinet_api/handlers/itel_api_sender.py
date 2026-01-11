@@ -53,6 +53,8 @@ class ItelApiSender(EnrichmentHandler):
                 - method: HTTP method (default: POST)
                 - payload_builder: Payload builder strategy (default: default)
                 - include_raw_data: Include full ClaimX data in payload (default: false)
+                - test_mode: Write payload to file instead of API (default: false)
+                - test_output_dir: Directory for test output files (default: config/plugins/itel_cabinet_api/test)
         """
         super().__init__(config)
         self.connection_name = self.config.get("connection", "itel_cabinet_api")
@@ -60,8 +62,10 @@ class ItelApiSender(EnrichmentHandler):
         self.method = self.config.get("method", "POST")
         self.payload_builder = self.config.get("payload_builder", "default")
         self.include_raw_data = self.config.get("include_raw_data", False)
+        self.test_mode = self.config.get("test_mode", False)
+        self.test_output_dir = self.config.get("test_output_dir", "config/plugins/itel_cabinet_api/test")
 
-        if not self.connection_name:
+        if not self.connection_name and not self.test_mode:
             raise ValueError("ItelApiSender requires 'connection' in config")
 
     async def enrich(self, context: EnrichmentContext) -> EnrichmentResult:
@@ -73,19 +77,24 @@ class ItelApiSender(EnrichmentHandler):
         Returns:
             EnrichmentResult indicating success or failure
         """
-        if not context.connection_manager:
+        if not context.connection_manager and not self.test_mode:
             return EnrichmentResult.failed("No connection manager available")
 
         try:
             # Build iTel API payload from enriched data
             payload = self._build_payload(context.data)
 
+            # TEST MODE: Write to file instead of sending to API
+            if self.test_mode:
+                return await self._write_test_payload(payload, context.data)
+
+            # PRODUCTION MODE: Send to iTel API
             # Log what we're sending
             logger.info(
                 f"Sending to iTel Cabinet API | "
                 f"endpoint={self.endpoint} | "
-                f"task_id={payload.get('task_id')} | "
-                f"assignment_id={payload.get('assignment_id')}"
+                f"assignmentId={payload.get('assignmentId')} | "
+                f"projectId={payload.get('projectId')}"
             )
             logger.debug(f"iTel API payload: {payload}")
 
@@ -103,7 +112,7 @@ class ItelApiSender(EnrichmentHandler):
                 logger.info(
                     f"iTel API request successful | "
                     f"status={status} | "
-                    f"task_id={payload.get('task_id')} | "
+                    f"assignmentId={payload.get('assignmentId')} | "
                     f"itel_task_id={response_data.get('itel_task_id', 'N/A')}"
                 )
 
@@ -119,7 +128,7 @@ class ItelApiSender(EnrichmentHandler):
                 logger.error(
                     f"iTel API request failed | "
                     f"status={status} | "
-                    f"task_id={payload.get('task_id')} | "
+                    f"assignmentId={payload.get('assignmentId')} | "
                     f"error={response_data}"
                 )
                 return EnrichmentResult.failed(error_msg)
@@ -128,7 +137,67 @@ class ItelApiSender(EnrichmentHandler):
             error_msg = f"Exception sending to iTel API: {str(e)}"
             logger.exception(
                 f"iTel API exception | "
-                f"task_id={context.data.get('task_id')} | "
+                f"assignmentId={context.data.get('assignment_id')} | "
+                f"error={str(e)}"
+            )
+            return EnrichmentResult.failed(error_msg)
+
+    async def _write_test_payload(
+        self, payload: Dict[str, Any], context_data: Dict[str, Any]
+    ) -> EnrichmentResult:
+        """Write payload to test file instead of sending to API.
+
+        Args:
+            payload: Built API payload
+            context_data: Full context data
+
+        Returns:
+            EnrichmentResult indicating success
+        """
+        import json
+        import os
+        from pathlib import Path
+
+        try:
+            # Create output directory if needed
+            output_dir = Path(self.test_output_dir)
+            output_dir.mkdir(parents=True, exist_ok=True)
+
+            # Build filename from assignment_id and timestamp
+            assignment_id = payload.get("assignmentId", "unknown")
+            timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+            filename = f"payload_{assignment_id}_{timestamp}.json"
+            output_path = output_dir / filename
+
+            # Write payload to file
+            with open(output_path, 'w') as f:
+                json.dump(payload, f, indent=2, default=str)
+
+            # Log as if API call was successful
+            logger.info(
+                f"[TEST MODE] iTel API request successful (written to file) | "
+                f"status=200 | "
+                f"assignmentId={payload.get('assignmentId')} | "
+                f"projectId={payload.get('projectId')} | "
+                f"file={output_path}"
+            )
+
+            # Simulate successful API response
+            context_data['itel_api_response'] = {
+                "success": True,
+                "test_mode": True,
+                "output_file": str(output_path),
+                "itel_task_id": f"TEST_{assignment_id}"
+            }
+            context_data['itel_api_status'] = 200
+
+            return EnrichmentResult.ok(context_data)
+
+        except Exception as e:
+            error_msg = f"Failed to write test payload: {str(e)}"
+            logger.exception(
+                f"[TEST MODE] Failed to write payload to file | "
+                f"assignmentId={payload.get('assignmentId')} | "
                 f"error={str(e)}"
             )
             return EnrichmentResult.failed(error_msg)
