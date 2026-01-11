@@ -158,9 +158,8 @@ class BaseKafkaProducer:
             # Convert string "none" to Python None for aiokafka compatibility
             compression = self.producer_config["compression_type"]
             kafka_producer_config["compression_type"] = None if compression == "none" else compression
-        if "max_in_flight_requests_per_connection" in self.producer_config:
-            kafka_producer_config["max_in_flight_requests_per_connection"] = \
-                self.producer_config["max_in_flight_requests_per_connection"]
+        # Note: max_in_flight_requests_per_connection is not supported by aiokafka
+        # (it's a kafka-python/Java client parameter). aiokafka handles concurrency internally.
         if "buffer_memory" in self.producer_config:
             kafka_producer_config["buffer_memory"] = self.producer_config["buffer_memory"]
         if "max_request_size" in self.producer_config:
