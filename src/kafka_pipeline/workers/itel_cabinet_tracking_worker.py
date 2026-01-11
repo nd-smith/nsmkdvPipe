@@ -108,7 +108,7 @@ def load_yaml_config(path: Path) -> dict[str, Any]:
         raise FileNotFoundError(f"Configuration file not found: {path}")
 
     logger.info(f"Loading configuration from {path}")
-    with open(path, "r") as f:
+    with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
 
 
