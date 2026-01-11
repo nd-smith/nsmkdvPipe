@@ -125,9 +125,9 @@ class ClaimXEnrichmentWorker:
         self.consumer_group = config.get_consumer_group(domain, "enrichment_worker")
 
         # Get worker-specific processing config
-        processing_config = config.get_worker_config(domain, "enrichment_worker", "processing")
+        self.processing_config = config.get_worker_config(domain, "enrichment_worker", "processing")
         # max_records for getmany polling (not for batching - delta writer handles batching)
-        self.max_poll_records = processing_config.get("max_poll_records", 100)
+        self.max_poll_records = self.processing_config.get("max_poll_records", 100)
 
         # Retry configuration
         self._retry_delays = config.get_retry_delays(domain)
@@ -156,8 +156,8 @@ class ClaimXEnrichmentWorker:
         # Health check server
         # Use port=0 by default for dynamic port assignment (avoids conflicts with multiple workers)
         # Set health_enabled=False to disable health checks entirely
-        health_port = processing_config.get("health_port", 0)
-        health_enabled = processing_config.get("health_enabled", True)
+        health_port = self.processing_config.get("health_port", 0)
+        health_enabled = self.processing_config.get("health_enabled", True)
         self.health_server = HealthCheckServer(
             port=health_port,
             worker_name="claimx-enricher",
@@ -248,7 +248,7 @@ class ClaimXEnrichmentWorker:
 
         # Load plugins from directory structure
         # Check for plugin config dir in processing config first, then fall back to default
-        plugins_dir = processing_config.get(
+        plugins_dir = self.processing_config.get(
             "plugins_dir",
             "plugins/config"
         )
